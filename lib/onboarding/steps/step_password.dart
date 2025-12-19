@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class StepPassword extends StatefulWidget {
   const StepPassword({
     super.key,
-    required this.onNext,
+    required this.email,
+    required this.onCreated,
     this.onBack,
   });
 
-  final Future<void> Function(String password) onNext;
+  final String email;
+  final VoidCallback onCreated;
   final VoidCallback? onBack;
 
   @override
@@ -16,35 +19,17 @@ class StepPassword extends StatefulWidget {
 
 class _StepPasswordState extends State<StepPassword> {
   final controller = TextEditingController();
-  bool isLoading = false;
+  bool loading = false;
 
   Future<void> _submit() async {
-    final pw = controller.text.trim();
-    if (pw.length < 6) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Password must be at least 6 characters.')),
-      );
-      return;
-    }
+    setState(() => loading = true);
 
-    setState(() => isLoading = true);
+    await FirebaseAuth.instance.createUserWithEmailAndPassword(
+      email: widget.email,
+      password: controller.text,
+    );
 
-    try {
-      await widget.onNext(pw);
-      // Parent flow navigates away; no need to set isLoading=false
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
-    }
-  }
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
+    widget.onCreated();
   }
 
   @override
@@ -61,28 +46,17 @@ class _StepPasswordState extends State<StepPassword> {
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              'Create a password',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 16),
             TextField(
               controller: controller,
               obscureText: true,
               decoration: const InputDecoration(labelText: 'Password'),
-              onSubmitted: (_) => isLoading ? null : _submit(),
             ),
-            const Spacer(),
+            const SizedBox(height: 24),
             FilledButton(
-              onPressed: isLoading ? null : _submit,
-              child: isLoading
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+              onPressed: loading ? null : _submit,
+              child: loading
+                  ? const CircularProgressIndicator()
                   : const Text('Create account'),
             ),
           ],

@@ -1,9 +1,9 @@
-import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
 
-import 'steps/step_parent_name.dart';
-import 'steps/step_email.dart';
-import 'steps/step_password.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
 import 'steps/step_child_name.dart';
 import 'steps/step_child_dob.dart';
 import 'steps/step_child_allergies_yes_no.dart';
@@ -12,9 +12,6 @@ import 'steps/step_another_child.dart';
 import 'steps/onboarding_complete_screen.dart';
 
 enum OnboardingStep {
-  parentName,
-  email,
-  password,
   childName,
   childDob,
   childHasAllergies,
@@ -24,97 +21,41 @@ enum OnboardingStep {
 }
 
 class OnboardingFlow extends StatefulWidget {
-  const OnboardingFlow({
-    super.key,
-    required this.userRef,
-  });
-
-  final DocumentReference<Map<String, dynamic>> userRef;
+  const OnboardingFlow({super.key});
 
   @override
   State<OnboardingFlow> createState() => _OnboardingFlowState();
 }
 
 class _OnboardingFlowState extends State<OnboardingFlow> {
-  OnboardingStep step = OnboardingStep.parentName;
-
-  String? parentName;
-  String? email;
-  String? password;
+  OnboardingStep step = OnboardingStep.childName;
 
   final List<Map<String, dynamic>> children = [];
   Map<String, dynamic> currentChild = {};
 
   void next(OnboardingStep s) => setState(() => step = s);
 
+  DocumentReference<Map<String, dynamic>> get _userRef {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw StateError('No authenticated user.');
+    return FirebaseFirestore.instance.collection('users').doc(user.uid);
+  }
+
   @override
   Widget build(BuildContext context) {
     switch (step) {
-
-      // ───────────────────────── Parent details ─────────────────────────
-
-      case OnboardingStep.parentName:
-        return StepParentName(
-          initialValue: parentName,
-          onNext: (name) {
-            parentName = name;
-            next(OnboardingStep.email);
-          },
-        );
-
-      case OnboardingStep.email:
-        return StepEmail(
-          initialValue: email,
-          onBack: () => next(OnboardingStep.parentName),
-          onNext: (val) {
-            email = val;
-            next(OnboardingStep.password);
-          },
-        );
-
-     case OnboardingStep.password:
-  return StepPassword(
-    onBack: () => next(OnboardingStep.email),
-    onNext: (pw) async {
-      password = pw;
-
-      try {
-        debugPrint('[onboarding] before _saveParentBasics');
-        await _saveParentBasics().timeout(const Duration(seconds: 10));
-        debugPrint('[onboarding] after _saveParentBasics');
-
-        next(OnboardingStep.childName);
-      } catch (e, st) {
-        debugPrint('[onboarding] ERROR saving basics: $e');
-        debugPrint('$st');
-
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not save details: $e')),
-        );
-
-        rethrow; // so StepPassword stops the spinner too
-      }
-    },
-  );
-
-      // ───────────────────────── Child flow ─────────────────────────
-
       case OnboardingStep.childName:
         return StepChildName(
-          onBack: children.isEmpty
-              ? () => next(OnboardingStep.password)
-              : () => next(OnboardingStep.anotherChild),
           onNext: (name) {
             currentChild = {"name": name};
             next(OnboardingStep.childDob);
           },
+          onSkip: _skipOnboarding,
         );
 
       case OnboardingStep.childDob:
         return StepChildDob(
-          childName: currentChild["name"] ?? "",
-          onBack: () => next(OnboardingStep.childName),
+          childName: (currentChild["name"] ?? "").toString(),
           onNext: (dob) {
             currentChild["dob"] = dob;
             next(OnboardingStep.childHasAllergies);
@@ -123,11 +64,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
       case OnboardingStep.childHasAllergies:
         return StepChildAllergiesYesNo(
-          childName: currentChild["name"] ?? "",
-          onBack: () => next(OnboardingStep.childDob),
+          childName: (currentChild["name"] ?? "").toString(),
           onYes: () => next(OnboardingStep.childAllergies),
           onNo: () {
-            currentChild["hasAllergies"] = false;
             currentChild["allergies"] = [];
             _commitChild();
             next(OnboardingStep.anotherChild);
@@ -136,10 +75,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
       case OnboardingStep.childAllergies:
         return StepChildAllergies(
-          childName: currentChild["name"] ?? "",
-          onBack: () => next(OnboardingStep.childHasAllergies),
+          childName: (currentChild["name"] ?? "").toString(),
           onConfirm: (list) {
-            currentChild["hasAllergies"] = true;
             currentChild["allergies"] = list;
             _commitChild();
             next(OnboardingStep.anotherChild);
@@ -148,64 +85,67 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
       case OnboardingStep.anotherChild:
         return StepAnotherChild(
-          lastChildName: children.isNotEmpty
-              ? children.last["name"]
-              : currentChild["name"] ?? "",
-          onBack: () => next(OnboardingStep.childName),
+          lastChildName: children.isEmpty ? "" : (children.last["name"] ?? "").toString(),
           onYes: () => next(OnboardingStep.childName),
           onNo: () => next(OnboardingStep.complete),
         );
 
-      // ───────────────────────── Finish ─────────────────────────
-
       case OnboardingStep.complete:
-        return OnboardingCompleteScreen(
-          onFinish: () async {
-            await _finishOnboarding();
-            if (!mounted) return;
-            Navigator.of(context).pushReplacementNamed('/recipes');
-          },
-        );
+  return OnboardingCompleteScreen(
+    childrenNames: children
+        .map((c) => (c['name'] ?? '').toString())
+        .toList(),
+    onFinish: _finishOnboarding,
+  );
     }
   }
-
-  // ───────────────────────── Helpers ─────────────────────────
 
   void _commitChild() {
     children.add({...currentChild});
     currentChild = {};
   }
 
-  Future<void> _saveParentBasics() async {
-  debugPrint('[onboarding] _saveParentBasics start');
-  debugPrint('[onboarding] userRef path = ${widget.userRef.path}');
-
-  await widget.userRef.set(
-    {
-      "parent": {
-        "name": parentName,
-        "email": email,
-      },
-      "updatedAt": FieldValue.serverTimestamp(),
-    },
-    SetOptions(merge: true),
-  );
-
-  debugPrint('[onboarding] _saveParentBasics done');
-}
-
   Future<void> _finishOnboarding() async {
-    await widget.userRef.set(
-      {
-        "onboarded": true,
-        "parent": {
-          "name": parentName,
-          "email": email,
-        },
-        "children": children,
-        "updatedAt": FieldValue.serverTimestamp(),
-      },
-      SetOptions(merge: true),
-    );
+    try {
+      await _userRef
+          .set(
+            {
+              "onboarded": true,
+              "profileComplete": true,
+              "children": children,
+              "updatedAt": FieldValue.serverTimestamp(),
+            },
+            SetOptions(merge: true),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not finish onboarding: $e')),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    Navigator.of(context).pushReplacementNamed('/app');
+  }
+
+  Future<void> _skipOnboarding() async {
+    try {
+      await _userRef
+          .set(
+            {
+              "onboarded": true,
+              "profileComplete": false,
+              "updatedAt": FieldValue.serverTimestamp(),
+            },
+            SetOptions(merge: true),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {}
+
+    if (!mounted) return;
+    Navigator.of(context).pushReplacementNamed('/app');
   }
 }

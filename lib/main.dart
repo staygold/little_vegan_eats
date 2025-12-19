@@ -3,27 +3,27 @@ import 'package:firebase_core/firebase_core.dart';
 
 import 'firebase_options.dart';
 import 'auth/auth_gate.dart';
-import 'recipes/recipe_list_screen.dart'; // <-- add this
+import 'app/app_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  runApp(const LittleVeganEatsApp());
+  runApp(const MyApp());
 }
 
-class LittleVeganEatsApp extends StatelessWidget {
-  const LittleVeganEatsApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Little Vegan Eats',
-      theme: ThemeData(useMaterial3: true),
-      home: const AuthGate(),
+      debugShowCheckedModeBanner: false,
+      initialRoute: '/',
       routes: {
-        '/recipes': (_) => RecipeListScreen(), // <-- remove const
+        '/': (_) => const AuthGate(),
+        '/app': (_) => const AppShell(),
       },
     );
   }

@@ -1,8 +1,10 @@
-import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 
-import '../auth/sign_in_screen.dart';
-import '../onboarding/onboarding_gate.dart';
+import '../home/welcome_screen.dart';
+import '../home/home_screen.dart';
+import '../onboarding/onboarding_flow.dart';
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
@@ -11,18 +13,30 @@ class AuthGate extends StatelessWidget {
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
+      builder: (context, authSnap) {
+        if (authSnap.connectionState == ConnectionState.waiting) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
 
-        final user = snap.data;
-        if (user == null) return const SignInScreen();
+        final user = authSnap.data;
+        if (user == null) return const WelcomeScreen();
 
-        // ✅ IMPORTANT: pass uid
-        return OnboardingGate(uid: user.uid);
+        final userRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
+
+        return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: userRef.snapshots(),
+          builder: (context, userSnap) {
+            if (userSnap.connectionState == ConnectionState.waiting) {
+              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            }
+
+            final data = userSnap.data?.data() ?? {};
+            final onboarded = (data["onboarded"] == true);
+
+            if (!onboarded) return const OnboardingFlow();
+            return const HomeScreen();
+          },
+        );
       },
     );
   }

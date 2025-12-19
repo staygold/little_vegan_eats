@@ -25,7 +25,7 @@ class OnboardingGate extends StatelessWidget {
 
         if (complete) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            Navigator.of(context).pushReplacementNamed('/recipes');
+            Navigator.of(context).pushReplacementNamed('/app');
           });
           return const SizedBox.shrink();
         }

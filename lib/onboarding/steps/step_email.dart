@@ -6,77 +6,71 @@ class StepEmail extends StatefulWidget {
     required this.onNext,
     this.onBack,
     this.initialValue,
+    this.onSkip,
   });
 
   final void Function(String email) onNext;
   final VoidCallback? onBack;
   final String? initialValue;
+  final VoidCallback? onSkip;
 
   @override
   State<StepEmail> createState() => _StepEmailState();
 }
 
 class _StepEmailState extends State<StepEmail> {
-  late final TextEditingController _ctrl;
+  late final TextEditingController _c;
 
   @override
   void initState() {
     super.initState();
-    _ctrl = TextEditingController(text: widget.initialValue ?? '');
-    _ctrl.addListener(() => setState(() {}));
+    _c = TextEditingController(text: widget.initialValue ?? '');
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    _c.dispose();
     super.dispose();
   }
 
-  bool get _valid {
-    final v = _ctrl.text.trim();
-    return v.contains('@') && v.contains('.');
-  }
-
-  void _continue() {
-    final email = _ctrl.text.trim();
-    if (!_valid) return;
-    widget.onNext(email);
+  void _submit() {
+    final v = _c.text.trim();
+    if (v.isEmpty) return;
+    widget.onNext(v);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Your details'),
         leading: widget.onBack == null
             ? null
-            : IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: widget.onBack,
-              ),
+            : IconButton(icon: const Icon(Icons.arrow_back), onPressed: widget.onBack),
+        title: const Text('Your email'),
+        actions: [
+          if (widget.onSkip != null)
+            TextButton(onPressed: widget.onSkip, child: const Text('Skip'))
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('What’s your email?', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600)),
+            const Text('Email', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600)),
             const SizedBox(height: 12),
             TextField(
-              controller: _ctrl,
+              controller: _c,
               keyboardType: TextInputType.emailAddress,
               textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _continue(),
+              onSubmitted: (_) => _submit(),
               decoration: const InputDecoration(
-                labelText: 'Email',
+                labelText: 'Email address',
                 border: OutlineInputBorder(),
               ),
             ),
-            const Spacer(),
-            FilledButton(
-              onPressed: _valid ? _continue : null,
-              child: const Text('Continue'),
-            ),
+            const SizedBox(height: 16),
+            FilledButton(onPressed: _submit, child: const Text('Continue')),
           ],
         ),
       ),
