@@ -6,5 +6,9 @@
 	<true/>
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)[TEAMID].com.example.littleVeganEats</string>
+	</array>
 </dict>
 </plist>

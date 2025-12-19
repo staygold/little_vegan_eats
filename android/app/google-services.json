@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "196454276642",
+    "project_id": "little-vegan-eats-app-e1cd3",
+    "storage_bucket": "little-vegan-eats-app-e1cd3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:196454276642:android:c3038bebdbeef6ad9f747b",
+        "android_client_info": {
+          "package_name": "com.example.little_vegan_eats"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "196454276642-12j73th611kpb643ou1up8edkijf0pq3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCgFCAr8KUEB9X_05m5iSr-n9wZabVbbdM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "196454276642-12j73th611kpb643ou1up8edkijf0pq3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "196454276642-hg8vii5peam0c6dqcge0hud2f5ahg5o8.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.littleVeganEats"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
