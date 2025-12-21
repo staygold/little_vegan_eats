@@ -11,6 +11,8 @@ import 'steps/step_child_allergies.dart';
 import 'steps/step_another_child.dart';
 import 'steps/onboarding_complete_screen.dart';
 
+import '../recipes/allergy_keys.dart';
+
 enum OnboardingStep {
   childName,
   childDob,
@@ -67,7 +69,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           childName: (currentChild["name"] ?? "").toString(),
           onYes: () => next(OnboardingStep.childAllergies),
           onNo: () {
-            currentChild["allergies"] = [];
+            currentChild["hasAllergies"] = false;
+            currentChild["allergies"] = <String>[]; // canonical keys
             _commitChild();
             next(OnboardingStep.anotherChild);
           },
@@ -77,7 +80,18 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         return StepChildAllergies(
           childName: (currentChild["name"] ?? "").toString(),
           onConfirm: (list) {
-            currentChild["allergies"] = list;
+            // StepChildAllergies returns labels like "Peanuts", "Tree nuts", etc.
+            // Convert to canonical keys like "peanut", "tree_nut"
+            final canonical = list
+                .map((a) => AllergyKeys.normalize(a))
+                .whereType<String>()
+                .toSet()
+                .toList()
+              ..sort();
+
+            currentChild["hasAllergies"] = canonical.isNotEmpty;
+            currentChild["allergies"] = canonical;
+
             _commitChild();
             next(OnboardingStep.anotherChild);
           },
@@ -85,22 +99,23 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
       case OnboardingStep.anotherChild:
         return StepAnotherChild(
-          lastChildName: children.isEmpty ? "" : (children.last["name"] ?? "").toString(),
+          lastChildName:
+              children.isEmpty ? "" : (children.last["name"] ?? "").toString(),
           onYes: () => next(OnboardingStep.childName),
           onNo: () => next(OnboardingStep.complete),
         );
 
       case OnboardingStep.complete:
-  return OnboardingCompleteScreen(
-    childrenNames: children
-        .map((c) => (c['name'] ?? '').toString())
-        .toList(),
-    onFinish: _finishOnboarding,
-  );
+        return OnboardingCompleteScreen(
+          childrenNames:
+              children.map((c) => (c['name'] ?? '').toString()).toList(),
+          onFinish: _finishOnboarding,
+        );
     }
   }
 
   void _commitChild() {
+    // IMPORTANT: never put FieldValue.serverTimestamp() inside this map (arrays cannot contain it)
     children.add({...currentChild});
     currentChild = {};
   }
@@ -112,8 +127,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
             {
               "onboarded": true,
               "profileComplete": true,
-              "children": children,
-              "updatedAt": FieldValue.serverTimestamp(),
+              "children": children, // array of maps, no FieldValue inside
+              "updatedAt": FieldValue.serverTimestamp(), // OK here (top-level)
             },
             SetOptions(merge: true),
           )

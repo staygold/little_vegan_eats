@@ -4,13 +4,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'package:little_vegan_eats/recipes/recipe_cache.dart';
 import '../recipes/recipe_detail_screen.dart';
 import '../recipes/allergy_engine.dart';
 import '../utils/text.dart';
 import '../utils/images.dart';
 import '../recipes/recipe_repository.dart';
-
 
 class MealPlanScreen extends StatefulWidget {
   final String? savedWeekId; // if provided, load this saved plan instead of "this week"
@@ -81,58 +79,56 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
       ..addAll(_snapshotFlat());
   }
 
-  /// ------------------------------------------------------------
-// Helpers (FORWARD 7 DAYS)
-// ------------------------------------------------------------
+  // ------------------------------------------------------------
+  // Helpers (FORWARD 7 DAYS)
+  // ------------------------------------------------------------
 
-DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
-List<DateTime> _weekDays(DateTime now) {
-  // If viewing a saved week, start from that savedWeekId date (YYYY-MM-DD)
-  final saved = widget.savedWeekId;
-  if (saved != null && saved.length == 10) {
-    final y = int.tryParse(saved.substring(0, 4));
-    final m = int.tryParse(saved.substring(5, 7));
-    final d = int.tryParse(saved.substring(8, 10));
-    if (y != null && m != null && d != null) {
-      final start = DateTime(y, m, d);
-      return List.generate(7, (i) => start.add(Duration(days: i)));
+  List<DateTime> _weekDays(DateTime now) {
+    // If viewing a saved week, start from that savedWeekId date (YYYY-MM-DD)
+    final saved = widget.savedWeekId;
+    if (saved != null && saved.length == 10) {
+      final y = int.tryParse(saved.substring(0, 4));
+      final m = int.tryParse(saved.substring(5, 7));
+      final d = int.tryParse(saved.substring(8, 10));
+      if (y != null && m != null && d != null) {
+        final start = DateTime(y, m, d);
+        return List.generate(7, (i) => start.add(Duration(days: i)));
+      }
     }
+
+    // Default: week forward (today + next 6)
+    final start = _dateOnly(now);
+    return List.generate(7, (i) => start.add(Duration(days: i)));
   }
 
-  // Default: week forward (today + next 6)
-  final start = _dateOnly(now);
-  return List.generate(7, (i) => start.add(Duration(days: i)));
-}
+  String _dateKey(DateTime d) {
+    final mm = d.month.toString().padLeft(2, '0');
+    final dd = d.day.toString().padLeft(2, '0');
+    return '${d.year}-$mm-$dd';
+  }
 
-String _dateKey(DateTime d) {
-  final mm = d.month.toString().padLeft(2, '0');
-  final dd = d.day.toString().padLeft(2, '0');
-  return '${d.year}-$mm-$dd';
-}
+  String _weekId(DateTime now) {
+    // If viewing saved week, use it
+    if (widget.savedWeekId != null) return widget.savedWeekId!;
+    // Otherwise "this week forward" id = today
+    return _dateKey(_dateOnly(now));
+  }
 
-String _weekId(DateTime now) {
-  // If viewing saved week, use it
-  if (widget.savedWeekId != null) return widget.savedWeekId!;
-  // Otherwise "this week forward" id = today
-  return _dateKey(_dateOnly(now));
-}
+  DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return null;
 
-DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
-  final user = FirebaseAuth.instance.currentUser;
-  if (user == null) return null;
-
-  // Uses your "forward week" id = today's date
-  return FirebaseFirestore.instance
-      .collection('users')
-      .doc(user.uid)
-      .collection('mealPlansWeeks')
-      .doc(_weekId(DateTime.now()));
-}
-
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('mealPlansWeeks')
+        .doc(_weekId(DateTime.now()));
+  }
 
   // ------------------------------------------------------------
-  // Recipe field helpers (same style as your list screen)
+  // Recipe field helpers
   // ------------------------------------------------------------
 
   String _titleOf(Map<String, dynamic> r) =>
@@ -184,13 +180,12 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
 
     if (s == 'soy') return 'soy';
     if (s == 'peanut' || s == 'peanuts') return 'peanut';
-    if (s == 'tree nut' || s == 'tree nuts' || s == 'nuts' || s == 'nut') {
+    if (s == 'tree_nut' || s == 'tree nut' || s == 'tree nuts' || s == 'nuts' || s == 'nut') {
       return 'tree_nut';
     }
     if (s == 'sesame') return 'sesame';
     if (s == 'gluten' || s == 'wheat') return 'gluten';
 
-    // Optional future
     if (s == 'coconut') return 'coconut';
     if (s == 'seed' || s == 'seeds') return 'seed';
 
@@ -221,14 +216,18 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
   String _combinedAllergiesLabel() {
     final set = <String>{};
     for (final c in _children) {
-      set.addAll(c.allergies);
+      // RESPECT TOGGLE:
+      if (c.hasAllergies && c.allergies.isNotEmpty) {
+        set.addAll(c.allergies);
+      }
     }
     final list = set.toList()..sort();
-    return list.map(_prettyAllergy).join(', ');
+    return list.isEmpty ? 'None' : list.map(_prettyAllergy).join(', ');
   }
 
   bool _isRecipeAllowedForChild(Map<String, dynamic> r, ChildProfile c) {
-    if (c.allergies.isEmpty) return true;
+    // If toggle OFF or empty → allow
+    if (!c.hasAllergies || c.allergies.isEmpty) return true;
 
     final res = AllergyEngine.evaluateRecipe(
       ingredientsText: _ingredientsTextOf(r),
@@ -236,14 +235,14 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
       includeSwapRecipes: _includeSwapRecipes,
     );
 
-    return res.status == AllergyStatus.safe ||
-        res.status == AllergyStatus.swapRequired;
+    return res.status == AllergyStatus.safe || res.status == AllergyStatus.swapRequired;
   }
 
   bool _isRecipeAllowed(Map<String, dynamic> r) {
     if (_children.isEmpty) return true;
 
     if (_safeForAllChildren) {
+      // Must pass every child that has allergies enabled
       for (final c in _children) {
         if (!_isRecipeAllowedForChild(r, c)) return false;
       }
@@ -279,6 +278,15 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
     setState(() => _loading = false);
   }
 
+  bool _weekHasInvalidIds() {
+    for (final day in _weekMeals.values) {
+      for (final id in day.values) {
+        if (id != null && _byId(id) == null) return true;
+      }
+    }
+    return false;
+  }
+
   Future<void> _loadChildren() async {
     setState(() {
       _loadingChildren = true;
@@ -298,10 +306,8 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
         return;
       }
 
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
+      final doc =
+          await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
       final data = doc.data() ?? {};
       final raw = data['children'];
 
@@ -314,17 +320,27 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
           final name = (c['name'] ?? '').toString().trim();
           if (name.isEmpty) continue;
 
-          final allergiesRaw = c['allergies'];
-          final allergies = <String>[];
+          final hasAllergies = (c['hasAllergies'] == true);
 
+          final allergiesRaw = c['allergies'];
+          final parsed = <String>[];
           if (allergiesRaw is List) {
             for (final a in allergiesRaw) {
               final key = _canonicalAllergyKey(a.toString());
-              if (key != null) allergies.add(key);
+              if (key != null) parsed.add(key);
             }
           }
 
-          kids.add(ChildProfile(name: name, allergies: allergies));
+          // RESPECT TOGGLE: if OFF -> empty list no matter what's in Firestore
+          final canonical = hasAllergies ? (parsed.toSet().toList()..sort()) : <String>[];
+
+          kids.add(
+            ChildProfile(
+              name: name,
+              hasAllergies: hasAllergies,
+              allergies: canonical,
+            ),
+          );
         }
       }
 
@@ -346,18 +362,18 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
   }
 
   Future<void> _loadRecipesFromCache() async {
-  try {
-    final recipes = await RecipeRepository.ensureRecipesLoaded();
-    if (!mounted) return;
-    setState(() => _recipes = recipes);
-  } catch (e) {
-    if (!mounted) return;
-    setState(() {
-      _recipes = [];
-      _error = 'Could not load recipes: $e';
-    });
+    try {
+      final recipes = await RecipeRepository.ensureRecipesLoaded();
+      if (!mounted) return;
+      setState(() => _recipes = recipes);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _recipes = [];
+        _error = 'Could not load recipes: $e';
+      });
+    }
   }
-}
 
   // ------------------------------------------------------------
   // Weekly load/save
@@ -414,22 +430,28 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
         }
 
         _weekMeals = loaded;
-        _fillMissingMealsInWeek();
 
-        setState(() {});
+        // If ANY recipe ID no longer exists → regenerate week
+        if (_weekHasInvalidIds()) {
+          _weekMeals = _generateNewWeekPlan();
+          await _saveWeekPlan();
+        }
+
+        _fillMissingMealsInWeek();
+        if (mounted) setState(() {});
         _captureOriginalSnapshot();
         return;
       }
 
       // No week plan yet → generate + save baseline
       _weekMeals = _generateNewWeekPlan();
-      setState(() {});
+      if (mounted) setState(() {});
       await _saveWeekPlan(); // baseline save
       _captureOriginalSnapshot();
     } catch (_) {
       // Firestore fails → still generate locally so app works
       _weekMeals = _generateNewWeekPlan();
-      setState(() {});
+      if (mounted) setState(() {});
       _captureOriginalSnapshot();
     }
   }
@@ -482,7 +504,6 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
     }
   }
 
-  // Save a single day (for per-day save buttons)
   Future<void> _saveSingleDay(String dayKey) async {
     if (_saving) return;
 
@@ -505,9 +526,7 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
     try {
       await ref.set({
         'weekId': _weekId(DateTime.now()),
-        'days': {
-          dayKey: dayMeals,
-        },
+        'days': {dayKey: dayMeals},
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
@@ -528,7 +547,7 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
   }
 
   // ------------------------------------------------------------
-  // Plan generation (week)
+  // Plan generation
   // ------------------------------------------------------------
 
   List<Map<String, dynamic>> _allowedPool() {
@@ -580,33 +599,27 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
     final pool = _allowedPool();
     final used = <int>{};
 
-    // Mark already-used IDs
     for (final day in _weekMeals.values) {
       for (final id in day.values) {
         if (id is int) used.add(id);
       }
     }
 
-    _weekMeals.forEach((dayKey, meals) {
+    _weekMeals.forEach((_, meals) {
       meals.forEach((slot, id) {
-        if (id == null) {
-          meals[slot] = _pickRandomId(pool, used);
-        }
+        if (id == null) meals[slot] = _pickRandomId(pool, used);
       });
     });
   }
 
   void _regenerateAllWeek() {
-    setState(() {
-      _weekMeals = _generateNewWeekPlan();
-    });
+    setState(() => _weekMeals = _generateNewWeekPlan());
   }
 
   void _regenSlot(String dayKey, String slotKey) {
     final pool = _allowedPool();
     if (pool.isEmpty) return;
 
-    // Only avoid duplicates within the SAME DAY (MVP-safe)
     final used = <int>{};
     final dayMeals = _weekMeals[dayKey];
     if (dayMeals != null) {
@@ -615,7 +628,6 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
       }
     }
 
-    // Allow replacing this specific slot
     final currentId = _weekMeals[dayKey]?[slotKey];
     if (currentId is int) used.remove(currentId);
 
@@ -649,9 +661,7 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     if (_recipes.isEmpty) {
@@ -670,17 +680,20 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
       );
     }
 
-    final hasAnyAllergies = _children.any((c) => c.allergies.isNotEmpty);
+    final hasAnyAllergies =
+        _children.any((c) => c.hasAllergies && c.allergies.isNotEmpty);
 
     final days = _weekDays(DateTime.now());
     final start = days.first;
     final end = days.last;
 
+    final selectedAllergies = (_selectedChild != null && _selectedChild!.hasAllergies)
+        ? _selectedChild!.allergies
+        : const <String>[];
+
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          "This Week's Meal Plan (${_niceDate(start)}–${_niceDate(end)})",
-        ),
+        title: Text("This Week's Meal Plan (${_niceDate(start)}–${_niceDate(end)})"),
         actions: [
           IconButton(
             tooltip: 'Regenerate week',
@@ -696,11 +709,7 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
           if (_loadingChildren) ...[
             Row(
               children: const [
-                SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
+                SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
                 SizedBox(width: 10),
                 Text('Loading child profiles...'),
               ],
@@ -730,32 +739,25 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
                 Expanded(
                   child: DropdownButton<String>(
                     isExpanded: true,
-                    value: _safeForAllChildren
-                        ? '__all__'
-                        : (_selectedChild?.name ?? '__all__'),
+                    value: _safeForAllChildren ? '__all__' : _selectedChild?.name,
                     items: [
-                      const DropdownMenuItem(
-                        value: '__all__',
-                        child: Text('All children'),
-                      ),
+                      const DropdownMenuItem(value: '__all__', child: Text('All children')),
                       ..._children.map(
-                        (c) => DropdownMenuItem(
-                          value: c.name,
-                          child: Text(c.name),
-                        ),
+                        (c) => DropdownMenuItem(value: c.name, child: Text(c.name)),
                       ),
                     ],
                     onChanged: (v) {
                       if (v == null) return;
+
                       setState(() {
                         _safeForAllChildren = (v == '__all__');
                         _selectedChild = _safeForAllChildren
                             ? (_children.isNotEmpty ? _children.first : null)
                             : _children.firstWhere((c) => c.name == v);
+
                         _includeSwapRecipes = false; // safest reset
                       });
 
-                      // For MVP, regenerate the week so it stays consistent with filters
                       _regenerateAllWeek();
                     },
                   ),
@@ -769,7 +771,9 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
                 hasAnyAllergies
                     ? (_safeForAllChildren
                         ? 'Allergies considered: ${_combinedAllergiesLabel()}'
-                        : 'Allergies: ${(_selectedChild?.allergies ?? []).map(_prettyAllergy).join(', ')}')
+                        : (selectedAllergies.isEmpty
+                            ? 'No allergies saved.'
+                            : 'Allergies: ${selectedAllergies.map(_prettyAllergy).join(', ')}'))
                     : 'No allergies saved.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
@@ -778,9 +782,7 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('Include recipes that need swaps'),
-                subtitle: const Text(
-                  'Shows recipes with a safe replacement suggestion.',
-                ),
+                subtitle: const Text('Shows recipes with a safe replacement suggestion.'),
                 value: _includeSwapRecipes,
                 onChanged: (val) {
                   setState(() => _includeSwapRecipes = val);
@@ -813,9 +815,7 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
             height: 52,
             child: ElevatedButton(
               onPressed: (!_hasChanges || _saving) ? null : _saveChanges,
-              child: Text(
-                _saving ? 'SAVING...' : (_hasChanges ? 'SAVE CHANGES' : 'NO CHANGES'),
-              ),
+              child: Text(_saving ? 'SAVING...' : (_hasChanges ? 'SAVE CHANGES' : 'NO CHANGES')),
             ),
           ),
         ],
@@ -838,49 +838,19 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
             Text(label, style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 10),
 
-            _mealCard(
-              context: context,
-              dayKey: dayKey,
-              slotKey: 'breakfast',
-              title: 'Breakfast',
-              recipeId: meals['breakfast'],
-            ),
+            _mealCard(context: context, dayKey: dayKey, slotKey: 'breakfast', title: 'Breakfast', recipeId: meals['breakfast']),
             const SizedBox(height: 10),
-            _mealCard(
-              context: context,
-              dayKey: dayKey,
-              slotKey: 'lunch',
-              title: 'Lunch',
-              recipeId: meals['lunch'],
-            ),
+            _mealCard(context: context, dayKey: dayKey, slotKey: 'lunch', title: 'Lunch', recipeId: meals['lunch']),
             const SizedBox(height: 10),
-            _mealCard(
-              context: context,
-              dayKey: dayKey,
-              slotKey: 'dinner',
-              title: 'Dinner',
-              recipeId: meals['dinner'],
-            ),
+            _mealCard(context: context, dayKey: dayKey, slotKey: 'dinner', title: 'Dinner', recipeId: meals['dinner']),
 
             const SizedBox(height: 10),
             Text('Snacks', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
 
-            _mealCard(
-              context: context,
-              dayKey: dayKey,
-              slotKey: 'snack1',
-              title: 'Snack 1',
-              recipeId: meals['snack1'],
-            ),
+            _mealCard(context: context, dayKey: dayKey, slotKey: 'snack1', title: 'Snack 1', recipeId: meals['snack1']),
             const SizedBox(height: 10),
-            _mealCard(
-              context: context,
-              dayKey: dayKey,
-              slotKey: 'snack2',
-              title: 'Snack 2',
-              recipeId: meals['snack2'],
-            ),
+            _mealCard(context: context, dayKey: dayKey, slotKey: 'snack2', title: 'Snack 2', recipeId: meals['snack2']),
 
             const SizedBox(height: 12),
             SizedBox(
@@ -910,13 +880,13 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
     final thumb = (r == null) ? null : _thumbOf(r);
     final id = (r == null) ? null : (r['id'] as int?);
 
-    // Tag for allergy safety (display-only)
     String? tag;
     String? swapHint;
 
-    if (r != null &&
-        _children.isNotEmpty &&
-        _children.any((c) => c.allergies.isNotEmpty)) {
+    final anyActiveAllergies =
+        _children.any((c) => c.hasAllergies && c.allergies.isNotEmpty);
+
+    if (r != null && _children.isNotEmpty && anyActiveAllergies) {
       final ingredientsText = _ingredientsTextOf(r);
 
       if (_safeForAllChildren) {
@@ -924,7 +894,7 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
         String? firstSwap;
 
         for (final c in _children) {
-          if (c.allergies.isEmpty) continue;
+          if (!c.hasAllergies || c.allergies.isEmpty) continue;
 
           final res = AllergyEngine.evaluateRecipe(
             ingredientsText: ingredientsText,
@@ -934,18 +904,15 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
 
           if (res.status == AllergyStatus.swapRequired) {
             anySwap = true;
-            firstSwap ??=
-                (res.swapNotes.isNotEmpty ? res.swapNotes.first : null);
+            firstSwap ??= (res.swapNotes.isNotEmpty ? res.swapNotes.first : null);
           }
         }
 
-        tag = anySwap
-            ? '⚠️ Swap required (one or more children)'
-            : '✅ Safe for all children';
+        tag = anySwap ? '⚠️ Swap required (one or more children)' : '✅ Safe for all children';
         swapHint = firstSwap;
       } else {
         final c = _selectedChild;
-        if (c != null && c.allergies.isNotEmpty) {
+        if (c != null && c.hasAllergies && c.allergies.isNotEmpty) {
           final res = AllergyEngine.evaluateRecipe(
             ingredientsText: ingredientsText,
             childAllergies: c.allergies,
@@ -979,17 +946,13 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
                     gaplessPlayback: true,
                     errorBuilder: (context, error, stackTrace) {
                       final fallbackUrl = fallbackFromJetpack(thumb);
-
-                      if (fallbackUrl == thumb) {
-                        return const Icon(Icons.restaurant_menu);
-                      }
+                      if (fallbackUrl == thumb) return const Icon(Icons.restaurant_menu);
 
                       return Image.network(
                         fallbackUrl,
                         fit: BoxFit.cover,
                         gaplessPlayback: true,
-                        errorBuilder: (_, __, ___) =>
-                            const Icon(Icons.restaurant_menu),
+                        errorBuilder: (_, __, ___) => const Icon(Icons.restaurant_menu),
                       );
                     },
                   ),
@@ -1003,14 +966,10 @@ DocumentReference<Map<String, dynamic>>? _weekPlanRef() {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (tag != null)
-                      Text(tag, style: Theme.of(context).textTheme.bodySmall),
+                    if (tag != null) Text(tag!, style: Theme.of(context).textTheme.bodySmall),
                     if (swapHint != null) ...[
                       const SizedBox(height: 2),
-                      Text(
-                        swapHint!,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
+                      Text(swapHint!, style: Theme.of(context).textTheme.bodySmall),
                     ],
                   ],
                 ),

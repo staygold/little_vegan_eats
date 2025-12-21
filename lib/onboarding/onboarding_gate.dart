@@ -1,6 +1,5 @@
-// onboarding/onboarding_gate.dart
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 
 import 'onboarding_flow.dart';
 
@@ -12,25 +11,29 @@ class OnboardingGate extends StatelessWidget {
   Widget build(BuildContext context) {
     final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
 
-    return FutureBuilder<DocumentSnapshot>(
+    return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       future: userRef.get(),
       builder: (context, snap) {
-        if (!snap.hasData) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
 
-        final data = snap.data!.data() as Map<String, dynamic>?;
+        final data = snap.data?.data();
 
-        final complete = (data?['onboardingComplete'] == true);
+        // You are writing: "onboarded" and "profileComplete"
+        final onboarded = data?['onboarded'] == true;
 
-        if (complete) {
+        if (onboarded) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             Navigator.of(context).pushReplacementNamed('/app');
           });
           return const SizedBox.shrink();
         }
 
-        return OnboardingFlow(userRef: userRef);
+        // IMPORTANT: OnboardingFlow does NOT accept userRef in your code.
+        return const OnboardingFlow();
       },
     );
   }

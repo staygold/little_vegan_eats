@@ -5,6 +5,8 @@ import '../recipes/recipe_list_screen.dart';
 import '../meal_plan/meal_plan_screen.dart';
 import '../meal_plan/saved_meal_plans_screen.dart';
 
+import 'top_header_bar.dart';
+
 class AppShell extends StatefulWidget {
   final int initialIndex;
 
@@ -34,9 +36,16 @@ class _AppShellState extends State<AppShell> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: IndexedStack(
-          index: _index,
-          children: _pages,
+        child: Column(
+          children: [
+            const TopHeaderBar(),
+            Expanded(
+              child: IndexedStack(
+                index: _index,
+                children: _pages,
+              ),
+            ),
+          ],
         ),
       ),
       bottomNavigationBar: BottomNavigationBar(

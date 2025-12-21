@@ -7,6 +7,9 @@ import 'auth/auth_gate.dart';
 import 'app/app_shell.dart';
 import 'meal_plan/meal_plan_screen.dart'; // ✅ IMPORTANT
 
+import 'recipes/recipes_bootstrap_gate.dart';
+
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -37,7 +40,7 @@ class MyApp extends StatelessWidget {
         '/app': (_) => const AppShell(),
 
         // Meal plan (weekly)
-        '/meal-plan': (_) => MealPlanScreen(),
+        '/meal-plan': (_) => RecipesBootstrapGate(child: MealPlanScreen()),
       },
     );
   }

@@ -1,8 +1,13 @@
 class ChildProfile {
   final String name;
+  final bool hasAllergies;
   final List<String> allergies; // canonical keys like ["soy", "peanut"]
 
-  const ChildProfile({required this.name, required this.allergies});
+  const ChildProfile({
+    required this.name,
+    required this.hasAllergies,
+    required this.allergies,
+  });
 
   @override
   String toString() => name;
@@ -13,10 +18,12 @@ class ChildProfile {
       other is ChildProfile &&
           runtimeType == other.runtimeType &&
           name == other.name &&
+          hasAllergies == other.hasAllergies &&
           _listEquals(allergies, other.allergies);
 
   @override
-  int get hashCode => name.hashCode ^ allergies.join('|').hashCode;
+  int get hashCode =>
+      name.hashCode ^ hasAllergies.hashCode ^ allergies.join('|').hashCode;
 
   static bool _listEquals(List<String> a, List<String> b) {
     if (a.length != b.length) return false;
@@ -26,6 +33,7 @@ class ChildProfile {
     return true;
   }
 }
+
 
 enum AllergyStatus {
   safe,

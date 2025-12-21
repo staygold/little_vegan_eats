@@ -6,6 +6,9 @@ import '../home/welcome_screen.dart';
 import '../onboarding/onboarding_flow.dart';
 import '../app/app_shell.dart';
 
+import '../recipes/recipes_bootstrap_gate.dart';
+
+
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
@@ -41,7 +44,9 @@ class AuthGate extends StatelessWidget {
             if (!onboarded) return const OnboardingFlow();
 
             // ✅ IMPORTANT: always land in AppShell once onboarded
-            return const AppShell(initialIndex: 0);
+            return RecipesBootstrapGate(
+  child: const AppShell(initialIndex: 0),
+);
           },
         );
       },
