@@ -3,26 +3,15 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'meal_plan_screen.dart';
+import 'meal_plan_keys.dart';
 
 class PreviousMealPlansScreen extends StatelessWidget {
   const PreviousMealPlansScreen({super.key});
-
-  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
-
-  String _dateKey(DateTime d) {
-    final dd = d.day.toString().padLeft(2, '0');
-    final mm = d.month.toString().padLeft(2, '0');
-    return '${d.year}-$mm-$dd';
-  }
-
-  String _todayKey() => _dateKey(_dateOnly(DateTime.now()));
 
   Query<Map<String, dynamic>>? _query() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return null;
 
-    // If you later add a field like "createdAt" / "weekStart", orderBy that instead.
-    // For now we’ll just list docs as-is (Firestore can’t order by docId without a field).
     return FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -33,10 +22,12 @@ class PreviousMealPlansScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final q = _query();
     if (q == null) {
-      return const Scaffold(body: Center(child: Text('Log in to view previous meal plans')));
+      return const Scaffold(
+        body: Center(child: Text('Log in to view previous meal plans')),
+      );
     }
 
-    final currentWeekId = _todayKey();
+    final currentWeekId = MealPlanKeys.currentWeekId();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Previous meal plans')),
@@ -55,7 +46,7 @@ class PreviousMealPlansScreen extends StatelessWidget {
 
           final docs = snap.data?.docs ?? [];
 
-          // treat doc.id as weekId (matches your existing pattern)
+          // Exclude the current forward-anchored week
           final previous = docs.where((d) => d.id != currentWeekId).toList();
 
           if (previous.isEmpty) {
@@ -65,7 +56,7 @@ class PreviousMealPlansScreen extends StatelessWidget {
             );
           }
 
-          // Simple sort by doc id string (works with YYYY-MM-DD)
+          // Sort newest → oldest (YYYY-MM-DD string sort works)
           previous.sort((a, b) => b.id.compareTo(a.id));
 
           return ListView.builder(
@@ -77,7 +68,10 @@ class PreviousMealPlansScreen extends StatelessWidget {
               return Card(
                 margin: const EdgeInsets.only(bottom: 12),
                 child: ListTile(
-                  title: Text(weekId, style: const TextStyle(fontWeight: FontWeight.w700)),
+                  title: Text(
+                    weekId,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
                   subtitle: const Text('Tap to view'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {

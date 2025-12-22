@@ -5,13 +5,16 @@ import 'package:flutter/material.dart';
 import '../recipes/recipe_detail_screen.dart';
 import '../recipes/recipe_repository.dart';
 
+import 'core/allergy_profile.dart';
+import 'core/meal_plan_controller.dart';
+import 'core/meal_plan_keys.dart';
+import 'core/meal_plan_repository.dart';
+import 'core/meal_plan_slots.dart';
+
 enum MealPlanViewMode { today, week }
 
 class MealPlanScreen extends StatefulWidget {
-  /// If provided, we load that specific saved week docId.
   final String? weekId;
-
-  /// If provided (YYYY-MM-DD), we show only that day in Today mode.
   final String? focusDayKey;
 
   const MealPlanScreen({
@@ -27,43 +30,73 @@ class MealPlanScreen extends StatefulWidget {
 class _MealPlanScreenState extends State<MealPlanScreen> {
   late MealPlanViewMode _mode;
 
-  // Loaded recipes (for title + thumb + detail nav)
   List<Map<String, dynamic>> _recipes = [];
   bool _recipesLoading = true;
 
-  /// Draft edits, stored per dayKey -> slot -> recipeId
-  final Map<String, Map<String, int>> _draft = {};
-
-  /// Slots (match your existing system)
-  static const List<String> _slotOrder = [
-    'breakfast',
-    'snack1',
-    'lunch',
-    'snack2',
-    'dinner',
-  ];
+  late final MealPlanController _ctrl;
 
   @override
   void initState() {
     super.initState();
 
-    // Saved week -> week mode
-    if (widget.weekId != null && widget.weekId!.trim().isNotEmpty) {
-      _mode = MealPlanViewMode.week;
-    }
-    // Focus day -> today mode
-    else if (widget.focusDayKey != null && widget.focusDayKey!.trim().isNotEmpty) {
+    // Mode
+    if (widget.focusDayKey != null && widget.focusDayKey!.trim().isNotEmpty) {
       _mode = MealPlanViewMode.today;
     } else {
       _mode = MealPlanViewMode.week;
     }
 
-    _loadRecipes();
+    // Week
+    final resolvedWeekId =
+        (widget.weekId != null && widget.weekId!.trim().isNotEmpty)
+            ? widget.weekId!.trim()
+            : MealPlanKeys.currentWeekId();
+
+    _ctrl = MealPlanController(
+      auth: FirebaseAuth.instance,
+      repo: MealPlanRepository(FirebaseFirestore.instance),
+      initialWeekId: resolvedWeekId,
+    );
+
+    _ctrl.start();
+    _ctrl.ensureWeek();
+
+    // IMPORTANT: run in sequence so populate sees correct allergy sets
+    () async {
+      await _loadAllergies();
+      await _loadRecipes();
+    }();
   }
 
-  // ---------------------------
-  // Recipes
-  // ---------------------------
+  @override
+  void dispose() {
+    _ctrl.stop();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadAllergies() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      final sets = AllergyProfile.buildFromUserDoc(snap.data());
+
+      _ctrl.setAllergySets(
+        excludedAllergens: sets.excludedAllergens,
+        childAllergens: sets.childAllergens,
+      );
+    } catch (_) {
+      // fail open
+      _ctrl.setAllergySets(excludedAllergens: {}, childAllergens: {});
+    }
+  }
+
   Future<void> _loadRecipes() async {
     try {
       _recipes = await RecipeRepository.ensureRecipesLoaded();
@@ -72,12 +105,27 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     } finally {
       if (mounted) setState(() => _recipesLoading = false);
     }
+
+    if (_recipes.isNotEmpty && FirebaseAuth.instance.currentUser != null) {
+      await _ctrl.ensurePlanPopulated(recipes: _recipes);
+    }
+  }
+
+  // ---------- helpers ----------
+
+  int? _recipeIdFrom(Map<String, dynamic> r) {
+    final raw = r['id'];
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw.trim());
+    return int.tryParse(raw?.toString() ?? '');
   }
 
   Map<String, dynamic>? _byId(int? id) {
     if (id == null) return null;
     for (final r in _recipes) {
-      if (r['id'] == id) return r;
+      final rid = _recipeIdFrom(r);
+      if (rid == id) return r;
     }
     return null;
   }
@@ -100,39 +148,42 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     return null;
   }
 
-  // ---------------------------
-  // Date helpers
-  // ---------------------------
-  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
-
-  String _dayKey(DateTime d) {
-    final y = d.year.toString().padLeft(4, '0');
-    final m = d.month.toString().padLeft(2, '0');
-    final day = d.day.toString().padLeft(2, '0');
-    return '$y-$m-$day';
+  List<int> _availableSafeRecipeIds() {
+    final ids = <int>[];
+    for (final r in _recipes) {
+      if (!_ctrl.recipeAllowed(r)) continue;
+      final rid = _recipeIdFrom(r);
+      if (rid != null) ids.add(rid);
+    }
+    return ids;
   }
 
-  String _todayKey() => _dayKey(_dateOnly(DateTime.now()));
-
-  /// IMPORTANT: matches your HomeScreen behaviour (doc id == today's date key)
-  String _defaultWeekId() => _todayKey();
-
   String formatDayKeyPretty(String dayKey) {
-    final parts = dayKey.split('-');
-    if (parts.length != 3) return dayKey;
-
-    final y = int.tryParse(parts[0]);
-    final m = int.tryParse(parts[1]);
-    final d = int.tryParse(parts[2]);
-    if (y == null || m == null || d == null) return dayKey;
-
-    final dt = DateTime(y, m, d);
+    final dt = MealPlanKeys.parseDayKey(dayKey);
+    if (dt == null) return dayKey;
 
     const weekdays = [
-      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday'
     ];
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
     ];
 
     final weekday = weekdays[dt.weekday - 1];
@@ -141,7 +192,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   }
 
   String _weekdayLetter(DateTime dt) {
-    // S M T W T F S
     switch (dt.weekday) {
       case DateTime.monday:
         return 'M';
@@ -162,162 +212,69 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     }
   }
 
-  DateTime? _parseDayKey(String dayKey) {
-    final parts = dayKey.split('-');
-    if (parts.length != 3) return null;
-    final y = int.tryParse(parts[0]);
-    final m = int.tryParse(parts[1]);
-    final d = int.tryParse(parts[2]);
-    if (y == null || m == null || d == null) return null;
-    return DateTime(y, m, d);
-  }
-
-  // ---------------------------
-  // Firestore
-  // ---------------------------
-  DocumentReference<Map<String, dynamic>>? _weekDoc(String weekId) {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return null;
-
-    // IMPORTANT: matches HomeScreen
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('mealPlansWeeks')
-        .doc(weekId);
-  }
-
-  // weekData['days'][dayKey] => map(slot -> recipeId)
-  Map<String, dynamic>? _dayMapFromWeek(Map<String, dynamic> weekData, String dayKey) {
-    final days = weekData['days'];
-    if (days is Map) {
-      final raw = days[dayKey];
-      if (raw is Map) return Map<String, dynamic>.from(raw);
-    }
-    return null;
-  }
-
-  int? _firestoreSlotId(Map<String, dynamic> weekData, String dayKey, String slot) {
-    final day = _dayMapFromWeek(weekData, dayKey);
-    if (day == null) return null;
-    final v = day[slot];
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    return null;
-  }
-
-  int? _draftValue(String dayKey, String slot) => _draft[dayKey]?[slot];
-
-  void _setDraft(String dayKey, String slot, int recipeId) {
-    final dayDraft = _draft.putIfAbsent(dayKey, () => {});
-    dayDraft[slot] = recipeId;
-    setState(() {});
-  }
-
-  bool _dayHasDraftChanges(Map<String, dynamic> weekData, String dayKey) {
-    final d = _draft[dayKey];
-    if (d == null || d.isEmpty) return false;
-
-    for (final entry in d.entries) {
-      final slot = entry.key;
-      final draftId = entry.value;
-      final currentId = _firestoreSlotId(weekData, dayKey, slot);
-      if (currentId != draftId) return true;
-    }
-    return false;
-  }
-
-  Future<void> _saveDay({
-    required DocumentReference<Map<String, dynamic>> docRef,
-    required Map<String, dynamic> weekData,
-    required String dayKey,
-  }) async {
-    final dayDraft = _draft[dayKey];
-    if (dayDraft == null || dayDraft.isEmpty) return;
-
-    // Build updated day map (merge existing + draft)
-    final existing = _dayMapFromWeek(weekData, dayKey) ?? {};
-    final updated = <String, dynamic>{...existing};
-
-    for (final e in dayDraft.entries) {
-      updated[e.key] = e.value;
-    }
-
-    // Write only that day: days.{dayKey} = updated
-    await docRef.set({
-      'days': {dayKey: updated},
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
-    // Clear draft for that day
-    _draft.remove(dayKey);
-
-    if (mounted) {
-      setState(() {});
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Saved ${formatDayKeyPretty(dayKey)}')),
-      );
-    }
-  }
-
-  // ---------------------------
-  // Auto-change (↻)
-  // ---------------------------
-  int? _autoPickDifferentId({required int? currentId}) {
-    if (_recipes.isEmpty) return null;
-
-    final ids = <int>[];
-    for (final r in _recipes) {
-      final id = r['id'];
-      if (id is int) ids.add(id);
-    }
-    if (ids.isEmpty) return null;
-    if (ids.length == 1) return ids.first;
-
-    final idx = currentId == null ? -1 : ids.indexOf(currentId);
-    final start = idx < 0 ? 0 : (idx + 1) % ids.length;
-
-    for (int step = 0; step < ids.length; step++) {
-      final candidate = ids[(start + step) % ids.length];
-      if (candidate != currentId) return candidate;
-    }
-
-    return null;
-  }
-
-  Future<void> _autoChangeSlot({
-    required Map<String, dynamic> weekData,
+  Future<void> _chooseRecipe({
     required String dayKey,
     required String slot,
   }) async {
-    final currentEffective =
-        _draftValue(dayKey, slot) ?? _firestoreSlotId(weekData, dayKey, slot);
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _ChooseRecipeSheet(
+        recipes: _recipes,
+        titleOf: _titleOf,
+        thumbOf: _thumbOf,
+        isAllowed: _ctrl.recipeAllowed,
+        idOf: _recipeIdFrom,
+      ),
+    );
 
-    final nextId = _autoPickDifferentId(currentId: currentEffective);
-    if (nextId == null) return;
-
-    _setDraft(dayKey, slot, nextId);
-  }
-
-  // ---------------------------
-  // Week day keys for tabs
-  // ---------------------------
-  List<String> _weekDayKeys(Map<String, dynamic> weekData, String resolvedWeekId) {
-    // Prefer whatever is in Firestore
-    final days = weekData['days'];
-    if (days is Map) {
-      final keys = days.keys.map((k) => k.toString()).toList()..sort();
-      if (keys.isNotEmpty) return keys.take(7).toList();
+    if (picked != null) {
+      _ctrl.setDraftRecipe(dayKey, slot, picked, source: 'manual');
     }
-
-    // Fallback: generate 7 days from resolvedWeekId (doc id is todayKey)
-    final start = _parseDayKey(resolvedWeekId) ?? _dateOnly(DateTime.now());
-    return List.generate(7, (i) => _dayKey(start.add(Duration(days: i))));
   }
 
-  // ---------------------------
-  // UI
-  // ---------------------------
+  Future<void> _addOrEditNote({
+    required String dayKey,
+    required String slot,
+    String? initial,
+  }) async {
+    final textCtrl = TextEditingController(text: initial ?? '');
+
+    final result = await showDialog<_NoteResult>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Add note'),
+        content: TextField(
+          controller: textCtrl,
+          autofocus: true,
+          maxLines: 3,
+          decoration: const InputDecoration(
+            hintText: "e.g. Out for dinner / Visiting family",
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).pop(const _NoteResult.cancel()),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_NoteResult.save(textCtrl.text)),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+
+    if (result == null || result.kind == _NoteResultKind.cancel) return;
+
+    final text = (result.text ?? '').trim();
+    if (text.isEmpty) return;
+
+    _ctrl.setDraftNote(dayKey, slot, text);
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -328,30 +285,21 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     }
 
     if (_recipesLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+
+    final focusDayKey =
+        (widget.focusDayKey != null && widget.focusDayKey!.trim().isNotEmpty)
+            ? widget.focusDayKey!.trim()
+            : MealPlanKeys.todayKey();
 
     final now = DateTime.now();
-    final resolvedWeekId = (widget.weekId != null && widget.weekId!.trim().isNotEmpty)
-        ? widget.weekId!.trim()
-        : _defaultWeekId();
-
-    final docRef = _weekDoc(resolvedWeekId);
-    if (docRef == null) {
-      return const Scaffold(
-        body: Center(child: Text('Could not load meal plans')),
-      );
-    }
-
-    final focusDayKey = (widget.focusDayKey != null && widget.focusDayKey!.trim().isNotEmpty)
-        ? widget.focusDayKey!.trim()
-        : _todayKey();
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_mode == MealPlanViewMode.today ? "Today's meal plan" : "This week's meal plan"),
+        title: Text(_mode == MealPlanViewMode.today
+            ? "Today's meal plan"
+            : "Next 7 days"),
         actions: [
           IconButton(
             tooltip: 'Today',
@@ -359,53 +307,72 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
             onPressed: () => setState(() => _mode = MealPlanViewMode.today),
           ),
           IconButton(
-            tooltip: 'This week',
+            tooltip: 'Next 7 days',
             icon: const Icon(Icons.calendar_month),
             onPressed: () => setState(() => _mode = MealPlanViewMode.week),
           ),
         ],
       ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: docRef.snapshots(),
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
+      body: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (context, _) {
+          final data = _ctrl.weekData;
+          if (data == null) {
             return const Center(child: CircularProgressIndicator());
           }
-          if (snap.hasError) {
-            return Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text('Firestore error: ${snap.error}'),
-            );
-          }
 
-          final weekData = snap.data?.data();
-          if (weekData == null) {
-            return const Center(child: Text('No meal plan found for this week yet.'));
-          }
-
-          if (_mode == MealPlanViewMode.today) {
+          Widget buildDay(String dayKey, {VoidCallback? onViewWeek}) {
             return _DayView(
-              title: "Today",
-              prettyDate: formatDayKeyPretty(focusDayKey),
-              dayKey: focusDayKey,
-              weekData: weekData,
-              resolvedWeekId: resolvedWeekId,
-              docRef: docRef,
-              recipes: _recipes,
-              slotOrder: _slotOrder,
+              prettyDate: formatDayKeyPretty(dayKey),
+              dayKey: dayKey,
+              slotOrder: MealPlanSlots.order,
+              effectiveEntryFor: (dk, slot) => _ctrl.effectiveEntry(dk, slot),
+              isRecipe: _ctrl.entryIsRecipe,
+              recipeIdOf: _ctrl.entryRecipeId,
+              noteTextOf: _ctrl.entryNoteText,
               byId: _byId,
               titleOf: _titleOf,
               thumbOf: _thumbOf,
-              effectiveIdFor: (dayKey, slot) =>
-                  _draftValue(dayKey, slot) ?? _firestoreSlotId(weekData, dayKey, slot),
-              onChange: (slot) => _autoChangeSlot(weekData: weekData, dayKey: focusDayKey, slot: slot),
-              canSave: _dayHasDraftChanges(weekData, focusDayKey),
-              onSave: () => _saveDay(docRef: docRef, weekData: weekData, dayKey: focusDayKey),
+              onInspire: (slot) {
+                final ids = _availableSafeRecipeIds();
+                final currentEntry = _ctrl.effectiveEntry(dayKey, slot);
+                final currentId = _ctrl.entryRecipeId(currentEntry);
+                final next = _ctrl.pickDifferentId(
+                  availableIds: ids,
+                  currentId: currentId,
+                );
+                if (next != null) {
+                  _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
+                }
+              },
+              onChoose: (slot) => _chooseRecipe(dayKey: dayKey, slot: slot),
+              onNote: (slot) {
+                final current = _ctrl.effectiveEntry(dayKey, slot);
+                final initial = _ctrl.entryNoteText(current);
+                _addOrEditNote(dayKey: dayKey, slot: slot, initial: initial);
+              },
+              canSave: _ctrl.hasDraftChanges(dayKey),
+              onSave: () async {
+  await _ctrl.saveDay(dayKey);
+
+  if (!mounted) return; // ✅ State-mounted, not builder context
+
+  ScaffoldMessenger.of(this.context).showSnackBar(
+    SnackBar(content: Text('Saved ${formatDayKeyPretty(dayKey)}')),
+  );
+},
+              onViewWeek: onViewWeek,
+            );
+          }
+
+          if (_mode == MealPlanViewMode.today) {
+            return buildDay(
+              focusDayKey,
               onViewWeek: () => setState(() => _mode = MealPlanViewMode.week),
             );
           }
 
-          final dayKeys = _weekDayKeys(weekData, resolvedWeekId);
+          final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
           final initialIndex = () {
             final idx = dayKeys.indexOf(focusDayKey);
             return idx >= 0 ? idx : 0;
@@ -422,35 +389,14 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                     isScrollable: false,
                     tabs: [
                       for (final k in dayKeys)
-                        Tab(
-                          text: _weekdayLetter(_parseDayKey(k) ?? now),
-                        ),
+                        Tab(text: _weekdayLetter(MealPlanKeys.parseDayKey(k) ?? now)),
                     ],
                   ),
                 ),
                 Expanded(
                   child: TabBarView(
                     children: [
-                      for (final dayKey in dayKeys)
-                        _DayView(
-                          title: "Day",
-                          prettyDate: formatDayKeyPretty(dayKey),
-                          dayKey: dayKey,
-                          weekData: weekData,
-                          resolvedWeekId: resolvedWeekId,
-                          docRef: docRef,
-                          recipes: _recipes,
-                          slotOrder: _slotOrder,
-                          byId: _byId,
-                          titleOf: _titleOf,
-                          thumbOf: _thumbOf,
-                          effectiveIdFor: (dk, slot) =>
-                              _draftValue(dk, slot) ?? _firestoreSlotId(weekData, dk, slot),
-                          onChange: (slot) => _autoChangeSlot(weekData: weekData, dayKey: dayKey, slot: slot),
-                          canSave: _dayHasDraftChanges(weekData, dayKey),
-                          onSave: () => _saveDay(docRef: docRef, weekData: weekData, dayKey: dayKey),
-                          onViewWeek: null,
-                        ),
+                      for (final dayKey in dayKeys) buildDay(dayKey),
                     ],
                   ),
                 ),
@@ -464,46 +410,47 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 }
 
 // ----------------------------------------------------
-// Day view (used for Today + each Week tab)
+// Day view
 // ----------------------------------------------------
 class _DayView extends StatelessWidget {
-  final String title;
   final String prettyDate;
   final String dayKey;
 
-  final Map<String, dynamic> weekData;
-  final String resolvedWeekId;
-  final DocumentReference<Map<String, dynamic>> docRef;
-
-  final List<Map<String, dynamic>> recipes;
   final List<String> slotOrder;
+
+  final Map<String, dynamic>? Function(String dayKey, String slot)
+      effectiveEntryFor;
+  final bool Function(Map<String, dynamic>? e) isRecipe;
+  final int? Function(Map<String, dynamic>? e) recipeIdOf;
+  final String? Function(Map<String, dynamic>? e) noteTextOf;
 
   final Map<String, dynamic>? Function(int? id) byId;
   final String Function(Map<String, dynamic> r) titleOf;
   final String? Function(Map<String, dynamic> r) thumbOf;
 
-  final int? Function(String dayKey, String slot) effectiveIdFor;
+  final void Function(String slot) onInspire;
+  final void Function(String slot) onChoose;
+  final void Function(String slot) onNote;
 
-  final void Function(String slot) onChange;
   final bool canSave;
   final Future<void> Function() onSave;
 
   final VoidCallback? onViewWeek;
 
   const _DayView({
-    required this.title,
     required this.prettyDate,
     required this.dayKey,
-    required this.weekData,
-    required this.resolvedWeekId,
-    required this.docRef,
-    required this.recipes,
     required this.slotOrder,
+    required this.effectiveEntryFor,
+    required this.isRecipe,
+    required this.recipeIdOf,
+    required this.noteTextOf,
     required this.byId,
     required this.titleOf,
     required this.thumbOf,
-    required this.effectiveIdFor,
-    required this.onChange,
+    required this.onInspire,
+    required this.onChoose,
+    required this.onNote,
     required this.canSave,
     required this.onSave,
     required this.onViewWeek,
@@ -516,16 +463,15 @@ class _DayView extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text(
-          prettyDate,
-          style: Theme.of(context).textTheme.headlineSmall,
-        ),
+        Text(prettyDate, style: Theme.of(context).textTheme.headlineSmall),
         const SizedBox(height: 12),
-
         for (final slot in slotOrder) ...[
           _MealSlotCard(
             slotLabel: _slotLabel(slot),
-            recipeId: effectiveIdFor(dayKey, slot),
+            entry: effectiveEntryFor(dayKey, slot),
+            isRecipe: isRecipe,
+            recipeIdOf: recipeIdOf,
+            noteTextOf: noteTextOf,
             byId: byId,
             titleOf: titleOf,
             thumbOf: thumbOf,
@@ -535,13 +481,13 @@ class _DayView extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: id)),
               );
             },
-            onChange: () => onChange(slot),
+            onInspire: () => onInspire(slot),
+            onChoose: () => onChoose(slot),
+            onNote: () => onNote(slot),
           ),
           const SizedBox(height: 12),
         ],
-
         const SizedBox(height: 8),
-
         SizedBox(
           height: 52,
           child: ElevatedButton(
@@ -549,14 +495,13 @@ class _DayView extends StatelessWidget {
             child: const Text('SAVE DAY'),
           ),
         ),
-
         if (onViewWeek != null) ...[
           const SizedBox(height: 12),
           SizedBox(
             height: 52,
             child: OutlinedButton(
               onPressed: onViewWeek,
-              child: const Text('VIEW FULL WEEK'),
+              child: const Text('VIEW NEXT 7 DAYS'),
             ),
           ),
         ],
@@ -567,28 +512,74 @@ class _DayView extends StatelessWidget {
 
 class _MealSlotCard extends StatelessWidget {
   final String slotLabel;
-  final int? recipeId;
+  final Map<String, dynamic>? entry;
+
+  final bool Function(Map<String, dynamic>? e) isRecipe;
+  final int? Function(Map<String, dynamic>? e) recipeIdOf;
+  final String? Function(Map<String, dynamic>? e) noteTextOf;
 
   final Map<String, dynamic>? Function(int? id) byId;
   final String Function(Map<String, dynamic> r) titleOf;
   final String? Function(Map<String, dynamic> r) thumbOf;
 
   final void Function(int? id) onTapRecipe;
-  final VoidCallback onChange;
+
+  final VoidCallback onInspire;
+  final VoidCallback onChoose;
+  final VoidCallback onNote;
 
   const _MealSlotCard({
     required this.slotLabel,
-    required this.recipeId,
+    required this.entry,
+    required this.isRecipe,
+    required this.recipeIdOf,
+    required this.noteTextOf,
     required this.byId,
     required this.titleOf,
     required this.thumbOf,
     required this.onTapRecipe,
-    required this.onChange,
+    required this.onInspire,
+    required this.onChoose,
+    required this.onNote,
   });
 
   @override
   Widget build(BuildContext context) {
-    final r = byId(recipeId);
+    final e = entry;
+
+    // Note entry
+    final noteText = noteTextOf(e);
+    if (noteText != null && noteText.trim().isNotEmpty && !isRecipe(e)) {
+      return Card(
+        child: ListTile(
+          leading: const Icon(Icons.sticky_note_2_outlined),
+          title: Text(noteText,
+              style: const TextStyle(fontWeight: FontWeight.w600)),
+          subtitle: Text(slotLabel),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'Clear note (add a recipe)',
+                icon: const Icon(Icons.close),
+                onPressed: onInspire,
+              ),
+              IconButton(
+                tooltip: 'Edit note',
+                icon: const Icon(Icons.edit_note),
+                onPressed: onNote,
+              ),
+            ],
+          ),
+          onTap: onNote,
+        ),
+      );
+    }
+
+    // Recipe entry (or unset)
+    final rid = recipeIdOf(e);
+    final r = byId(rid);
+
     final title = r == null ? 'Not set' : titleOf(r);
     final thumb = r == null ? null : thumbOf(r);
 
@@ -597,12 +588,27 @@ class _MealSlotCard extends StatelessWidget {
         leading: _Thumb(url: thumb),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Text(slotLabel),
-        trailing: IconButton(
-          icon: const Icon(Icons.refresh),
-          tooltip: 'Change',
-          onPressed: onChange,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Inspire',
+              onPressed: onInspire,
+            ),
+            IconButton(
+              icon: const Icon(Icons.search),
+              tooltip: 'Choose recipe',
+              onPressed: onChoose,
+            ),
+            IconButton(
+              icon: const Icon(Icons.edit_note),
+              tooltip: 'Add note',
+              onPressed: onNote,
+            ),
+          ],
         ),
-        onTap: () => onTapRecipe(recipeId),
+        onTap: () => onTapRecipe(rid),
       ),
     );
   }
@@ -647,4 +653,132 @@ class _Thumb extends StatelessWidget {
       ),
     );
   }
+}
+
+// ----------------------------------------------------
+// Choose Recipe Sheet
+// ----------------------------------------------------
+class _ChooseRecipeSheet extends StatefulWidget {
+  final List<Map<String, dynamic>> recipes;
+  final String Function(Map<String, dynamic>) titleOf;
+  final String? Function(Map<String, dynamic>) thumbOf;
+  final int? Function(Map<String, dynamic>) idOf;
+
+  /// If provided, we disable recipes that fail profile exclusions.
+  final bool Function(Map<String, dynamic>)? isAllowed;
+
+  const _ChooseRecipeSheet({
+    required this.recipes,
+    required this.titleOf,
+    required this.thumbOf,
+    required this.idOf,
+    this.isAllowed,
+  });
+
+  @override
+  State<_ChooseRecipeSheet> createState() => _ChooseRecipeSheetState();
+}
+
+class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
+  final _search = TextEditingController();
+  String _q = '';
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = widget.recipes.where((r) {
+      if (_q.trim().isEmpty) return true;
+      final t = widget.titleOf(r).toLowerCase();
+      return t.contains(_q.toLowerCase());
+    }).toList();
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 12,
+          bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).dividerColor,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+            TextField(
+              controller: _search,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Search recipes',
+              ),
+              onChanged: (v) => setState(() => _q = v),
+            ),
+            const SizedBox(height: 12),
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: filtered.length,
+                itemBuilder: (_, i) {
+                  final r = filtered[i];
+                  final id = widget.idOf(r);
+                  final title = widget.titleOf(r);
+                  final thumb = widget.thumbOf(r);
+
+                  final allowed =
+                      widget.isAllowed == null ? true : widget.isAllowed!(r);
+
+                  return ListTile(
+                    enabled: allowed && id != null,
+                    leading: thumb == null
+                        ? const Icon(Icons.restaurant_menu)
+                        : Image.network(
+                            thumb,
+                            width: 44,
+                            height: 44,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) =>
+                                const Icon(Icons.restaurant_menu),
+                          ),
+                    title: Text(title),
+                    subtitle:
+                        allowed ? null : const Text('Excluded by allergies'),
+                    onTap: (!allowed || id == null)
+                        ? null
+                        : () => Navigator.of(context).pop(id),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ----------------------------------------------------
+// Dialog result helper
+// ----------------------------------------------------
+enum _NoteResultKind { cancel, save }
+
+class _NoteResult {
+  final _NoteResultKind kind;
+  final String? text;
+
+  const _NoteResult._(this.kind, this.text);
+
+  const _NoteResult.cancel() : this._(_NoteResultKind.cancel, null);
+  _NoteResult.save(String text) : this._(_NoteResultKind.save, text);
 }

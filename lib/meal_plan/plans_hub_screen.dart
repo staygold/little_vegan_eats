@@ -2,20 +2,14 @@ import 'package:flutter/material.dart';
 
 import 'meal_plan_screen.dart';
 import 'saved_meal_plans_screen.dart';
+import 'core/meal_plan_keys.dart'; // ✅ correct path
 
 class PlansHubScreen extends StatelessWidget {
   const PlansHubScreen({super.key});
 
-  String _dayKey(DateTime d) {
-    final y = d.year.toString().padLeft(4, '0');
-    final m = d.month.toString().padLeft(2, '0');
-    final day = d.day.toString().padLeft(2, '0');
-    return '$y-$m-$day';
-  }
-
   @override
   Widget build(BuildContext context) {
-    final todayKey = _dayKey(DateTime.now());
+    final todayKey = MealPlanKeys.todayKey();
 
     Widget card({
       required IconData icon,
@@ -51,7 +45,7 @@ class PlansHubScreen extends StatelessWidget {
           ),
           card(
             icon: Icons.calendar_month,
-            title: "This week's meal plan",
+            title: "Next 7 days",
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const MealPlanScreen()),
@@ -67,8 +61,6 @@ class PlansHubScreen extends StatelessWidget {
               );
             },
           ),
-
-          // Optional: for now, Previous can just point to Saved until you build history.
           card(
             icon: Icons.history,
             title: 'Previous meal plans',
