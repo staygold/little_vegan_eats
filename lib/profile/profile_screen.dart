@@ -15,7 +15,24 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _ensuredAdult1 = false;
 
-  Future<void> _ensureAdult1(DocumentReference<Map<String, dynamic>> docRef, User user, Map<String, dynamic> data) async {
+  // ✅ Change this if your welcome route isn't "/"
+  static const String _welcomeRoute = '/';
+
+  void _goToWelcome() {
+    if (!mounted) return;
+    Navigator.of(context).pushNamedAndRemoveUntil(
+      _welcomeRoute,
+      (route) => false,
+    );
+  }
+
+  // --------------------------------------------------
+  // Ensure Adult 1 from onboarding parentName
+  // --------------------------------------------------
+  Future<void> _ensureAdult1(
+    DocumentReference<Map<String, dynamic>> docRef,
+    Map<String, dynamic> data,
+  ) async {
     if (_ensuredAdult1) return;
 
     final adults = (data['adults'] as List?) ?? [];
@@ -24,14 +41,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
 
-    // Create Adult 1 (You)
-    final name = (user.displayName?.trim().isNotEmpty == true) ? user.displayName!.trim() : 'Adult 1';
+    final parentName =
+        (data['parentName'] is String) ? (data['parentName'] as String).trim() : '';
+
+    if (parentName.isEmpty) {
+      _ensuredAdult1 = true;
+      return;
+    }
 
     try {
       await docRef.set({
         'adults': [
           {
-            'name': name,
+            'name': parentName,
             'hasAllergies': false,
             'allergies': <String>[],
           }
@@ -39,16 +61,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     } catch (_) {
-      // ignore, UI still renders
+      // ignore
     } finally {
       _ensuredAdult1 = true;
     }
   }
 
-  Future<void> _addAdult(DocumentReference<Map<String, dynamic>> docRef, List adults) async {
+  // --------------------------------------------------
+  // Add Adult (NO POPUP): create record, go to form
+  // Name is enforced in AdultProfileScreen (cannot save unnamed)
+  // --------------------------------------------------
+  Future<void> _addAdult(
+    DocumentReference<Map<String, dynamic>> docRef,
+    List adults,
+  ) async {
     final updated = [...adults];
     updated.add({
-      'name': 'Adult ${updated.length + 1}',
+      'name': '',
       'hasAllergies': false,
       'allergies': <String>[],
     });
@@ -67,10 +96,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Future<void> _addChild(DocumentReference<Map<String, dynamic>> docRef, List children) async {
+  // --------------------------------------------------
+  // Add Child (NO POPUP): create record, go to form
+  // --------------------------------------------------
+  Future<void> _addChild(
+    DocumentReference<Map<String, dynamic>> docRef,
+    List children,
+  ) async {
     final updated = [...children];
     updated.add({
-      'name': 'Child ${updated.length + 1}',
+      'name': '',
       'dob': '',
       'hasAllergies': false,
       'allergies': <String>[],
@@ -90,25 +125,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  // --------------------------------------------------
+  // UI
+  // --------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, authSnap) {
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
 
         final user = authSnap.data;
 
+        // ✅ If signed out, immediately go back to Welcome route
         if (user == null) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (Navigator.of(context).canPop()) Navigator.of(context).pop();
-          });
-          return const Scaffold(body: Center(child: Text('Signed out')));
+          WidgetsBinding.instance.addPostFrameCallback((_) => _goToWelcome());
+          return const SizedBox.shrink();
         }
 
-        final docRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
+        final docRef =
+            FirebaseFirestore.instance.collection('users').doc(user.uid);
 
         return Scaffold(
           appBar: AppBar(
@@ -117,7 +157,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
               IconButton(
                 tooltip: 'Log out',
                 icon: const Icon(Icons.logout),
-                onPressed: () async => FirebaseAuth.instance.signOut(),
+                onPressed: () async {
+                  await FirebaseAuth.instance.signOut();
+                  // authStateChanges() will flip to null and redirect
+                },
               ),
             ],
           ),
@@ -137,17 +180,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
               final data = snap.data?.data();
               if (data == null) {
-                return const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text(
-                    'User document not found.\n\nThis usually means onboarding has not completed yet.',
-                  ),
-                );
+                return const Center(child: Text('Profile not ready yet'));
               }
 
-              // Ensure Adult 1 exists
               WidgetsBinding.instance.addPostFrameCallback((_) {
-                _ensureAdult1(docRef, user, data);
+                _ensureAdult1(docRef, data);
               });
 
               final adults = (data['adults'] as List?) ?? [];
@@ -156,16 +193,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
               return ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  Text(user.email ?? '(no email)', style: Theme.of(context).textTheme.titleMedium),
+                  Text(
+                    user.email ?? '',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                   const SizedBox(height: 24),
 
-                  // -------------------------
-                  // Adults
-                  // -------------------------
+                  // ---------------- Adults ----------------
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('Adults (${adults.length})', style: Theme.of(context).textTheme.titleMedium),
+                      Text('Adults', style: Theme.of(context).textTheme.titleMedium),
                       TextButton.icon(
                         onPressed: () => _addAdult(docRef, adults),
                         icon: const Icon(Icons.add),
@@ -175,41 +213,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   const SizedBox(height: 8),
 
-                  if (adults.isEmpty)
-                    const Text('No adults saved yet (Adult 1 will be created automatically).')
-                  else
-                    ...List.generate(adults.length, (i) {
-                      final raw = adults[i];
-                      final name = (raw is Map && raw['name'] != null)
-                          ? raw['name'].toString()
-                          : (i == 0 ? 'Adult 1 (You)' : 'Adult ${i + 1}');
+                  ...List.generate(adults.length, (i) {
+                    final raw = adults[i];
+                    final name = (raw is Map && raw['name'] is String)
+                        ? (raw['name'] as String).trim()
+                        : '';
 
-                      final label = (i == 0) ? 'Adult 1 (You)' : 'Adult ${i + 1}';
+                    // ✅ Hide unnamed adults
+                    if (name.isEmpty) return const SizedBox.shrink();
 
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        child: ListTile(
-                          title: Text('$label • $name', style: const TextStyle(fontWeight: FontWeight.w700)),
-                          subtitle: const Text('Tap to view/edit allergies'),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(builder: (_) => AdultProfileScreen(adultIndex: i)),
-                            );
-                          },
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: ListTile(
+                        title: Text(
+                          name,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
-                      );
-                    }),
+                        subtitle: const Text('Tap to view / edit allergies'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => AdultProfileScreen(adultIndex: i),
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
 
                   const SizedBox(height: 16),
 
-                  // -------------------------
-                  // Children
-                  // -------------------------
+                  // ---------------- Children ----------------
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('Children (${children.length})', style: Theme.of(context).textTheme.titleMedium),
+                      Text('Children', style: Theme.of(context).textTheme.titleMedium),
                       TextButton.icon(
                         onPressed: () => _addChild(docRef, children),
                         icon: const Icon(Icons.add),
@@ -219,36 +256,42 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   const SizedBox(height: 8),
 
-                  if (children.isEmpty)
-                    const Text('No children saved.')
-                  else
-                    ...List.generate(children.length, (i) {
-                      final raw = children[i];
-                      final name = (raw is Map && raw['name'] != null)
-                          ? raw['name'].toString()
-                          : 'Child ${i + 1}';
+                  ...List.generate(children.length, (i) {
+                    final raw = children[i];
+                    final name = (raw is Map && raw['name'] is String)
+                        ? (raw['name'] as String).trim()
+                        : '';
 
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        child: ListTile(
-                          title: Text(name, style: const TextStyle(fontWeight: FontWeight.w700)),
-                          subtitle: const Text('Tap to view/edit'),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(builder: (_) => ChildProfileScreen(childIndex: i)),
-                            );
-                          },
+                    // ✅ Hide unnamed children
+                    if (name.isEmpty) return const SizedBox.shrink();
+
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: ListTile(
+                        title: Text(
+                          name,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
-                      );
-                    }),
+                        subtitle: const Text('Tap to view / edit'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => ChildProfileScreen(childIndex: i),
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
 
                   const SizedBox(height: 24),
 
                   ElevatedButton.icon(
                     icon: const Icon(Icons.logout),
                     label: const Text('Log out'),
-                    onPressed: () async => FirebaseAuth.instance.signOut(),
+                    onPressed: () async {
+                      await FirebaseAuth.instance.signOut();
+                      // authStateChanges() will redirect
+                    },
                   ),
                 ],
               );

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../auth/register_screen.dart';
 import '../auth/sign_in_screen.dart';
+import '../onboarding/onboarding_flow.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -29,15 +29,19 @@ class WelcomeScreen extends StatelessWidget {
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 24),
+
+                // ✅ Register now launches the step-by-step onboarding flow
                 FilledButton(
                   onPressed: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const RegisterScreen()),
+                      MaterialPageRoute(builder: (_) => const OnboardingFlow()),
                     );
                   },
                   child: const Text('Register'),
                 ),
+
                 const SizedBox(height: 12),
+
                 OutlinedButton(
                   onPressed: () {
                     Navigator.of(context).push(

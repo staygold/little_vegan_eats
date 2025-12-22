@@ -1,10 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
 import '../recipes/allergy_keys.dart';
 
 class AdultProfileScreen extends StatefulWidget {
-  final int adultIndex; // index into users/{uid}.adults array (0 = Adult 1)
+  final int adultIndex;
   const AdultProfileScreen({super.key, required this.adultIndex});
 
   @override
@@ -32,6 +33,14 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _nameCtrl.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
   void dispose() {
     _nameCtrl.dispose();
     super.dispose();
@@ -47,7 +56,7 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
     _loadedSnapshot = Map<String, dynamic>.from(adult);
 
     _nameCtrl.text = (adult['name'] ?? '').toString();
-    _hasAllergies = (adult['hasAllergies'] == true);
+    _hasAllergies = adult['hasAllergies'] == true;
 
     _selectedAllergies.clear();
     final raw = adult['allergies'];
@@ -76,7 +85,7 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
 
     if (widget.adultIndex < 0 || widget.adultIndex >= adults.length) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Adult not found')),
+        const SnackBar(content: Text('Person not found')),
       );
       return;
     }
@@ -89,13 +98,11 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
           ..sort())
         : <String>[];
 
-    final updated = <String, dynamic>{
+    adults[widget.adultIndex] = {
       'name': name,
       'hasAllergies': _hasAllergies,
       'allergies': canonicalAllergies,
     };
-
-    adults[widget.adultIndex] = updated;
 
     setState(() => _saving = true);
     try {
@@ -105,9 +112,8 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
       }, SetOptions(merge: true));
 
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Adult saved')),
+        const SnackBar(content: Text('Saved')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -125,14 +131,14 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
 
     if (widget.adultIndex == 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("You can’t delete Adult 1 (account owner).")),
+        const SnackBar(content: Text("You can’t delete this person.")),
       );
       return;
     }
 
     if (widget.adultIndex < 0 || widget.adultIndex >= adults.length) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Adult not found')),
+        const SnackBar(content: Text('Person not found')),
       );
       return;
     }
@@ -140,7 +146,7 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Delete adult?'),
+        title: const Text('Delete person?'),
         content: const Text('This cannot be undone.'),
         actions: [
           TextButton(
@@ -183,9 +189,6 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
     final doc = _userDoc();
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.adultIndex == 0 ? 'Adult 1 (You)' : 'Adult ${widget.adultIndex + 1}'),
-      ),
       body: (doc == null)
           ? const Center(child: Text('Not logged in'))
           : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -204,18 +207,22 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
                 final data = snap.data?.data() ?? {};
                 final adults = (data['adults'] as List?) ?? [];
 
-                if (widget.adultIndex < 0 || widget.adultIndex >= adults.length) {
-                  return const Center(child: Text('Adult not found'));
+                if (widget.adultIndex < 0 ||
+                    widget.adultIndex >= adults.length) {
+                  return const Center(child: Text('Person not found'));
                 }
 
                 final raw = adults[widget.adultIndex];
-                if (raw is! Map) return const Center(child: Text('Invalid adult record'));
+                if (raw is! Map) {
+                  return const Center(child: Text('Invalid record'));
+                }
 
                 final adult = Map<String, dynamic>.from(raw);
 
+                // Keep form in sync with Firestore
                 final snapshotString = adult.toString();
                 final prevString = _loadedSnapshot?.toString();
-                if (prevString != snapshotString) {
+                if (snapshotString != prevString) {
                   WidgetsBinding.instance.addPostFrameCallback((_) {
                     if (!mounted) return;
                     _applyToForm(adult);
@@ -223,76 +230,98 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
                   });
                 }
 
-                return ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
-                    TextField(
-                      controller: _nameCtrl,
-                      decoration: const InputDecoration(labelText: 'Name'),
-                    ),
-                    const SizedBox(height: 18),
+                final name = _nameCtrl.text.trim();
+                final canSave = !_saving && name.isNotEmpty;
 
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Has allergies'),
-                      value: _hasAllergies,
-                      onChanged: _saving
-                          ? null
-                          : (v) {
-                              setState(() {
-                                _hasAllergies = v;
-                                if (!v) _selectedAllergies.clear();
-                              });
-                            },
-                    ),
-
-                    if (_hasAllergies) ...[
-                      const SizedBox(height: 8),
-                      Text('Allergies', style: Theme.of(context).textTheme.titleMedium),
-                      const SizedBox(height: 8),
-                      ..._allergyOptions.map((a) {
-                        final selected = _selectedAllergies.contains(a);
-                        return CheckboxListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(AllergyKeys.label(a)),
-                          value: selected,
-                          onChanged: _saving
-                              ? null
-                              : (v) {
-                                  setState(() {
-                                    if (v == true) {
-                                      if (!selected) _selectedAllergies.add(a);
-                                    } else {
-                                      _selectedAllergies.remove(a);
-                                    }
-                                    _selectedAllergies.sort();
-                                  });
-                                },
-                        );
-                      }).toList(),
-                    ],
-
-                    const SizedBox(height: 24),
-
-                    SizedBox(
-                      height: 48,
-                      child: ElevatedButton(
-                        onPressed: _saving ? null : () => _save(adults),
-                        child: Text(_saving ? 'SAVING...' : 'SAVE'),
+                return Scaffold(
+                  appBar: AppBar(
+                    title: Text(name.isEmpty ? 'Edit person' : name),
+                    actions: [
+                      TextButton(
+                        onPressed: canSave ? () => _save(adults) : null,
+                        child: const Text('Save'),
                       ),
-                    ),
-
-                    if (widget.adultIndex != 0) ...[
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        height: 48,
-                        child: OutlinedButton(
-                          onPressed: _saving ? null : () => _delete(adults),
-                          child: const Text('DELETE ADULT'),
+                    ],
+                  ),
+                  body: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      TextField(
+                        controller: _nameCtrl,
+                        textInputAction: TextInputAction.done,
+                        decoration: const InputDecoration(
+                          labelText: 'Name',
+                          border: OutlineInputBorder(),
                         ),
                       ),
+                      const SizedBox(height: 18),
+
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Has allergies'),
+                        value: _hasAllergies,
+                        onChanged: _saving
+                            ? null
+                            : (v) {
+                                setState(() {
+                                  _hasAllergies = v;
+                                  if (!v) _selectedAllergies.clear();
+                                });
+                              },
+                      ),
+
+                      if (_hasAllergies) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Allergies',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        ..._allergyOptions.map((a) {
+                          final selected = _selectedAllergies.contains(a);
+                          return CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(AllergyKeys.label(a)),
+                            value: selected,
+                            onChanged: _saving
+                                ? null
+                                : (v) {
+                                    setState(() {
+                                      if (v == true) {
+                                        if (!selected) _selectedAllergies.add(a);
+                                      } else {
+                                        _selectedAllergies.remove(a);
+                                      }
+                                      _selectedAllergies.sort();
+                                    });
+                                  },
+                          );
+                        }).toList(),
+                      ],
+
+                      const SizedBox(height: 24),
+
+                      // Save button (same "form feel" you liked) but disabled if name is empty
+                      SizedBox(
+                        height: 48,
+                        child: ElevatedButton(
+                          onPressed: canSave ? () => _save(adults) : null,
+                          child: Text(_saving ? 'SAVING…' : 'SAVE'),
+                        ),
+                      ),
+
+                      if (widget.adultIndex != 0) ...[
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 48,
+                          child: OutlinedButton(
+                            onPressed: _saving ? null : () => _delete(adults),
+                            child: const Text('DELETE'),
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 );
               },
             ),
