@@ -8,6 +8,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../utils/text.dart';
 import 'recipe_detail_screen.dart';
 import 'recipe_cache.dart';
+import 'recipe_repository.dart'; // ✅ make sure this path is correct
 import 'allergy_engine.dart';
 import '../recipes/allergy_keys.dart';
 
@@ -19,6 +20,7 @@ class RecipeListScreen extends StatefulWidget {
 }
 
 class _RecipeListScreenState extends State<RecipeListScreen> {
+  // Used for loading course terms only
   final Dio _dio = Dio(
     BaseOptions(
       headers: const {
@@ -33,13 +35,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   String _query = '';
 
-  static const int _perPage = 50;
-  int _page = 1;
-
   bool _loading = true;
-  bool _prefetchingAll = false;
-  bool _hasMore = true;
-
   String? _error;
   List<Map<String, dynamic>> _items = [];
 
@@ -67,7 +63,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   String? _selectedPersonId; // for single-person mode
 
   // Toggles
-  bool _showSuitableFor = true; // shows/hides the whole suitability section
+  bool _showSuitableFor = true; // shows/hides the whole suitability section (kept)
   bool _filterByAllergies = true; // default ON
   bool _includeSwapRecipes = false; // OFF by default
 
@@ -116,15 +112,20 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   String? _canonicalAllergyKey(String raw) => AllergyKeys.normalize(raw);
   String _prettyAllergy(String key) => AllergyKeys.label(key);
 
-  // NEW: if cache has more than what we’re currently showing, upgrade UI to cache
-  Future<void> _upgradeItemsFromCacheIfBigger() async {
+  // ✅ Upgrade UI from cache if it’s newer (not only bigger)
+  Future<void> _upgradeItemsFromCacheIfNewer() async {
     try {
       final cached = await RecipeCache.load();
       final updatedAt = await RecipeCache.lastUpdated();
 
       if (!mounted) return;
+      if (cached.isEmpty) return;
 
-      if (cached.length > _items.length) {
+      final isNewer = updatedAt != null &&
+          (_cacheUpdatedAt == null || updatedAt.isAfter(_cacheUpdatedAt!));
+      final lengthChanged = cached.length != _items.length;
+
+      if (isNewer || lengthChanged) {
         setState(() {
           _items = cached;
           _cacheUpdatedAt = updatedAt;
@@ -183,7 +184,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     super.initState();
     _listenToHousehold();
     _loadCourseTerms();
-    _loadFromCacheThenRefresh();
+    _loadRecipes(); // ✅ single source of truth for recipes
   }
 
   @override
@@ -193,6 +194,10 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     _scroll.dispose();
     super.dispose();
   }
+
+  // ------------------------
+  // Household
+  // ------------------------
 
   void _listenToHousehold() {
     final doc = _userDoc();
@@ -397,73 +402,35 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   }
 
   // ------------------------
-  // Caching + Networking
+  // ✅ Recipes: cache-first via repository (single source of truth)
   // ------------------------
 
-  Future<void> _loadFromCacheThenRefresh() async {
-    bool hadCache = false;
-
-    try {
-      final cached = await RecipeCache.load();
-      final updatedAt = await RecipeCache.lastUpdated();
-
-      if (cached.isNotEmpty && mounted) {
-        hadCache = true;
-        setState(() {
-          _items = cached;
-          _cacheUpdatedAt = updatedAt;
-          _loadedFromCache = true;
-          _loading = false;
-          _error = null;
-          _prefetchingAll = false;
-          _hasMore = false;
-        });
-      }
-    } catch (_) {}
-
-    // ✅ KEY CHANGE:
-    // If we already have cache, do NOT overwrite UI with page 1 (50).
-    // The cache is the "offline full dataset".
-    if (hadCache) {
-      // In case something else (bootstrap) refreshes cache in the background,
-      // upgrade the UI if it grows.
-      unawaited(Future.delayed(const Duration(seconds: 2), _upgradeItemsFromCacheIfBigger));
-      return;
-    }
-
-    // No cache -> do the existing paging load
-    await _loadFirstPage();
-  }
-
-  Future<void> _loadFirstPage() async {
+  Future<void> _loadRecipes({bool forceRefresh = false}) async {
     setState(() {
-      _loading = _items.isEmpty;
+      _loading = true;
       _error = null;
-      _page = 1;
-      _hasMore = true;
-      _prefetchingAll = false;
     });
 
     try {
-      final first = await _fetchPage(_page);
-      if (!mounted) return;
+      final recipes = await RecipeRepository.ensureRecipesLoaded(
+        backgroundRefresh: true, // cache-first, then background refresh (throttled)
+        forceRefresh: forceRefresh,
+      );
 
+      final updatedAt = await RecipeCache.lastUpdated();
+
+      if (!mounted) return;
       setState(() {
-        _items = first;
-        _hasMore = first.length == _perPage;
+        _items = recipes;
+        _cacheUpdatedAt = updatedAt;
+        _loadedFromCache = true;
         _loading = false;
       });
 
-      // Do NOT save _items to cache (subset)
-      final updatedAt = await RecipeCache.lastUpdated();
-      if (mounted) {
-        setState(() {
-          _cacheUpdatedAt = updatedAt;
-          _loadedFromCache = true;
-        });
-      }
-
-      if (_hasMore) _prefetchAllRemaining();
+      // Background refresh may update the cache shortly after boot
+      unawaited(
+        Future.delayed(const Duration(seconds: 2), _upgradeItemsFromCacheIfNewer),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -471,68 +438,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         _loading = false;
       });
     }
-  }
-
-  Future<void> _prefetchAllRemaining() async {
-    if (_prefetchingAll) return;
-
-    setState(() => _prefetchingAll = true);
-
-    try {
-      var nextPage = _page;
-
-      while (mounted) {
-        nextPage += 1;
-        final newItems = await _fetchPage(nextPage);
-        if (!mounted) return;
-
-        if (newItems.isEmpty) {
-          _hasMore = false;
-          break;
-        }
-
-        setState(() {
-          _page = nextPage;
-          _items = [..._items, ...newItems];
-          _hasMore = newItems.length == _perPage;
-        });
-
-        if (newItems.length < _perPage) break;
-      }
-
-      if (!mounted) return;
-
-      setState(() {
-        _prefetchingAll = false;
-        _hasMore = false;
-      });
-
-      // Do NOT save _items to cache (subset)
-      final updatedAt = await RecipeCache.lastUpdated();
-      if (mounted) {
-        setState(() {
-          _cacheUpdatedAt = updatedAt;
-          _loadedFromCache = true;
-        });
-      }
-
-      // ✅ If cache has grown elsewhere, prefer it.
-      await _upgradeItemsFromCacheIfBigger();
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _prefetchingAll = false);
-    }
-  }
-
-  Future<List<Map<String, dynamic>>> _fetchPage(int page) async {
-    final res = await _dio.get(
-      'https://littleveganeats.co/wp-json/wp/v2/wprm_recipe',
-      queryParameters: {'per_page': _perPage, 'page': page},
-    );
-
-    final data = res.data;
-    if (data is! List) throw Exception('Unexpected response shape');
-    return data.cast<Map<String, dynamic>>();
   }
 
   // ------------------------
@@ -649,9 +554,9 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         for (final p in _activeProfilesForMode()) {
           if (!_isAllowedForPerson(p: p, ingredientsText: ingredientsText)) {
             debugPrint(
-  '[RecipeList] FILTERED BY ALLERGY id=${r['id']} title="${_titleOf(r)}"',
-);
-return false;
+              '[RecipeList] FILTERED BY ALLERGY id=${r['id']} title="${_titleOf(r)}"',
+            );
+            return false;
           }
         }
       }
@@ -660,11 +565,11 @@ return false;
     }).toList();
 
     debugPrint(
-  '[RecipeList] items=${_items.length} visible=${visible.length} '
-  'course=$_selectedCourse query="${_query.trim()}" '
-  'filterByAllergies=$_filterByAllergies mode=$_mode '
-  'people=${_allPeople.length}',
-);
+      '[RecipeList] items=${_items.length} visible=${visible.length} '
+      'course=$_selectedCourse query="${_query.trim()}" '
+      'filterByAllergies=$_filterByAllergies mode=$_mode '
+      'people=${_allPeople.length}',
+    );
 
     if (_loading) return const Center(child: CircularProgressIndicator());
 
@@ -677,7 +582,10 @@ return false;
             children: [
               Text(_error!, textAlign: TextAlign.center),
               const SizedBox(height: 12),
-              ElevatedButton(onPressed: _loadFirstPage, child: const Text('Retry')),
+              ElevatedButton(
+                onPressed: () => _loadRecipes(forceRefresh: true),
+                child: const Text('Retry'),
+              ),
             ],
           ),
         ),
@@ -868,16 +776,12 @@ return false;
                 ],
               ),
 
-              if (_loadedFromCache || _cacheUpdatedAt != null || _prefetchingAll) ...[
+              if (_loadedFromCache || _cacheUpdatedAt != null) ...[
                 const SizedBox(height: 8),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    _prefetchingAll
-                        ? 'Downloading recipes for offline use...'
-                        : (_cacheUpdatedAt != null
-                            ? 'Cached: ${_cacheUpdatedAt!.toLocal()}'
-                            : ''),
+                    _cacheUpdatedAt != null ? 'Cached: ${_cacheUpdatedAt!.toLocal()}' : '',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -888,10 +792,23 @@ return false;
 
         Expanded(
           child: RefreshIndicator(
-            // Keep existing behavior (network refresh), but cache will no longer get overwritten
+            // ✅ Pull-to-refresh: force latest now
             onRefresh: () async {
-              await _loadFirstPage();
-              await _upgradeItemsFromCacheIfBigger();
+              await RecipeRepository.ensureRecipesLoaded(
+                backgroundRefresh: false,
+                forceRefresh: true,
+              );
+
+              final updated = await RecipeCache.load();
+              final updatedAt = await RecipeCache.lastUpdated();
+
+              if (!mounted) return;
+              setState(() {
+                _items = updated;
+                _cacheUpdatedAt = updatedAt;
+                _loadedFromCache = true;
+                _error = null;
+              });
             },
             child: ListView.separated(
               controller: _scroll,

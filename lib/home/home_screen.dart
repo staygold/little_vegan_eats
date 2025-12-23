@@ -5,11 +5,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../recipes/recipe_detail_screen.dart';
 import '../recipes/recipe_repository.dart';
 
-// ✅ Important: use the SAME weekId logic as meal plan
+// ✅ SAME weekId logic as meal plan
 import '../meal_plan/core/meal_plan_keys.dart';
 
-// ✅ Review prompt service
+// ✅ Centralised review prompt
 import '../meal_plan/core/meal_plan_review_service.dart';
+
+// ✅ NEW: use the centralised meal plan repo + controller to auto-populate
+import '../meal_plan/core/meal_plan_repository.dart';
+import '../meal_plan/core/meal_plan_controller.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -22,16 +26,26 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, dynamic>> _recipes = [];
   bool _recipesLoading = true;
 
+  MealPlanController? _mealCtrl;
+  bool _bootstrappedWeek = false;
+
   @override
   void initState() {
     super.initState();
-    _loadRecipes();
+    _loadRecipesAndBootstrap();
 
-    // ✅ Centralised: show "meal plan needs review" if flagged
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       await MealPlanReviewService.checkAndPromptIfNeeded(context);
     });
+  }
+
+  @override
+  void dispose() {
+    // Clean up controller stream
+    _mealCtrl?.stop();
+    _mealCtrl = null;
+    super.dispose();
   }
 
   // ---------- DATE HELPERS ----------
@@ -51,13 +65,50 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ---------- RECIPES ----------
 
-  Future<void> _loadRecipes() async {
+  Future<void> _loadRecipesAndBootstrap() async {
     try {
       _recipes = await RecipeRepository.ensureRecipesLoaded();
     } catch (_) {
       _recipes = [];
     } finally {
       if (mounted) setState(() => _recipesLoading = false);
+    }
+
+    // After recipes are loaded, bootstrap the Firestore meal plan if needed
+    await _bootstrapMealPlanIfNeeded();
+  }
+
+  Future<void> _bootstrapMealPlanIfNeeded() async {
+    if (!mounted) return;
+    if (_bootstrappedWeek) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    if (_recipes.isEmpty) return;
+
+    // Create controller once and keep it alive while Home is alive
+    _mealCtrl ??= MealPlanController(
+      auth: FirebaseAuth.instance,
+      repo: MealPlanRepository(FirebaseFirestore.instance),
+      initialWeekId: _weekId(),
+    );
+
+    // Keep controller subscribed (not strictly required for bootstrapping,
+    // but useful if anything else updates week data)
+    _mealCtrl!.start();
+
+    // Ensure we only attempt once per Home lifetime
+    _bootstrappedWeek = true;
+
+    try {
+      // This will:
+      // - ensure week doc exists
+      // - load current week data
+      // - write missing slots to Firestore (upsertDays)
+      await _mealCtrl!.ensurePlanPopulated(recipes: _recipes);
+    } catch (_) {
+      // Silent fail: Home will still render empty state if no plan exists
     }
   }
 
@@ -95,7 +146,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return null;
   }
 
-  // ---------- ENTRY PARSING (int OR map) ----------
+  // ---------- ENTRY PARSING ----------
 
   Map<String, dynamic>? _parseEntry(dynamic raw) {
     // Legacy: int/num recipeId
@@ -179,7 +230,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
         final data = snap.data?.data() ?? <String, dynamic>{};
         final days = data['days'];
-
         final todayKey = _todayKey();
 
         final Map<String, dynamic> todayRaw =
@@ -187,7 +237,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? Map<String, dynamic>.from(days[todayKey] as Map)
                 : <String, dynamic>{};
 
-        // slot -> parsed entry
         final entries = <MapEntry<String, Map<String, dynamic>>>[];
         for (final e in todayRaw.entries) {
           final parsed = _parseEntry(e.value);
@@ -195,7 +244,6 @@ class _HomeScreenState extends State<HomeScreen> {
           entries.add(MapEntry(e.key.toString(), parsed));
         }
 
-        // stable slot order
         const slotOrder = ['breakfast', 'snack1', 'lunch', 'snack2', 'dinner'];
         entries.sort((a, b) {
           final ia = slotOrder.indexOf(a.key);
@@ -277,7 +325,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 16),
 
-            // ✅ Buttons back
             SizedBox(
               height: 48,
               child: ElevatedButton(
