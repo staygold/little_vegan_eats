@@ -8,6 +8,9 @@ import '../recipes/recipe_repository.dart';
 // ✅ Important: use the SAME weekId logic as meal plan
 import '../meal_plan/core/meal_plan_keys.dart';
 
+// ✅ Review prompt service
+import '../meal_plan/core/meal_plan_review_service.dart';
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -23,6 +26,12 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadRecipes();
+
+    // ✅ Centralised: show "meal plan needs review" if flagged
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await MealPlanReviewService.checkAndPromptIfNeeded(context);
+    });
   }
 
   // ---------- DATE HELPERS ----------
@@ -197,7 +206,10 @@ class _HomeScreenState extends State<HomeScreen> {
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            Text("Today's Meals", style: Theme.of(context).textTheme.headlineSmall),
+            Text(
+              "Today's Meals",
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
             const SizedBox(height: 12),
 
             if (entries.isEmpty) ...[
@@ -212,7 +224,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   return Card(
                     child: ListTile(
                       leading: const Icon(Icons.sticky_note_2_outlined),
-                      title: Text(note, style: const TextStyle(fontWeight: FontWeight.w600)),
+                      title: Text(
+                        note,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
                       subtitle: Text(slot.toUpperCase()),
                     ),
                   );
@@ -243,14 +258,17 @@ class _HomeScreenState extends State<HomeScreen> {
                             width: 56,
                             height: 56,
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const Icon(Icons.restaurant_menu),
+                            errorBuilder: (_, __, ___) =>
+                                const Icon(Icons.restaurant_menu),
                           ),
                     title: Text(title),
                     subtitle: Text(slot.toUpperCase()),
                     onTap: rid == null
                         ? null
                         : () => Navigator.of(context).push(
-                              MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
+                              MaterialPageRoute(
+                                builder: (_) => RecipeDetailScreen(id: rid),
+                              ),
                             ),
                   ),
                 );

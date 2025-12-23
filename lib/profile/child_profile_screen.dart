@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
 import '../recipes/allergy_keys.dart';
+import '../meal_plan/core/meal_plan_review_service.dart'; // ✅ NEW
 
 class ChildProfileScreen extends StatefulWidget {
   final int? childIndex; // null => create mode
@@ -65,7 +67,6 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       _selectedAllergies.sort();
     }
 
-    // If switch is OFF, make sure allergies list is empty
     if (!_hasAllergies) _selectedAllergies.clear();
   }
 
@@ -82,74 +83,101 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
   }
 
   Future<void> _saveChild(List children) async {
-    final doc = _userDoc();
-    if (doc == null) return;
+  final doc = _userDoc();
+  if (doc == null) return;
 
-    final name = _nameCtrl.text.trim();
-    final dob = _dobCtrl.text.trim();
+  final name = _nameCtrl.text.trim();
+  final dob = _dobCtrl.text.trim();
 
-    if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Name is required')),
-      );
-      return;
+  if (name.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Name is required')),
+    );
+    return;
+  }
+
+  // ---- previous allergy state (from loaded snapshot) ----
+  final prevHas = _loadedChildSnapshot?['hasAllergies'] == true;
+  final prevListRaw = _loadedChildSnapshot?['allergies'];
+  final prevAllergies = <String>[];
+  if (prevListRaw is List) {
+    for (final a in prevListRaw) {
+      final k = AllergyKeys.normalize(a.toString());
+      if (k != null) prevAllergies.add(k);
     }
+    prevAllergies.sort();
+  }
+  if (!prevHas) prevAllergies.clear();
 
-    final updated = <String, dynamic>{
-      'name': name,
-      'dob': dob,
-      'hasAllergies': _hasAllergies,
-      'allergies': _canonicalizeSelectedAllergies(),
-    };
+  // ---- new allergy state ----
+  final newAllergies = _canonicalizeSelectedAllergies();
+  final didChangeAllergies =
+      (prevHas != _hasAllergies) || (prevAllergies.join(',') != newAllergies.join(','));
 
-    setState(() => _saving = true);
+  final updated = <String, dynamic>{
+    'name': name,
+    'dob': dob,
+    'hasAllergies': _hasAllergies,
+    'allergies': newAllergies,
+  };
 
-    try {
-      if (_isCreate) {
-        final next = List.from(children);
-        next.add(updated);
+  setState(() => _saving = true);
 
-        await doc.set({
-          'children': next,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
+  try {
+    if (_isCreate) {
+      final next = List.from(children)..add(updated);
 
-        if (!mounted) return;
-        Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Child added')),
-        );
-      } else {
-        final idx = widget.childIndex!;
-        if (idx < 0 || idx >= children.length) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Child not found')),
-          );
-          return;
-        }
+      await doc.set({
+        'children': next,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
-        children[idx] = updated;
-
-        await doc.set({
-          'children': children,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-
-        if (!mounted) return;
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Child saved')),
-        );
+      // ✅ if allergies changed, flag review
+      if (didChangeAllergies) {
+        await MealPlanReviewService.markNeedsReview(changedForLabel: name);
       }
-    } catch (e) {
+
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Child added')),
+      );
+    } else {
+      final idx = widget.childIndex!;
+      if (idx < 0 || idx >= children.length) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Child not found')),
+        );
+        return;
+      }
+
+      children[idx] = updated;
+
+      await doc.set({
+        'children': children,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      // ✅ if allergies changed, flag review
+      if (didChangeAllergies) {
+        await MealPlanReviewService.markNeedsReview(changedForLabel: name);
+      }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save: $e')),
+        const SnackBar(content: Text('Child saved')),
       );
-    } finally {
-      if (mounted) setState(() => _saving = false);
     }
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Could not save: $e')),
+    );
+  } finally {
+    if (mounted) setState(() => _saving = false);
   }
+}
+
 
   Future<void> _deleteChild(List children) async {
     final doc = _userDoc();
@@ -233,7 +261,6 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                 Map<String, dynamic> child;
 
                 if (_isCreate) {
-                  // Create mode: start blank, and ONLY apply once
                   child = {
                     'name': '',
                     'dob': '',
@@ -252,8 +279,6 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                   child = Map<String, dynamic>.from(raw);
                 }
 
-                // Only push values into controllers if changed / first load
-                // In create mode, only do this ONCE (prevents stomping user input)
                 final snapshotString = child.toString();
                 final prevString = _loadedChildSnapshot?.toString();
                 final shouldApply = prevString != snapshotString &&
@@ -327,7 +352,9 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                       height: 48,
                       child: ElevatedButton(
                         onPressed: _saving ? null : () => _saveChild(children),
-                        child: Text(_saving ? 'SAVING...' : (_isCreate ? 'ADD' : 'SAVE')),
+                        child: Text(
+                          _saving ? 'SAVING...' : (_isCreate ? 'ADD' : 'SAVE'),
+                        ),
                       ),
                     ),
                     if (!_isCreate) ...[
@@ -335,7 +362,8 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                       SizedBox(
                         height: 48,
                         child: OutlinedButton(
-                          onPressed: _saving ? null : () => _deleteChild(children),
+                          onPressed:
+                              _saving ? null : () => _deleteChild(children),
                           child: const Text('DELETE CHILD'),
                         ),
                       ),

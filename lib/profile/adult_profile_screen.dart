@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../recipes/allergy_keys.dart';
+import '../meal_plan/core/meal_plan_review_service.dart'; // ✅ NEW
 
 class AdultProfileScreen extends StatefulWidget {
   final int adultIndex;
@@ -72,58 +73,84 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
   }
 
   Future<void> _save(List adults) async {
-    final doc = _userDoc();
-    if (doc == null) return;
+  final doc = _userDoc();
+  if (doc == null) return;
 
-    final name = _nameCtrl.text.trim();
-    if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Name is required')),
-      );
-      return;
-    }
-
-    if (widget.adultIndex < 0 || widget.adultIndex >= adults.length) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Person not found')),
-      );
-      return;
-    }
-
-    final canonicalAllergies = _hasAllergies
-        ? (({
-            for (final a in _selectedAllergies)
-              (AllergyKeys.normalize(a) ?? a)
-          }).where(AllergyKeys.supported.contains).toList()
-          ..sort())
-        : <String>[];
-
-    adults[widget.adultIndex] = {
-      'name': name,
-      'hasAllergies': _hasAllergies,
-      'allergies': canonicalAllergies,
-    };
-
-    setState(() => _saving = true);
-    try {
-      await doc.set({
-        'adults': adults,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Saved')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save: $e')),
-      );
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
+  final name = _nameCtrl.text.trim();
+  if (name.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Name is required')),
+    );
+    return;
   }
+
+  if (widget.adultIndex < 0 || widget.adultIndex >= adults.length) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Person not found')),
+    );
+    return;
+  }
+
+  // ---- capture previous allergy state (from loaded snapshot) ----
+  final prevHas = _loadedSnapshot?['hasAllergies'] == true;
+  final prevListRaw = _loadedSnapshot?['allergies'];
+  final prevAllergies = <String>[];
+  if (prevListRaw is List) {
+    for (final a in prevListRaw) {
+      final k = AllergyKeys.normalize(a.toString());
+      if (k != null) prevAllergies.add(k);
+    }
+    prevAllergies.sort();
+  }
+  if (!prevHas) prevAllergies.clear();
+
+  // ---- compute new allergy state ----
+  final canonicalAllergies = _hasAllergies
+      ? (({
+          for (final a in _selectedAllergies) (AllergyKeys.normalize(a) ?? a)
+        }).where(AllergyKeys.supported.contains).toList()
+        ..sort())
+      : <String>[];
+
+  final didChangeAllergies =
+      (prevHas != _hasAllergies) || (prevAllergies.join(',') != canonicalAllergies.join(','));
+
+  // ---- write to Firestore ----
+  adults[widget.adultIndex] = {
+    'name': name,
+    'hasAllergies': _hasAllergies,
+    'allergies': canonicalAllergies,
+  };
+
+  setState(() => _saving = true);
+  try {
+    await doc.set({
+      'adults': adults,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    // ✅ if allergies changed, flag + prompt
+    if (didChangeAllergies) {
+      await MealPlanReviewService.markNeedsReview(changedForLabel: name);
+      if (!mounted) return;
+      await MealPlanReviewService.checkAndPromptIfNeeded(context);
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Saved')),
+    );
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Could not save: $e')),
+    );
+  } finally {
+    if (mounted) setState(() => _saving = false);
+  }
+}
+
+
 
   Future<void> _delete(List adults) async {
     final doc = _userDoc();
@@ -301,7 +328,6 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
 
                       const SizedBox(height: 24),
 
-                      // Save button (same "form feel" you liked) but disabled if name is empty
                       SizedBox(
                         height: 48,
                         child: ElevatedButton(
