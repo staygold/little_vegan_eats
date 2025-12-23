@@ -2,12 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../home/home_screen.dart';
 import '../recipes/recipe_list_screen.dart';
-
-// ✅ Swap MealPlanScreen tab to the new hub screen
 import '../meal_plan/plans_hub_screen.dart';
-
-// Keep Saved tab as-is (or you can later route this to the hub too)
-import '../meal_plan/saved_meal_plans_screen.dart';
+import '../profile/profile_screen.dart';
 
 import 'top_header_bar.dart';
 
@@ -24,11 +20,11 @@ class _AppShellState extends State<AppShell> {
   late int _index;
 
   final _pages = const [
-  HomeScreen(),
-  RecipeListScreen(),
-  PlansHubScreen(),         // ✅ hub is the main entry
-  SavedMealPlansScreen(),
-];
+    HomeScreen(),
+    RecipeListScreen(),
+    PlansHubScreen(),
+    ProfileScreen(), // ✅ Family tab
+  ];
 
   @override
   void initState() {
@@ -57,10 +53,22 @@ class _AppShellState extends State<AppShell> {
         onTap: (i) => setState(() => _index = i),
         type: BottomNavigationBarType.fixed,
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.restaurant_menu), label: 'Recipes'),
-          BottomNavigationBarItem(icon: Icon(Icons.calendar_month), label: 'Plans'), // ✅ label tweak
-          BottomNavigationBarItem(icon: Icon(Icons.bookmark), label: 'Saved'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.restaurant_menu),
+            label: 'Recipes',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.calendar_month),
+            label: 'Plans',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.family_restroom),
+            label: 'Family',
+          ),
         ],
       ),
     );
