@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../recipes/recipe_detail_screen.dart';
 import '../recipes/recipe_repository.dart';
+import '../recipes/allergy_engine.dart';
 
 import 'core/allergy_profile.dart';
 import 'core/meal_plan_controller.dart';
@@ -30,10 +33,14 @@ class MealPlanScreen extends StatefulWidget {
 class _MealPlanScreenState extends State<MealPlanScreen> {
   late MealPlanViewMode _mode;
 
+  bool _reviewMode = false;
+
   List<Map<String, dynamic>> _recipes = [];
   bool _recipesLoading = true;
 
   late final MealPlanController _ctrl;
+
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userDocSub;
 
   @override
   void initState() {
@@ -65,14 +72,47 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     () async {
       await _loadAllergies();
       await _loadRecipes();
+      _startUserDocAllergyListener(); // ✅ live updates after initial load
     }();
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final args = ModalRoute.of(context)?.settings.arguments;
+    _reviewMode = (args is Map && args['review'] == true);
+  }
+
+  @override
   void dispose() {
+    _userDocSub?.cancel();
     _ctrl.stop();
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ------------------------------------------------------------
+  // Firestore live listener for allergy changes
+  // ------------------------------------------------------------
+  void _startUserDocAllergyListener() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    _userDocSub?.cancel();
+    _userDocSub = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .snapshots()
+        .listen((snap) {
+      final sets = AllergyProfile.buildFromUserDoc(snap.data());
+
+      _ctrl.setAllergySets(
+        excludedAllergens: sets.excludedAllergens,
+        childAllergens: sets.childAllergens,
+      );
+
+      if (mounted) setState(() {});
+    });
   }
 
   Future<void> _loadAllergies() async {
@@ -93,7 +133,10 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
       );
     } catch (_) {
       // fail open
-      _ctrl.setAllergySets(excludedAllergens: {}, childAllergens: {});
+      _ctrl.setAllergySets(
+        excludedAllergens: {},
+        childAllergens: {},
+      );
     }
   }
 
@@ -111,7 +154,52 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     }
   }
 
-  // ---------- helpers ----------
+  // ------------------------------------------------------------
+  // Helpers
+  // ------------------------------------------------------------
+
+  String _ingredientsTextOf(Map<String, dynamic> recipe) {
+    final recipeData = recipe['recipe'];
+    if (recipeData is! Map<String, dynamic>) return '';
+
+    final flat = recipeData['ingredients_flat'];
+    if (flat is! List) return '';
+
+    final buf = StringBuffer();
+    for (final row in flat) {
+      if (row is! Map) continue;
+      buf.write('${row['name'] ?? ''} ');
+      buf.write('${row['notes'] ?? ''} ');
+    }
+    return buf.toString().trim();
+  }
+
+  /// Returns: "safe" | "swap" | "blocked"
+  String _statusTextOf(Map<String, dynamic> recipe) {
+    // If no allergies, treat all as safe
+    if (_ctrl.excludedAllergens.isEmpty && _ctrl.childAllergens.isEmpty) {
+      return 'safe';
+    }
+
+    final ingredientsText = _ingredientsTextOf(recipe);
+    if (ingredientsText.isEmpty) return 'safe';
+
+    final allAllergies = <String>{
+      ..._ctrl.excludedAllergens,
+      ..._ctrl.childAllergens,
+    };
+
+    final res = AllergyEngine.evaluateRecipe(
+      ingredientsText: ingredientsText,
+      childAllergies: allAllergies.toList(),
+      includeSwapRecipes: true,
+    );
+
+    final s = res.status.toString().toLowerCase();
+    if (s.contains('safe')) return 'safe';
+    if (s.contains('swap')) return 'swap';
+    return 'blocked';
+  }
 
   int? _recipeIdFrom(Map<String, dynamic> r) {
     final raw = r['id'];
@@ -223,8 +311,8 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
         recipes: _recipes,
         titleOf: _titleOf,
         thumbOf: _thumbOf,
-        isAllowed: _ctrl.recipeAllowed,
         idOf: _recipeIdFrom,
+        statusTextOf: _statusTextOf, // ✅ safe/swap/blocked
       ),
     );
 
@@ -275,6 +363,31 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     _ctrl.setDraftNote(dayKey, slot, text);
   }
 
+  Future<void> _clearSlot({
+    required String dayKey,
+    required String slot,
+  }) async {
+    final ids = _availableSafeRecipeIds();
+    final currentEntry = _ctrl.effectiveEntry(dayKey, slot);
+    final currentId = _ctrl.entryRecipeId(currentEntry);
+    final next = _ctrl.pickDifferentId(availableIds: ids, currentId: currentId);
+
+    if (next != null) {
+      _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
+    } else {
+      _ctrl.setDraftNote(dayKey, slot, '');
+    }
+  }
+
+  Future<bool> _handleBack() async {
+    if (_reviewMode) {
+      // ✅ In review mode: always go to "home" by returning to root
+      Navigator.of(context).popUntil((r) => r.isFirst);
+      return false;
+    }
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -295,115 +408,139 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 
     final now = DateTime.now();
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_mode == MealPlanViewMode.today
-            ? "Today's meal plan"
-            : "Next 7 days"),
-        actions: [
-          IconButton(
-            tooltip: 'Today',
-            icon: const Icon(Icons.today),
-            onPressed: () => setState(() => _mode = MealPlanViewMode.today),
+    return WillPopScope(
+      onWillPop: _handleBack,
+      child: Scaffold(
+        appBar: AppBar(
+          leading: _reviewMode
+              ? IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => _handleBack(),
+                )
+              : null,
+          title: Text(
+            _reviewMode
+                ? 'Review meal plan'
+                : (_mode == MealPlanViewMode.today
+                    ? "Today's meal plan"
+                    : "Next 7 days"),
           ),
-          IconButton(
-            tooltip: 'Next 7 days',
-            icon: const Icon(Icons.calendar_month),
-            onPressed: () => setState(() => _mode = MealPlanViewMode.week),
-          ),
-        ],
-      ),
-      body: AnimatedBuilder(
-        animation: _ctrl,
-        builder: (context, _) {
-          final data = _ctrl.weekData;
-          if (data == null) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          Widget buildDay(String dayKey, {VoidCallback? onViewWeek}) {
-            return _DayView(
-              prettyDate: formatDayKeyPretty(dayKey),
-              dayKey: dayKey,
-              slotOrder: MealPlanSlots.order,
-              effectiveEntryFor: (dk, slot) => _ctrl.effectiveEntry(dk, slot),
-              isRecipe: _ctrl.entryIsRecipe,
-              recipeIdOf: _ctrl.entryRecipeId,
-              noteTextOf: _ctrl.entryNoteText,
-              byId: _byId,
-              titleOf: _titleOf,
-              thumbOf: _thumbOf,
-              onInspire: (slot) {
-                final ids = _availableSafeRecipeIds();
-                final currentEntry = _ctrl.effectiveEntry(dayKey, slot);
-                final currentId = _ctrl.entryRecipeId(currentEntry);
-                final next = _ctrl.pickDifferentId(
-                  availableIds: ids,
-                  currentId: currentId,
-                );
-                if (next != null) {
-                  _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
-                }
-              },
-              onChoose: (slot) => _chooseRecipe(dayKey: dayKey, slot: slot),
-              onNote: (slot) {
-                final current = _ctrl.effectiveEntry(dayKey, slot);
-                final initial = _ctrl.entryNoteText(current);
-                _addOrEditNote(dayKey: dayKey, slot: slot, initial: initial);
-              },
-              canSave: _ctrl.hasDraftChanges(dayKey),
-              onSave: () async {
-  await _ctrl.saveDay(dayKey);
-
-  if (!mounted) return; // ✅ State-mounted, not builder context
-
-  ScaffoldMessenger.of(this.context).showSnackBar(
-    SnackBar(content: Text('Saved ${formatDayKeyPretty(dayKey)}')),
-  );
-},
-              onViewWeek: onViewWeek,
-            );
-          }
-
-          if (_mode == MealPlanViewMode.today) {
-            return buildDay(
-              focusDayKey,
-              onViewWeek: () => setState(() => _mode = MealPlanViewMode.week),
-            );
-          }
-
-          final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
-          final initialIndex = () {
-            final idx = dayKeys.indexOf(focusDayKey);
-            return idx >= 0 ? idx : 0;
-          }();
-
-          return DefaultTabController(
-            length: dayKeys.length,
-            initialIndex: initialIndex.clamp(0, dayKeys.length - 1),
-            child: Column(
-              children: [
-                Material(
-                  color: Theme.of(context).colorScheme.surface,
-                  child: TabBar(
-                    isScrollable: false,
-                    tabs: [
-                      for (final k in dayKeys)
-                        Tab(text: _weekdayLetter(MealPlanKeys.parseDayKey(k) ?? now)),
-                    ],
+          actions: _reviewMode
+              ? []
+              : [
+                  IconButton(
+                    tooltip: 'Today',
+                    icon: const Icon(Icons.today),
+                    onPressed: () =>
+                        setState(() => _mode = MealPlanViewMode.today),
                   ),
-                ),
-                Expanded(
-                  child: TabBarView(
-                    children: [
-                      for (final dayKey in dayKeys) buildDay(dayKey),
-                    ],
+                  IconButton(
+                    tooltip: 'Next 7 days',
+                    icon: const Icon(Icons.calendar_month),
+                    onPressed: () =>
+                        setState(() => _mode = MealPlanViewMode.week),
                   ),
-                ),
-              ],
-            ),
-          );
-        },
+                ],
+        ),
+        body: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (context, _) {
+            final data = _ctrl.weekData;
+            if (data == null) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            Widget buildDay(String dayKey, {VoidCallback? onViewWeek}) {
+              return _DayView(
+                prettyDate: formatDayKeyPretty(dayKey),
+                dayKey: dayKey,
+                slotOrder: MealPlanSlots.order,
+                effectiveEntryFor: (dk, slot) => _ctrl.effectiveEntry(dk, slot),
+                isRecipe: _ctrl.entryIsRecipe,
+                recipeIdOf: _ctrl.entryRecipeId,
+                noteTextOf: _ctrl.entryNoteText,
+                byId: _byId,
+                titleOf: _titleOf,
+                thumbOf: _thumbOf,
+                recipeAllowed: _ctrl.recipeAllowed, // safe-only pool (inspire)
+                statusTextOf: _statusTextOf, // ✅ safe vs swap vs blocked
+                onInspire: (slot) {
+                  final ids = _availableSafeRecipeIds();
+                  final currentEntry = _ctrl.effectiveEntry(dayKey, slot);
+                  final currentId = _ctrl.entryRecipeId(currentEntry);
+                  final next = _ctrl.pickDifferentId(
+                    availableIds: ids,
+                    currentId: currentId,
+                  );
+                  if (next != null) {
+                    _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
+                  }
+                },
+                onChoose: (slot) => _chooseRecipe(dayKey: dayKey, slot: slot),
+                onNote: (slot) {
+                  final current = _ctrl.effectiveEntry(dayKey, slot);
+                  final initial = _ctrl.entryNoteText(current);
+                  _addOrEditNote(dayKey: dayKey, slot: slot, initial: initial);
+                },
+                onClear: (slot) => _clearSlot(dayKey: dayKey, slot: slot),
+                canSave: _ctrl.hasDraftChanges(dayKey),
+                onSave: () async {
+                  await _ctrl.saveDay(dayKey);
+
+                  if (!mounted) return;
+
+                  ScaffoldMessenger.of(this.context).showSnackBar(
+                    SnackBar(content: Text('Saved ${formatDayKeyPretty(dayKey)}')),
+                  );
+                },
+                onViewWeek: onViewWeek,
+              );
+            }
+
+            if (_mode == MealPlanViewMode.today) {
+              return buildDay(
+                focusDayKey,
+                onViewWeek: () => setState(() => _mode = MealPlanViewMode.week),
+              );
+            }
+
+            final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
+            final initialIndex = () {
+              final idx = dayKeys.indexOf(focusDayKey);
+              return idx >= 0 ? idx : 0;
+            }();
+
+            return DefaultTabController(
+              length: dayKeys.length,
+              initialIndex: initialIndex.clamp(0, dayKeys.length - 1),
+              child: Column(
+                children: [
+                  Material(
+                    color: Theme.of(context).colorScheme.surface,
+                    child: TabBar(
+                      isScrollable: false,
+                      tabs: [
+                        for (final k in dayKeys)
+                          Tab(
+                            text: _weekdayLetter(
+                              MealPlanKeys.parseDayKey(k) ?? now,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: TabBarView(
+                      children: [
+                        for (final dayKey in dayKeys) buildDay(dayKey),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -428,9 +565,16 @@ class _DayView extends StatelessWidget {
   final String Function(Map<String, dynamic> r) titleOf;
   final String? Function(Map<String, dynamic> r) thumbOf;
 
+  /// safe-only pool (for Inspire + general allow checks)
+  final bool Function(Map<String, dynamic> recipe) recipeAllowed;
+
+  /// "safe" | "swap" | "blocked"
+  final String Function(Map<String, dynamic> recipe) statusTextOf;
+
   final void Function(String slot) onInspire;
   final void Function(String slot) onChoose;
   final void Function(String slot) onNote;
+  final void Function(String slot) onClear;
 
   final bool canSave;
   final Future<void> Function() onSave;
@@ -448,9 +592,12 @@ class _DayView extends StatelessWidget {
     required this.byId,
     required this.titleOf,
     required this.thumbOf,
+    required this.recipeAllowed,
+    required this.statusTextOf,
     required this.onInspire,
     required this.onChoose,
     required this.onNote,
+    required this.onClear,
     required this.canSave,
     required this.onSave,
     required this.onViewWeek,
@@ -475,6 +622,8 @@ class _DayView extends StatelessWidget {
             byId: byId,
             titleOf: titleOf,
             thumbOf: thumbOf,
+            recipeAllowed: recipeAllowed,
+            statusTextOf: statusTextOf,
             onTapRecipe: (id) {
               if (id == null) return;
               Navigator.of(context).push(
@@ -484,6 +633,7 @@ class _DayView extends StatelessWidget {
             onInspire: () => onInspire(slot),
             onChoose: () => onChoose(slot),
             onNote: () => onNote(slot),
+            onClear: () => onClear(slot),
           ),
           const SizedBox(height: 12),
         ],
@@ -522,11 +672,18 @@ class _MealSlotCard extends StatelessWidget {
   final String Function(Map<String, dynamic> r) titleOf;
   final String? Function(Map<String, dynamic> r) thumbOf;
 
+  /// safe-only pool
+  final bool Function(Map<String, dynamic> recipe) recipeAllowed;
+
+  /// "safe" | "swap" | "blocked"
+  final String Function(Map<String, dynamic> recipe) statusTextOf;
+
   final void Function(int? id) onTapRecipe;
 
   final VoidCallback onInspire;
   final VoidCallback onChoose;
   final VoidCallback onNote;
+  final VoidCallback onClear;
 
   const _MealSlotCard({
     required this.slotLabel,
@@ -537,10 +694,13 @@ class _MealSlotCard extends StatelessWidget {
     required this.byId,
     required this.titleOf,
     required this.thumbOf,
+    required this.recipeAllowed,
+    required this.statusTextOf,
     required this.onTapRecipe,
     required this.onInspire,
     required this.onChoose,
     required this.onNote,
+    required this.onClear,
   });
 
   @override
@@ -553,16 +713,18 @@ class _MealSlotCard extends StatelessWidget {
       return Card(
         child: ListTile(
           leading: const Icon(Icons.sticky_note_2_outlined),
-          title: Text(noteText,
-              style: const TextStyle(fontWeight: FontWeight.w600)),
+          title: Text(
+            noteText,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
           subtitle: Text(slotLabel),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               IconButton(
-                tooltip: 'Clear note (add a recipe)',
+                tooltip: 'Clear',
                 icon: const Icon(Icons.close),
-                onPressed: onInspire,
+                onPressed: onClear,
               ),
               IconButton(
                 tooltip: 'Edit note',
@@ -583,6 +745,105 @@ class _MealSlotCard extends StatelessWidget {
     final title = r == null ? 'Not set' : titleOf(r);
     final thumb = r == null ? null : thumbOf(r);
 
+    // No recipe selected
+    if (r == null) {
+      return Card(
+        child: ListTile(
+          leading: const Icon(Icons.restaurant_menu),
+          title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+          subtitle: Text(slotLabel),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Inspire',
+                onPressed: onInspire,
+              ),
+              IconButton(
+                icon: const Icon(Icons.search),
+                tooltip: 'Choose recipe',
+                onPressed: onChoose,
+              ),
+              IconButton(
+                icon: const Icon(Icons.edit_note),
+                tooltip: 'Add note',
+                onPressed: onNote,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final status = statusTextOf(r); // safe | swap | blocked
+
+    if (status == 'blocked') {
+      return Card(
+        color: Theme.of(context).colorScheme.errorContainer,
+        child: ListTile(
+          leading: const Icon(Icons.warning_amber_rounded),
+          title: Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          subtitle: Text('$slotLabel • Not suitable for current allergies'),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Inspire (safe only)',
+                onPressed: onInspire,
+              ),
+              IconButton(
+                icon: const Icon(Icons.search),
+                tooltip: 'Choose recipe',
+                onPressed: onChoose,
+              ),
+            ],
+          ),
+          onTap: () => onTapRecipe(rid),
+        ),
+      );
+    }
+
+    if (status == 'swap') {
+      return Card(
+        color: Theme.of(context).colorScheme.tertiaryContainer,
+        child: ListTile(
+          leading: const Icon(Icons.swap_horiz),
+          title: Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          subtitle: Text('$slotLabel • Needs swap to be allergy-safe'),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Inspire (safe only)',
+                onPressed: onInspire,
+              ),
+              IconButton(
+                icon: const Icon(Icons.search),
+                tooltip: 'Choose recipe',
+                onPressed: onChoose,
+              ),
+              IconButton(
+                icon: const Icon(Icons.edit_note),
+                tooltip: 'Add note',
+                onPressed: onNote,
+              ),
+            ],
+          ),
+          onTap: () => onTapRecipe(rid),
+        ),
+      );
+    }
+
+    // Safe (normal)
     return Card(
       child: ListTile(
         leading: _Thumb(url: thumb),
@@ -656,7 +917,7 @@ class _Thumb extends StatelessWidget {
 }
 
 // ----------------------------------------------------
-// Choose Recipe Sheet
+// Choose Recipe Sheet (safe + needs swap + excluded)
 // ----------------------------------------------------
 class _ChooseRecipeSheet extends StatefulWidget {
   final List<Map<String, dynamic>> recipes;
@@ -664,15 +925,15 @@ class _ChooseRecipeSheet extends StatefulWidget {
   final String? Function(Map<String, dynamic>) thumbOf;
   final int? Function(Map<String, dynamic>) idOf;
 
-  /// If provided, we disable recipes that fail profile exclusions.
-  final bool Function(Map<String, dynamic>)? isAllowed;
+  /// Return: "safe" | "swap" | "blocked" (or null = safe)
+  final String Function(Map<String, dynamic> recipe)? statusTextOf;
 
   const _ChooseRecipeSheet({
     required this.recipes,
     required this.titleOf,
     required this.thumbOf,
     required this.idOf,
-    this.isAllowed,
+    this.statusTextOf,
   });
 
   @override
@@ -689,9 +950,22 @@ class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
     super.dispose();
   }
 
+  String _status(Map<String, dynamic> r) {
+    final s = widget.statusTextOf?.call(r);
+    if (s == null || s.trim().isEmpty) return 'safe';
+    return s.toLowerCase();
+  }
+
+  bool _isSafe(Map<String, dynamic> r) => _status(r) == 'safe';
+  bool _needsSwap(Map<String, dynamic> r) => _status(r) == 'swap';
+  bool _isBlocked(Map<String, dynamic> r) => _status(r) == 'blocked';
+
   @override
   Widget build(BuildContext context) {
+    // Hide only BLOCKED. Keep safe + needs swap.
     final filtered = widget.recipes.where((r) {
+      if (_isBlocked(r)) return false;
+
       if (_q.trim().isEmpty) return true;
       final t = widget.titleOf(r).toLowerCase();
       return t.contains(_q.toLowerCase());
@@ -736,11 +1010,14 @@ class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
                   final title = widget.titleOf(r);
                   final thumb = widget.thumbOf(r);
 
-                  final allowed =
-                      widget.isAllowed == null ? true : widget.isAllowed!(r);
+                  final safe = _isSafe(r);
+                  final swap = _needsSwap(r);
+
+                  // Allow selecting safe + needs swap
+                  final enabled = id != null && (safe || swap);
 
                   return ListTile(
-                    enabled: allowed && id != null,
+                    enabled: enabled,
                     leading: thumb == null
                         ? const Icon(Icons.restaurant_menu)
                         : Image.network(
@@ -752,11 +1029,10 @@ class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
                                 const Icon(Icons.restaurant_menu),
                           ),
                     title: Text(title),
-                    subtitle:
-                        allowed ? null : const Text('Excluded by allergies'),
-                    onTap: (!allowed || id == null)
-                        ? null
-                        : () => Navigator.of(context).pop(id),
+                    subtitle: swap ? const Text('Needs swap') : null,
+                    trailing:
+                        swap ? const Icon(Icons.swap_horiz, size: 18) : null,
+                    onTap: !enabled ? null : () => Navigator.of(context).pop(id),
                   );
                 },
               ),
@@ -782,3 +1058,8 @@ class _NoteResult {
   const _NoteResult.cancel() : this._(_NoteResultKind.cancel, null);
   _NoteResult.save(String text) : this._(_NoteResultKind.save, text);
 }
+
+// ----------------------------------------------------
+// ✅ Allergy review dialog choice (kept for future use)
+// ----------------------------------------------------
+enum _AllergyReviewChoice { keep, review }
