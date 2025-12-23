@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../meal_plan/core/meal_plan_review_service.dart';
 import 'adult_profile_screen.dart';
 import 'child_profile_screen.dart';
 
@@ -41,8 +42,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
 
-    final parentName =
-        (data['parentName'] is String) ? (data['parentName'] as String).trim() : '';
+    final parentName = (data['parentName'] is String)
+        ? (data['parentName'] as String).trim()
+        : '';
 
     if (parentName.isEmpty) {
       _ensuredAdult1 = true;
@@ -68,6 +70,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   // --------------------------------------------------
+  // Review prompt helper (runs from Profile context)
+  // --------------------------------------------------
+  Future<void> _handleReturnFromProfileEditor(dynamic res) async {
+    if (!mounted) return;
+    if (res is! Map) return;
+
+    final didChangeAllergies = res['didChangeAllergies'] == true;
+
+    // Always prompt (it checks the flag + decides what to do)
+    if (didChangeAllergies) {
+      await MealPlanReviewService.checkAndPromptIfNeeded(context);
+    }
+
+    // Optional snackbars
+    if (res['deleted'] == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Deleted')),
+      );
+      return;
+    }
+
+    if (res.containsKey('isCreate')) {
+      final isCreate = res['isCreate'] == true;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(isCreate ? 'Added' : 'Saved')),
+      );
+    }
+  }
+
+  // --------------------------------------------------
   // Add Adult (NO POPUP): create record, go to form
   // Name is enforced in AdultProfileScreen (cannot save unnamed)
   // --------------------------------------------------
@@ -89,11 +121,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     if (!mounted) return;
 
-    Navigator.of(context).push(
+    final res = await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => AdultProfileScreen(adultIndex: updated.length - 1),
       ),
     );
+
+    await _handleReturnFromProfileEditor(res);
   }
 
   // --------------------------------------------------
@@ -118,11 +152,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     if (!mounted) return;
 
-    Navigator.of(context).push(
+    final res = await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ChildProfileScreen(childIndex: updated.length - 1),
       ),
     );
+
+    await _handleReturnFromProfileEditor(res);
   }
 
   // --------------------------------------------------
@@ -203,7 +239,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('Adults', style: Theme.of(context).textTheme.titleMedium),
+                      Text('Adults',
+                          style: Theme.of(context).textTheme.titleMedium),
                       TextButton.icon(
                         onPressed: () => _addAdult(docRef, adults),
                         icon: const Icon(Icons.add),
@@ -231,11 +268,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ),
                         subtitle: const Text('Tap to view / edit allergies'),
                         trailing: const Icon(Icons.chevron_right),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => AdultProfileScreen(adultIndex: i),
-                          ),
-                        ),
+                        onTap: () async {
+                          final res = await Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  AdultProfileScreen(adultIndex: i),
+                            ),
+                          );
+                          await _handleReturnFromProfileEditor(res);
+                        },
                       ),
                     );
                   }),
@@ -246,7 +287,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('Children', style: Theme.of(context).textTheme.titleMedium),
+                      Text('Children',
+                          style: Theme.of(context).textTheme.titleMedium),
                       TextButton.icon(
                         onPressed: () => _addChild(docRef, children),
                         icon: const Icon(Icons.add),
@@ -274,11 +316,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ),
                         subtitle: const Text('Tap to view / edit'),
                         trailing: const Icon(Icons.chevron_right),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => ChildProfileScreen(childIndex: i),
-                          ),
-                        ),
+                        onTap: () async {
+                          final res = await Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  ChildProfileScreen(childIndex: i),
+                            ),
+                          );
+                          await _handleReturnFromProfileEditor(res);
+                        },
                       ),
                     );
                   }),
@@ -290,7 +336,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     label: const Text('Log out'),
                     onPressed: () async {
                       await FirebaseAuth.instance.signOut();
-                      // authStateChanges() will redirect
                     },
                   ),
                 ],

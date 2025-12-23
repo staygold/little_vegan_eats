@@ -8,6 +8,7 @@ import 'allergy_keys.dart';
 import 'meal_plan_keys.dart';
 import 'meal_plan_repository.dart';
 import 'meal_plan_slots.dart';
+import '../../recipes/allergy_engine.dart';
 
 class MealPlanController extends ChangeNotifier {
   MealPlanController({
@@ -27,9 +28,6 @@ class MealPlanController extends ChangeNotifier {
   Map<String, dynamic>? weekData;
 
   /// Draft edits: dayKey -> slot -> entryMap
-  /// EntryMap supports:
-  /// - {"type":"recipe","recipeId":123,"source":"auto|manual"}
-  /// - {"type":"note","text":"Out for dinner"}
   final Map<String, Map<String, Map<String, dynamic>>> _draft = {};
 
   StreamSubscription<Map<String, dynamic>?>? _sub;
@@ -51,50 +49,130 @@ class MealPlanController extends ChangeNotifier {
     required Set<String> excludedAllergens,
     required Set<String> childAllergens,
   }) {
-    _excludedAllergens = excludedAllergens.where(AllergyKeys.isSupported).toSet();
-    _childAllergens = childAllergens.where(AllergyKeys.isSupported).toSet();
-
-    // Allow regeneration with new rules
-    _lastPopulatedWeekId = null;
-    notifyListeners();
+    _excludedAllergens = excludedAllergens;
+    _childAllergens = childAllergens;
+    notifyListeners(); // important for card refresh
   }
 
-  Set<String> _recipeAllergens(Map<String, dynamic> recipe) {
-    // Supports either recipe['allergens'] or recipe['recipe']['allergens']
-    dynamic v = recipe['allergens'];
-    final inner = recipe['recipe'];
-    if (v == null && inner is Map<String, dynamic>) {
-      v = inner['allergens'];
+  // -------------------------------------------------------
+  // Ingredient text (MATCHES recipe list)
+  // -------------------------------------------------------
+
+  String _ingredientsTextOf(Map<String, dynamic> recipe) {
+    final recipeData = recipe['recipe'];
+    if (recipeData is! Map<String, dynamic>) return '';
+
+    final flat = recipeData['ingredients_flat'];
+    if (flat is! List) return '';
+
+    final buf = StringBuffer();
+    for (final row in flat) {
+      if (row is! Map) continue;
+      buf.write('${row['name'] ?? ''} ');
+      buf.write('${row['notes'] ?? ''} ');
     }
 
-    final out = <String>{};
-
-    if (v is List) {
-      for (final a in v) {
-        final k = a?.toString().trim();
-        if (k != null && k.isNotEmpty && AllergyKeys.isSupported(k)) out.add(k);
-      }
-    } else if (v is String) {
-      // allow "peanut, gluten" or "peanut|gluten"
-      for (final part in v.split(RegExp(r'[,|]'))) {
-        final k = part.trim();
-        if (k.isNotEmpty && AllergyKeys.isSupported(k)) out.add(k);
-      }
-    }
-
-    return out;
+    return buf.toString().trim();
   }
 
+  // -------------------------------------------------------
+  // Allergy engine helpers (NO NEW TYPES / NO swapAvailable enum)
+  // -------------------------------------------------------
+
+  /// Returns the raw engine response (dynamic) or null if we should "fail open".
+  dynamic evaluateRecipe(
+    Map<String, dynamic> recipe, {
+    required bool includeSwapRecipes,
+  }) {
+    if (_excludedAllergens.isEmpty && _childAllergens.isEmpty) return null;
+
+    final ingredientsText = _ingredientsTextOf(recipe);
+    if (ingredientsText.isEmpty) return null;
+
+    final allAllergies = <String>{
+      ..._excludedAllergens,
+      ..._childAllergens,
+    };
+
+    return AllergyEngine.evaluateRecipe(
+      ingredientsText: ingredientsText,
+      childAllergies: allAllergies.toList(),
+      includeSwapRecipes: includeSwapRecipes,
+    );
+  }
+
+  /// ✅ Safe-only (this is what your meal plan generation + inspire pool uses)
   bool recipeAllowed(Map<String, dynamic> recipe) {
-    if (_excludedAllergens.isEmpty) return true;
-    final a = _recipeAllergens(recipe);
-    return a.intersection(_excludedAllergens).isEmpty;
+    if (_excludedAllergens.isEmpty && _childAllergens.isEmpty) return true;
+
+    final ingredientsText = _ingredientsTextOf(recipe);
+    if (ingredientsText.isEmpty) return true;
+
+    final allAllergies = <String>{
+      ..._excludedAllergens,
+      ..._childAllergens,
+    };
+
+    final res = AllergyEngine.evaluateRecipe(
+      ingredientsText: ingredientsText,
+      childAllergies: allAllergies.toList(),
+      includeSwapRecipes: false, // ✅ SAFE ONLY
+    );
+
+    return res.status == AllergyStatus.safe;
   }
 
-  bool recipeSafeForAllChildren(Map<String, dynamic> recipe) {
-    if (_childAllergens.isEmpty) return true;
-    final a = _recipeAllergens(recipe);
-    return a.intersection(_childAllergens).isEmpty;
+  /// ✅ “Swap available” style signal for Meal Plan UI
+  /// (works even though your AllergyStatus enum does NOT have swapAvailable)
+  bool recipeHasSwap(Map<String, dynamic> recipe) {
+    // No allergies set -> nothing to swap for
+    if (_excludedAllergens.isEmpty && _childAllergens.isEmpty) return false;
+
+    final res = evaluateRecipe(recipe, includeSwapRecipes: true);
+    if (res == null) return false;
+
+    // If it's safe, we don't treat it as "needs swap"
+    try {
+      final st = (res as dynamic).status;
+      if (st == AllergyStatus.safe) return false;
+    } catch (_) {
+      // ignore
+    }
+
+    // 1) Status might be a string/enum containing "swap"
+    try {
+      final st = (res as dynamic).status;
+      final s = st?.toString().toLowerCase() ?? '';
+      if (s.contains('swap')) return true;
+    } catch (_) {
+      // ignore
+    }
+
+    // 2) Engine might return explicit lists of swaps/suggestions
+    bool hasNonEmptyList(dynamic v) =>
+        v is List && v.where((e) => e != null).isNotEmpty;
+
+    try {
+      final v = (res as dynamic).swapRecipes;
+      if (hasNonEmptyList(v)) return true;
+    } catch (_) {}
+
+    try {
+      final v = (res as dynamic).swaps;
+      if (hasNonEmptyList(v)) return true;
+    } catch (_) {}
+
+    try {
+      final v = (res as dynamic).suggestions;
+      if (hasNonEmptyList(v)) return true;
+    } catch (_) {}
+
+    try {
+      final v = (res as dynamic).swapSuggestions;
+      if (hasNonEmptyList(v)) return true;
+    } catch (_) {}
+
+    return false;
   }
 
   // -------------------------------------------------------
@@ -145,7 +223,7 @@ class MealPlanController extends ChangeNotifier {
   List<String> dayKeysForWeek() => MealPlanKeys.weekDayKeys(weekId);
 
   // -------------------------------------------------------
-  // Helpers (ID parsing)
+  // Helpers
   // -------------------------------------------------------
 
   int? recipeIdFromAny(dynamic raw) {
@@ -156,11 +234,10 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // Entry parsing (supports legacy int + new map format)
+  // Entry parsing
   // -------------------------------------------------------
 
   static Map<String, dynamic>? _parseEntry(dynamic raw) {
-    // Legacy: int/num recipeId
     if (raw is int) {
       return {'type': 'recipe', 'recipeId': raw, 'source': 'auto'};
     }
@@ -168,7 +245,6 @@ class MealPlanController extends ChangeNotifier {
       return {'type': 'recipe', 'recipeId': raw.toInt(), 'source': 'auto'};
     }
 
-    // New: map
     if (raw is Map) {
       final m = Map<String, dynamic>.from(raw);
       final type = (m['type'] ?? '').toString();
@@ -181,7 +257,8 @@ class MealPlanController extends ChangeNotifier {
 
       if (type == 'recipe') {
         final rid = m['recipeId'];
-        final recipeId = (rid is int) ? rid : (rid is num ? rid.toInt() : null);
+        final recipeId =
+            (rid is int) ? rid : (rid is num ? rid.toInt() : null);
         if (recipeId == null) return null;
         return {
           'type': 'recipe',
@@ -197,10 +274,8 @@ class MealPlanController extends ChangeNotifier {
   Map<String, dynamic>? firestoreEntry(String dayKey, String slot) {
     final data = weekData;
     if (data == null) return null;
-
     final day = MealPlanRepository.dayMapFromWeek(data, dayKey);
     if (day == null) return null;
-
     return _parseEntry(day[slot]);
   }
 
@@ -247,25 +322,20 @@ class MealPlanController extends ChangeNotifier {
   }
 
   void setDraftNote(String dayKey, String slot, String text) {
-    final t = text.trim();
     final dayDraft = _draft.putIfAbsent(dayKey, () => {});
-    dayDraft[slot] = {'type': 'note', 'text': t};
+    dayDraft[slot] = {'type': 'note', 'text': text.trim()};
     notifyListeners();
   }
 
   bool hasDraftChanges(String dayKey) {
     final d = _draft[dayKey];
     if (d == null || d.isEmpty) return false;
-
     final data = weekData;
     if (data == null) return true;
 
     for (final e in d.entries) {
-      final slot = e.key;
-      final draft = e.value;
-      final current = firestoreEntry(dayKey, slot);
-
-      if (!_entryEquals(current, draft)) return true;
+      final current = firestoreEntry(dayKey, e.key);
+      if (!_entryEquals(current, e.value)) return true;
     }
     return false;
   }
@@ -273,43 +343,35 @@ class MealPlanController extends ChangeNotifier {
   bool _entryEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
     if (a == null && b == null) return true;
     if (a == null || b == null) return false;
-    final ta = a['type'];
-    final tb = b['type'];
-    if (ta != tb) return false;
+    if (a['type'] != b['type']) return false;
 
-    if (ta == 'recipe') {
-      return entryRecipeId(a) == entryRecipeId(b) && (a['source'] ?? '') == (b['source'] ?? '');
+    if (a['type'] == 'recipe') {
+      return entryRecipeId(a) == entryRecipeId(b) &&
+          (a['source'] ?? '') == (b['source'] ?? '');
     }
-    if (ta == 'note') {
+    if (a['type'] == 'note') {
       return entryNoteText(a) == entryNoteText(b);
     }
     return false;
   }
 
   Future<void> saveDay(String dayKey) async {
-    final data = weekData;
     final dayDraft = _draft[dayKey];
     if (dayDraft == null || dayDraft.isEmpty) return;
 
-    final existing = (data == null)
-        ? <String, dynamic>{}
-        : (MealPlanRepository.dayMapFromWeek(data, dayKey) ?? <String, dynamic>{});
+    final existing =
+        MealPlanRepository.dayMapFromWeek(weekData ?? {}, dayKey) ?? {};
 
-    final updated = <String, dynamic>{...existing};
-
-    for (final e in dayDraft.entries) {
-      updated[e.key] = e.value;
-    }
-
-    await _repo.saveDay(uid: uid, weekId: weekId, dayKey: dayKey, daySlots: updated);
+    await _repo.saveDay(
+      uid: uid,
+      weekId: weekId,
+      dayKey: dayKey,
+      daySlots: {...existing, ...dayDraft},
+    );
 
     _draft.remove(dayKey);
     notifyListeners();
   }
-
-  // -------------------------------------------------------
-  // Inspire (recipe only)
-  // -------------------------------------------------------
 
   int? pickDifferentId({
     required List<int> availableIds,
@@ -322,8 +384,8 @@ class MealPlanController extends ChangeNotifier {
     final start = idx < 0 ? 0 : (idx + 1) % availableIds.length;
 
     for (int step = 0; step < availableIds.length; step++) {
-      final candidate = availableIds[(start + step) % availableIds.length];
-      if (candidate != currentId) return candidate;
+      final c = availableIds[(start + step) % availableIds.length];
+      if (c != currentId) return c;
     }
     return null;
   }
@@ -351,9 +413,10 @@ class MealPlanController extends ChangeNotifier {
       notifyListeners();
     }
 
-    final existingDays = data['days'] is Map ? (data['days'] as Map) : const {};
+    final existingDays =
+        data['days'] is Map ? (data['days'] as Map) : const {};
 
-    // SAFE pool (respect allergies) + robust id parsing (int/num/string)
+    // SAFE pool (respect allergies) - safe only
     final allIds = <int>[];
     for (final r in recipes) {
       if (!recipeAllowed(r)) continue;
@@ -362,7 +425,7 @@ class MealPlanController extends ChangeNotifier {
     }
     if (allIds.isEmpty) return;
 
-    // Buckets must be built from SAFE recipes too, and must also parse ids robustly
+    // Buckets must be built from SAFE recipes too
     final safeRecipes = recipes.where(recipeAllowed).toList();
     final buckets = _buildSlotBucketsFromCourse(safeRecipes);
 
@@ -411,7 +474,11 @@ class MealPlanController extends ChangeNotifier {
           );
 
           if (picked != null) {
-            updatedDay[slot] = {'type': 'recipe', 'recipeId': picked, 'source': 'auto'};
+            updatedDay[slot] = {
+              'type': 'recipe',
+              'recipeId': picked,
+              'source': 'auto',
+            };
             used.add(picked);
             changed = true;
           }
@@ -430,7 +497,9 @@ class MealPlanController extends ChangeNotifier {
     }
   }
 
-  Map<String, List<int>> _buildSlotBucketsFromCourse(List<Map<String, dynamic>> recipes) {
+  Map<String, List<int>> _buildSlotBucketsFromCourse(
+    List<Map<String, dynamic>> recipes,
+  ) {
     const breakfastKeys = {'breakfast', 'brunch'};
     const snackKeys = {'snack', 'snacks'};
     const lunchKeys = {'lunch'};
@@ -486,7 +555,10 @@ class MealPlanController extends ChangeNotifier {
 
     final inner = recipe['recipe'];
     if (inner is Map<String, dynamic>) {
-      v = inner['course'] ?? inner['courses'] ?? inner['meal'] ?? inner['meal_type'];
+      v = inner['course'] ??
+          inner['courses'] ??
+          inner['meal'] ??
+          inner['meal_type'];
     }
     v ??= recipe['course'] ?? recipe['courses'];
 
@@ -495,7 +567,11 @@ class MealPlanController extends ChangeNotifier {
       return s.isEmpty ? null : s;
     }
     if (v is List) {
-      final parts = v.whereType<String>().map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      final parts = v
+          .whereType<String>()
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
       if (parts.isEmpty) return null;
       return parts.join(', ');
     }

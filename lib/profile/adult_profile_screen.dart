@@ -3,7 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../recipes/allergy_keys.dart';
-import '../meal_plan/core/meal_plan_review_service.dart'; // ✅ NEW
+import '../meal_plan/core/meal_plan_review_service.dart';
 
 class AdultProfileScreen extends StatefulWidget {
   final int adultIndex;
@@ -47,11 +47,19 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
     super.dispose();
   }
 
+  // ------------------------------------------------------------
+  // Firestore helpers
+  // ------------------------------------------------------------
+
   DocumentReference<Map<String, dynamic>>? _userDoc() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return null;
     return FirebaseFirestore.instance.collection('users').doc(user.uid);
   }
+
+  // ------------------------------------------------------------
+  // Form sync
+  // ------------------------------------------------------------
 
   void _applyToForm(Map<String, dynamic> adult) {
     _loadedSnapshot = Map<String, dynamic>.from(adult);
@@ -72,85 +80,98 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
     if (!_hasAllergies) _selectedAllergies.clear();
   }
 
+  // ------------------------------------------------------------
+  // Save
+  // ------------------------------------------------------------
+
   Future<void> _save(List adults) async {
-  final doc = _userDoc();
-  if (doc == null) return;
+    final doc = _userDoc();
+    if (doc == null) return;
 
-  final name = _nameCtrl.text.trim();
-  if (name.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Name is required')),
-    );
-    return;
-  }
-
-  if (widget.adultIndex < 0 || widget.adultIndex >= adults.length) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Person not found')),
-    );
-    return;
-  }
-
-  // ---- capture previous allergy state (from loaded snapshot) ----
-  final prevHas = _loadedSnapshot?['hasAllergies'] == true;
-  final prevListRaw = _loadedSnapshot?['allergies'];
-  final prevAllergies = <String>[];
-  if (prevListRaw is List) {
-    for (final a in prevListRaw) {
-      final k = AllergyKeys.normalize(a.toString());
-      if (k != null) prevAllergies.add(k);
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Name is required')),
+      );
+      return;
     }
-    prevAllergies.sort();
-  }
-  if (!prevHas) prevAllergies.clear();
 
-  // ---- compute new allergy state ----
-  final canonicalAllergies = _hasAllergies
-      ? (({
-          for (final a in _selectedAllergies) (AllergyKeys.normalize(a) ?? a)
-        }).where(AllergyKeys.supported.contains).toList()
-        ..sort())
-      : <String>[];
+    if (widget.adultIndex < 0 || widget.adultIndex >= adults.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Person not found')),
+      );
+      return;
+    }
 
-  final didChangeAllergies =
-      (prevHas != _hasAllergies) || (prevAllergies.join(',') != canonicalAllergies.join(','));
+    // ---- previous allergy state ----
+    final prevHas = _loadedSnapshot?['hasAllergies'] == true;
+    final prevRaw = _loadedSnapshot?['allergies'];
+    final prevAllergies = <String>[];
 
-  // ---- write to Firestore ----
-  adults[widget.adultIndex] = {
-    'name': name,
-    'hasAllergies': _hasAllergies,
-    'allergies': canonicalAllergies,
-  };
+    if (prevRaw is List) {
+      for (final a in prevRaw) {
+        final k = AllergyKeys.normalize(a.toString());
+        if (k != null) prevAllergies.add(k);
+      }
+      prevAllergies.sort();
+    }
+    if (!prevHas) prevAllergies.clear();
 
-  setState(() => _saving = true);
-  try {
-    await doc.set({
-      'adults': adults,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    // ---- new allergy state ----
+    final newAllergies = _hasAllergies
+        ? (_selectedAllergies
+            .map((a) => AllergyKeys.normalize(a))
+            .whereType<String>()
+            .where(AllergyKeys.supported.contains)
+            .toSet()
+            .toList()
+          ..sort())
+        : <String>[];
 
-    // ✅ if allergies changed, flag + prompt
-    if (didChangeAllergies) {
-      await MealPlanReviewService.markNeedsReview(changedForLabel: name);
+    final didChangeAllergies =
+        prevHas != _hasAllergies ||
+        prevAllergies.join(',') != newAllergies.join(',');
+
+    // ---- write ----
+    adults[widget.adultIndex] = {
+      'name': name,
+      'hasAllergies': _hasAllergies,
+      'allergies': newAllergies,
+    };
+
+    setState(() => _saving = true);
+    try {
+      await doc.set({
+        'adults': adults,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      // ✅ mark + prompt meal plan review only if allergies changed
+      if (didChangeAllergies) {
+        await MealPlanReviewService.markNeedsReview(
+          changedForLabel: name,
+        );
+        if (!mounted) return;
+        await MealPlanReviewService.checkAndPromptIfNeeded(context);
+      }
+
       if (!mounted) return;
-      await MealPlanReviewService.checkAndPromptIfNeeded(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Saved')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Saved')),
-    );
-  } catch (e) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Could not save: $e')),
-    );
-  } finally {
-    if (mounted) setState(() => _saving = false);
   }
-}
 
-
+  // ------------------------------------------------------------
+  // Delete
+  // ------------------------------------------------------------
 
   Future<void> _delete(List adults) async {
     final doc = _userDoc();
@@ -159,13 +180,6 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
     if (widget.adultIndex == 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("You can’t delete this person.")),
-      );
-      return;
-    }
-
-    if (widget.adultIndex < 0 || widget.adultIndex >= adults.length) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Person not found')),
       );
       return;
     }
@@ -211,12 +225,16 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
     }
   }
 
+  // ------------------------------------------------------------
+  // UI
+  // ------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
     final doc = _userDoc();
 
     return Scaffold(
-      body: (doc == null)
+      body: doc == null
           ? const Center(child: Text('Not logged in'))
           : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
               stream: doc.snapshots(),
@@ -246,7 +264,6 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
 
                 final adult = Map<String, dynamic>.from(raw);
 
-                // Keep form in sync with Firestore
                 final snapshotString = adult.toString();
                 final prevString = _loadedSnapshot?.toString();
                 if (snapshotString != prevString) {
@@ -315,7 +332,9 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
                                 : (v) {
                                     setState(() {
                                       if (v == true) {
-                                        if (!selected) _selectedAllergies.add(a);
+                                        if (!selected) {
+                                          _selectedAllergies.add(a);
+                                        }
                                       } else {
                                         _selectedAllergies.remove(a);
                                       }
@@ -323,7 +342,7 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
                                     });
                                   },
                           );
-                        }).toList(),
+                        }),
                       ],
 
                       const SizedBox(height: 24),
@@ -341,7 +360,8 @@ class _AdultProfileScreenState extends State<AdultProfileScreen> {
                         SizedBox(
                           height: 48,
                           child: OutlinedButton(
-                            onPressed: _saving ? null : () => _delete(adults),
+                            onPressed:
+                                _saving ? null : () => _delete(adults),
                             child: const Text('DELETE'),
                           ),
                         ),
