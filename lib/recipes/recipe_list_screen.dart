@@ -116,6 +116,24 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   String? _canonicalAllergyKey(String raw) => AllergyKeys.normalize(raw);
   String _prettyAllergy(String key) => AllergyKeys.label(key);
 
+  // NEW: if cache has more than what we’re currently showing, upgrade UI to cache
+  Future<void> _upgradeItemsFromCacheIfBigger() async {
+    try {
+      final cached = await RecipeCache.load();
+      final updatedAt = await RecipeCache.lastUpdated();
+
+      if (!mounted) return;
+
+      if (cached.length > _items.length) {
+        setState(() {
+          _items = cached;
+          _cacheUpdatedAt = updatedAt;
+          _loadedFromCache = true;
+        });
+      }
+    } catch (_) {}
+  }
+
   // ------------------------
   // Courses (WPRM)
   // ------------------------
@@ -203,7 +221,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         final adults = <_ProfilePerson>[];
         final children = <_ProfilePerson>[];
 
-        // Adults
         for (var i = 0; i < rawAdults.length; i++) {
           final a = rawAdults[i];
           if (a is! Map) continue;
@@ -236,7 +253,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
           );
         }
 
-        // Children
         for (var i = 0; i < rawChildren.length; i++) {
           final c = rawChildren[i];
           if (c is! Map) continue;
@@ -283,7 +299,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
           _loadingHousehold = false;
           _householdError = null;
 
-          // If we were in single-person mode and that person disappeared, fallback.
           if (_mode == _SuitabilityMode.singlePerson) {
             final exists = _allPeople.any((p) => p.id == _selectedPersonId);
             if (!exists) {
@@ -386,11 +401,14 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   // ------------------------
 
   Future<void> _loadFromCacheThenRefresh() async {
+    bool hadCache = false;
+
     try {
       final cached = await RecipeCache.load();
       final updatedAt = await RecipeCache.lastUpdated();
 
       if (cached.isNotEmpty && mounted) {
+        hadCache = true;
         setState(() {
           _items = cached;
           _cacheUpdatedAt = updatedAt;
@@ -403,6 +421,17 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       }
     } catch (_) {}
 
+    // ✅ KEY CHANGE:
+    // If we already have cache, do NOT overwrite UI with page 1 (50).
+    // The cache is the "offline full dataset".
+    if (hadCache) {
+      // In case something else (bootstrap) refreshes cache in the background,
+      // upgrade the UI if it grows.
+      unawaited(Future.delayed(const Duration(seconds: 2), _upgradeItemsFromCacheIfBigger));
+      return;
+    }
+
+    // No cache -> do the existing paging load
     await _loadFirstPage();
   }
 
@@ -425,7 +454,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         _loading = false;
       });
 
-      await RecipeCache.save(_items);
+      // Do NOT save _items to cache (subset)
       final updatedAt = await RecipeCache.lastUpdated();
       if (mounted) {
         setState(() {
@@ -478,7 +507,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         _hasMore = false;
       });
 
-      await RecipeCache.save(_items);
+      // Do NOT save _items to cache (subset)
       final updatedAt = await RecipeCache.lastUpdated();
       if (mounted) {
         setState(() {
@@ -486,6 +515,9 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
           _loadedFromCache = true;
         });
       }
+
+      // ✅ If cache has grown elsewhere, prefer it.
+      await _upgradeItemsFromCacheIfBigger();
     } catch (_) {
       if (!mounted) return;
       setState(() => _prefetchingAll = false);
@@ -542,7 +574,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       final res = AllergyEngine.evaluateRecipe(
         ingredientsText: ingredientsText,
         childAllergies: p.allergies,
-        includeSwapRecipes: true, // detect swaps even if toggle is off
+        includeSwapRecipes: true,
       );
 
       if (res.status == AllergyStatus.notSuitable) {
@@ -574,357 +606,358 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   }
 
   // ------------------------
-// UI
-// ------------------------
+  // UI
+  // ------------------------
 
-@override
-Widget build(BuildContext context) {
-  final courseOptions = _courseOptions;
-  final selectedCourse =
-      courseOptions.contains(_selectedCourse) ? _selectedCourse : 'All';
-  if (selectedCourse != _selectedCourse) _selectedCourse = selectedCourse;
+  @override
+  Widget build(BuildContext context) {
+    final courseOptions = _courseOptions;
+    final selectedCourse =
+        courseOptions.contains(_selectedCourse) ? _selectedCourse : 'All';
+    if (selectedCourse != _selectedCourse) _selectedCourse = selectedCourse;
 
-  final q = _query.trim().toLowerCase();
+    final q = _query.trim().toLowerCase();
 
-  // IMPORTANT:
-  // If filter is OFF, treat it as "whole family" for tagging (optional),
-  // but do NOT filter anything out.
-  final activeProfiles = _filterByAllergies ? _activeProfilesForMode() : _allPeople;
+    final activeProfiles = _filterByAllergies ? _activeProfilesForMode() : _allPeople;
 
-  final hasAnyAllergies =
-      activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
+    final hasAnyAllergies =
+        activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
 
-  final visible = _items.where((r) {
-    // Course filter
-    final courses = _coursesOf(r);
-    final matchesCourse =
-        (_selectedCourse == 'All') || courses.contains(_selectedCourse);
+    final visible = _items.where((r) {
+      final courses = _coursesOf(r);
+      final matchesCourse =
+          (_selectedCourse == 'All') || courses.contains(_selectedCourse);
 
-    // Search filter
-    final titleMatch = q.isEmpty || _titleOf(r).toLowerCase().contains(q);
+      final titleMatch = q.isEmpty || _titleOf(r).toLowerCase().contains(q);
 
-    final ingredients = r['recipe']?['ingredients_flat'];
-    final ingredientMatch = q.isEmpty
-        ? true
-        : (ingredients is List &&
-            ingredients.any((row) {
-              if (row is! Map) return false;
-              final name = (row['name'] ?? '').toString().toLowerCase();
-              final notes =
-                  stripHtml((row['notes'] ?? '').toString()).toLowerCase();
-              return name.contains(q) || notes.contains(q);
-            }));
+      final ingredients = r['recipe']?['ingredients_flat'];
+      final ingredientMatch = q.isEmpty
+          ? true
+          : (ingredients is List &&
+              ingredients.any((row) {
+                if (row is! Map) return false;
+                final name = (row['name'] ?? '').toString().toLowerCase();
+                final notes =
+                    stripHtml((row['notes'] ?? '').toString()).toLowerCase();
+                return name.contains(q) || notes.contains(q);
+              }));
 
-    if (!(matchesCourse && (titleMatch || ingredientMatch))) return false;
+      if (!(matchesCourse && (titleMatch || ingredientMatch))) return false;
 
-    // Allergy filtering ONLY when user has it ON and there are allergies to consider
-    if (_filterByAllergies && hasAnyAllergies) {
-      final ingredientsText = _ingredientsTextOf(r);
-      for (final p in _activeProfilesForMode()) {
-        if (!_isAllowedForPerson(p: p, ingredientsText: ingredientsText)) {
-          return false;
+      if (_filterByAllergies && hasAnyAllergies) {
+        final ingredientsText = _ingredientsTextOf(r);
+        for (final p in _activeProfilesForMode()) {
+          if (!_isAllowedForPerson(p: p, ingredientsText: ingredientsText)) {
+            debugPrint(
+  '[RecipeList] FILTERED BY ALLERGY id=${r['id']} title="${_titleOf(r)}"',
+);
+return false;
+          }
         }
       }
+
+      return true;
+    }).toList();
+
+    debugPrint(
+  '[RecipeList] items=${_items.length} visible=${visible.length} '
+  'course=$_selectedCourse query="${_query.trim()}" '
+  'filterByAllergies=$_filterByAllergies mode=$_mode '
+  'people=${_allPeople.length}',
+);
+
+    if (_loading) return const Center(child: CircularProgressIndicator());
+
+    if (_items.isEmpty && _error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(_error!, textAlign: TextAlign.center),
+              const SizedBox(height: 12),
+              ElevatedButton(onPressed: _loadFirstPage, child: const Text('Retry')),
+            ],
+          ),
+        ),
+      );
     }
 
-    return true;
-  }).toList();
-
-  if (_loading) return const Center(child: CircularProgressIndicator());
-
-  if (_items.isEmpty && _error != null) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(_error!, textAlign: TextAlign.center),
-            const SizedBox(height: 12),
-            ElevatedButton(onPressed: _loadFirstPage, child: const Text('Retry')),
-          ],
+    final suitabilityItems = <DropdownMenuItem<String>>[
+      const DropdownMenuItem(value: '__whole__', child: Text('Whole family')),
+      const DropdownMenuItem(value: '__kids__', child: Text('All children')),
+      if (_adults.isNotEmpty)
+        const DropdownMenuItem(
+          value: '__sep1__',
+          enabled: false,
+          child: Text('— Adults —'),
         ),
-      ),
-    );
-  }
+      ..._adults.map((a) {
+        final label = a.id == 'adult_0'
+            ? 'Adult 1 (You): ${a.name}'
+            : 'Adult: ${a.name}';
+        return DropdownMenuItem(value: a.id, child: Text(label));
+      }),
+      if (_children.isNotEmpty)
+        const DropdownMenuItem(
+          value: '__sep2__',
+          enabled: false,
+          child: Text('— Children —'),
+        ),
+      ..._children.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name))),
+    ];
 
-  final suitabilityItems = <DropdownMenuItem<String>>[
-    const DropdownMenuItem(value: '__whole__', child: Text('Whole family')),
-    const DropdownMenuItem(value: '__kids__', child: Text('All children')),
-    if (_adults.isNotEmpty)
-      const DropdownMenuItem(
-        value: '__sep1__',
-        enabled: false,
-        child: Text('— Adults —'),
-      ),
-    ..._adults.map((a) {
-      final label = a.id == 'adult_0'
-          ? 'Adult 1 (You): ${a.name}'
-          : 'Adult: ${a.name}';
-      return DropdownMenuItem(value: a.id, child: Text(label));
-    }),
-    if (_children.isNotEmpty)
-      const DropdownMenuItem(
-        value: '__sep2__',
-        enabled: false,
-        child: Text('— Children —'),
-      ),
-    ..._children.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name))),
-  ];
+    String suitabilityValue;
+    if (_mode == _SuitabilityMode.wholeFamily) {
+      suitabilityValue = '__whole__';
+    } else if (_mode == _SuitabilityMode.allChildren) {
+      suitabilityValue = '__kids__';
+    } else {
+      suitabilityValue = _selectedPersonId ?? '__whole__';
+      final exists = _allPeople.any((p) => p.id == suitabilityValue);
+      if (!exists) suitabilityValue = '__whole__';
+    }
 
-  String suitabilityValue;
-  if (_mode == _SuitabilityMode.wholeFamily) {
-    suitabilityValue = '__whole__';
-  } else if (_mode == _SuitabilityMode.allChildren) {
-    suitabilityValue = '__kids__';
-  } else {
-    suitabilityValue = _selectedPersonId ?? '__whole__';
-    final exists = _allPeople.any((p) => p.id == suitabilityValue);
-    if (!exists) suitabilityValue = '__whole__';
-  }
-
-  return Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-        child: Column(
-          children: [
-            TextField(
-              controller: _searchCtrl,
-              decoration: InputDecoration(
-                hintText: 'Search recipes...',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () {
-                          _searchCtrl.clear();
-                          setState(() => _query = '');
-                        },
-                      ),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Column(
+            children: [
+              TextField(
+                controller: _searchCtrl,
+                decoration: InputDecoration(
+                  hintText: 'Search recipes...',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () {
+                            _searchCtrl.clear();
+                            setState(() => _query = '');
+                          },
+                        ),
+                ),
+                onChanged: (v) => setState(() => _query = v),
               ),
-              onChanged: (v) => setState(() => _query = v),
-            ),
 
-            const SizedBox(height: 10),
+              const SizedBox(height: 10),
 
-            if (_loadingHousehold) ...[
-              const Row(
-                children: [
-                  SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  SizedBox(width: 10),
-                  Text('Loading family profiles...'),
-                ],
-              ),
-            ] else if (_householdError != null) ...[
-              Row(
-                children: [
-                  const Icon(Icons.error_outline, size: 16),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Could not load family: $_householdError',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+              if (_loadingHousehold) ...[
+                const Row(
+                  children: [
+                    SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
                     ),
-                  ),
-                  TextButton(
-                    onPressed: _listenToHousehold,
-                    child: const Text('Retry'),
-                  ),
-                ],
-              ),
-            ] else ...[
-              // MAIN TOGGLE
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Filter by allergies'),
-                subtitle: const Text('Turn off to browse all recipes (tags still shown).'),
-                value: _filterByAllergies,
-                onChanged: (val) => setState(() {
-                  _filterByAllergies = val;
-
-                  // If turning OFF, also turn OFF swaps (since it only makes sense when filtering)
-                  if (!val) _includeSwapRecipes = false;
-                }),
-              ),
-
-              // SUB-CONTROLS (only when filtering is ON)
-              if (_filterByAllergies) ...[
+                    SizedBox(width: 10),
+                    Text('Loading family profiles...'),
+                  ],
+                ),
+              ] else if (_householdError != null) ...[
                 Row(
                   children: [
-                    const Text('Suitable for:'),
-                    const SizedBox(width: 12),
+                    const Icon(Icons.error_outline, size: 16),
+                    const SizedBox(width: 8),
                     Expanded(
-                      child: DropdownButton<String>(
-                        isExpanded: true,
-                        value: suitabilityValue,
-                        items: suitabilityItems
-                            .where((i) => i.value != '__sep1__' && i.value != '__sep2__')
-                            .toList(),
-                        onChanged: (v) {
-                          if (v == null) return;
-
-                          setState(() {
-                            if (v == '__whole__') {
-                              _mode = _SuitabilityMode.wholeFamily;
-                              _selectedPersonId = null;
-                            } else if (v == '__kids__') {
-                              _mode = _SuitabilityMode.allChildren;
-                              _selectedPersonId = null;
-                            } else {
-                              _mode = _SuitabilityMode.singlePerson;
-                              _selectedPersonId = v;
-                            }
-
-                            // safest reset on target change
-                            _includeSwapRecipes = false;
-                          });
-                        },
+                      child: Text(
+                        'Could not load family: $_householdError',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
+                    ),
+                    TextButton(
+                      onPressed: _listenToHousehold,
+                      child: const Text('Retry'),
                     ),
                   ],
                 ),
+              ] else ...[
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Filter by allergies'),
+                  subtitle: const Text('Turn off to browse all recipes (tags still shown).'),
+                  value: _filterByAllergies,
+                  onChanged: (val) => setState(() {
+                    _filterByAllergies = val;
+                    if (!val) _includeSwapRecipes = false;
+                  }),
+                ),
 
-                const SizedBox(height: 6),
+                if (_filterByAllergies) ...[
+                  Row(
+                    children: [
+                      const Text('Suitable for:'),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButton<String>(
+                          isExpanded: true,
+                          value: suitabilityValue,
+                          items: suitabilityItems
+                              .where((i) => i.value != '__sep1__' && i.value != '__sep2__')
+                              .toList(),
+                          onChanged: (v) {
+                            if (v == null) return;
 
+                            setState(() {
+                              if (v == '__whole__') {
+                                _mode = _SuitabilityMode.wholeFamily;
+                                _selectedPersonId = null;
+                              } else if (v == '__kids__') {
+                                _mode = _SuitabilityMode.allChildren;
+                                _selectedPersonId = null;
+                              } else {
+                                _mode = _SuitabilityMode.singlePerson;
+                                _selectedPersonId = v;
+                              }
+
+                              _includeSwapRecipes = false;
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 6),
+
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      hasAnyAllergies
+                          ? 'Allergies considered: ${_activeAllergiesLabelFor(_activeProfilesForMode())}'
+                          : 'No allergies saved.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+
+                  if (hasAnyAllergies) ...[
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Include recipes that need swaps'),
+                      subtitle: const Text('Shows recipes with a safe replacement suggestion.'),
+                      value: _includeSwapRecipes,
+                      onChanged: (val) => setState(() => _includeSwapRecipes = val),
+                    ),
+                  ],
+                ],
+              ],
+
+              const SizedBox(height: 8),
+
+              Row(
+                children: [
+                  const Text('Course:'),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      value: selectedCourse,
+                      items: courseOptions
+                          .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                          .toList(),
+                      onChanged: (v) {
+                        if (v == null) return;
+                        setState(() => _selectedCourse = v);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+
+              if (_loadedFromCache || _cacheUpdatedAt != null || _prefetchingAll) ...[
+                const SizedBox(height: 8),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    hasAnyAllergies
-                        ? 'Allergies considered: ${_activeAllergiesLabelFor(_activeProfilesForMode())}'
-                        : 'No allergies saved.',
+                    _prefetchingAll
+                        ? 'Downloading recipes for offline use...'
+                        : (_cacheUpdatedAt != null
+                            ? 'Cached: ${_cacheUpdatedAt!.toLocal()}'
+                            : ''),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
-
-                if (hasAnyAllergies) ...[
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Include recipes that need swaps'),
-                    subtitle: const Text('Shows recipes with a safe replacement suggestion.'),
-                    value: _includeSwapRecipes,
-                    onChanged: (val) => setState(() => _includeSwapRecipes = val),
-                  ),
-                ],
               ],
             ],
-
-            const SizedBox(height: 8),
-
-            // Course filter (always visible)
-            Row(
-              children: [
-                const Text('Course:'),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: selectedCourse,
-                    items: courseOptions
-                        .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                        .toList(),
-                    onChanged: (v) {
-                      if (v == null) return;
-                      setState(() => _selectedCourse = v);
-                    },
-                  ),
-                ),
-              ],
-            ),
-
-            if (_loadedFromCache || _cacheUpdatedAt != null || _prefetchingAll) ...[
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  _prefetchingAll
-                      ? 'Downloading recipes for offline use...'
-                      : (_cacheUpdatedAt != null
-                          ? 'Cached: ${_cacheUpdatedAt!.toLocal()}'
-                          : ''),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-
-      Expanded(
-        child: RefreshIndicator(
-          onRefresh: _loadFirstPage,
-          child: ListView.separated(
-            controller: _scroll,
-            itemCount: visible.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final r = visible[index];
-              final id = r['id'] as int?;
-              final title = _titleOf(r);
-              final thumb = _thumbOf(r);
-
-              final courses = _coursesOf(r);
-              final courseLabel = courses.isEmpty ? 'No course' : courses.first;
-
-              final ingredientsText = _ingredientsTextOf(r);
-
-              // tags are still useful even if filter is OFF
-              final tagData = _tagForRecipe(
-                ingredientsText: ingredientsText,
-                activeProfiles: _filterByAllergies ? _activeProfilesForMode() : _allPeople,
-              );
-
-              return ListTile(
-                leading: SizedBox(
-                  width: 56,
-                  height: 56,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: thumb == null
-                        ? const Icon(Icons.restaurant_menu)
-                        : Image.network(
-                            thumb,
-                            width: 56,
-                            height: 56,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                const Icon(Icons.restaurant_menu),
-                          ),
-                  ),
-                ),
-                title: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('$title • $courseLabel'),
-                    if (tagData.tag != null) ...[
-                      const SizedBox(height: 4),
-                      Text(tagData.tag!, style: Theme.of(context).textTheme.bodySmall),
-                    ],
-                    if (tagData.swapHint != null) ...[
-                      const SizedBox(height: 2),
-                      Text(tagData.swapHint!, style: Theme.of(context).textTheme.bodySmall),
-                    ],
-                  ],
-                ),
-                onTap: id == null
-                    ? null
-                    : () => Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: id)),
-                        ),
-              );
-            },
           ),
         ),
-      ),
-    ],
-  );
-}
+
+        Expanded(
+          child: RefreshIndicator(
+            // Keep existing behavior (network refresh), but cache will no longer get overwritten
+            onRefresh: () async {
+              await _loadFirstPage();
+              await _upgradeItemsFromCacheIfBigger();
+            },
+            child: ListView.separated(
+              controller: _scroll,
+              itemCount: visible.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final r = visible[index];
+                final id = r['id'] as int?;
+                final title = _titleOf(r);
+                final thumb = _thumbOf(r);
+
+                final courses = _coursesOf(r);
+                final courseLabel = courses.isEmpty ? 'No course' : courses.first;
+
+                final ingredientsText = _ingredientsTextOf(r);
+
+                final tagData = _tagForRecipe(
+                  ingredientsText: ingredientsText,
+                  activeProfiles: _filterByAllergies ? _activeProfilesForMode() : _allPeople,
+                );
+
+                return ListTile(
+                  leading: SizedBox(
+                    width: 56,
+                    height: 56,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: thumb == null
+                          ? const Icon(Icons.restaurant_menu)
+                          : Image.network(
+                              thumb,
+                              width: 56,
+                              height: 56,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) =>
+                                  const Icon(Icons.restaurant_menu),
+                            ),
+                    ),
+                  ),
+                  title: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('$title • $courseLabel'),
+                      if (tagData.tag != null) ...[
+                        const SizedBox(height: 4),
+                        Text(tagData.tag!, style: Theme.of(context).textTheme.bodySmall),
+                      ],
+                      if (tagData.swapHint != null) ...[
+                        const SizedBox(height: 2),
+                        Text(tagData.swapHint!, style: Theme.of(context).textTheme.bodySmall),
+                      ],
+                    ],
+                  ),
+                  onTap: id == null
+                      ? null
+                      : () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: id)),
+                          ),
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 // ------------------------
