@@ -3,7 +3,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../recipes/recipe_detail_screen.dart';
-import '../recipes/recipe_repository.dart'; // ✅ single source of truth
+import '../recipes/recipe_repository.dart';
+
+// ✅ Important: use the SAME weekId logic as meal plan
+import '../meal_plan/core/meal_plan_keys.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -34,8 +37,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String _todayKey() => _dateKey(_dateOnly(DateTime.now()));
 
-  // IMPORTANT: must match MealPlanScreen forward-week doc id
-  String _weekId() => _todayKey();
+  // ✅ MUST match MealPlanController/MealPlanKeys logic
+  String _weekId() => MealPlanKeys.currentWeekId();
 
   // ---------- RECIPES ----------
 
@@ -43,32 +46,91 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       _recipes = await RecipeRepository.ensureRecipesLoaded();
     } catch (_) {
-      // Keep _recipes empty; UI will show "No recipes yet"
+      _recipes = [];
     } finally {
       if (mounted) setState(() => _recipesLoading = false);
     }
   }
 
+  int? _recipeIdFromAny(dynamic raw) {
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw.trim());
+    return int.tryParse('${raw ?? ''}');
+  }
+
   Map<String, dynamic>? _byId(int? id) {
     if (id == null) return null;
     for (final r in _recipes) {
-      if (r['id'] == id) return r;
+      final rid = _recipeIdFromAny(r['id']);
+      if (rid == id) return r;
     }
     return null;
   }
 
-  String _titleOf(Map<String, dynamic> r) =>
-      (r['title']?['rendered'] as String?)?.trim().isNotEmpty == true
-          ? (r['title']['rendered'] as String)
-          : 'Untitled';
+  String _titleOf(Map<String, dynamic> r) {
+    final t = r['title'];
+    if (t is Map && t['rendered'] is String) {
+      final s = (t['rendered'] as String).trim();
+      if (s.isNotEmpty) return s;
+    }
+    return 'Untitled';
+  }
 
   String? _thumbOf(Map<String, dynamic> r) {
     final recipe = r['recipe'];
     if (recipe is Map<String, dynamic>) {
       final url = recipe['image_url'];
-      if (url is String && url.isNotEmpty) return url;
+      if (url is String && url.trim().isNotEmpty) return url.trim();
     }
     return null;
+  }
+
+  // ---------- ENTRY PARSING (int OR map) ----------
+
+  Map<String, dynamic>? _parseEntry(dynamic raw) {
+    // Legacy: int/num recipeId
+    if (raw is int) return {'type': 'recipe', 'recipeId': raw};
+    if (raw is num) return {'type': 'recipe', 'recipeId': raw.toInt()};
+
+    // New: map
+    if (raw is Map) {
+      final m = Map<String, dynamic>.from(raw);
+      final type = (m['type'] ?? '').toString();
+
+      if (type == 'note') {
+        final text = (m['text'] ?? '').toString().trim();
+        if (text.isEmpty) return null;
+        return {'type': 'note', 'text': text};
+      }
+
+      if (type == 'recipe') {
+        final rid = _recipeIdFromAny(m['recipeId']);
+        if (rid == null) return null;
+        return {'type': 'recipe', 'recipeId': rid};
+      }
+    }
+
+    // Sometimes strings sneak in
+    if (raw is String) {
+      final id = int.tryParse(raw.trim());
+      if (id != null) return {'type': 'recipe', 'recipeId': id};
+    }
+
+    return null;
+  }
+
+  int? _entryRecipeId(Map<String, dynamic>? e) {
+    if (e == null) return null;
+    if (e['type'] != 'recipe') return null;
+    return _recipeIdFromAny(e['recipeId']);
+  }
+
+  String? _entryNoteText(Map<String, dynamic>? e) {
+    if (e == null) return null;
+    if (e['type'] != 'note') return null;
+    final t = (e['text'] ?? '').toString().trim();
+    return t.isEmpty ? null : t;
   }
 
   // ---------- FIRESTORE STREAM ----------
@@ -95,31 +157,6 @@ class _HomeScreenState extends State<HomeScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    if (_recipes.isEmpty) {
-      // If recipes haven’t loaded/cached yet, we cannot resolve IDs to titles.
-      return ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text(
-            "Today's Meals",
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'Recipes are still loading. Try opening Recipes once, or check your connection.',
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            height: 48,
-            child: ElevatedButton(
-              onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
-              child: const Text('VIEW FULL WEEK'),
-            ),
-          ),
-        ],
-      );
-    }
-
     if (stream == null) {
       return const Center(child: Text('Log in to see your meal plan'));
     }
@@ -131,36 +168,71 @@ class _HomeScreenState extends State<HomeScreen> {
           return const Center(child: CircularProgressIndicator());
         }
 
-        final data = snap.data?.data() ?? {};
+        final data = snap.data?.data() ?? <String, dynamic>{};
         final days = data['days'];
 
-        Map<String, int?> todayMeals = {};
         final todayKey = _todayKey();
 
-        if (days is Map && days[todayKey] is Map) {
-          final raw = Map<String, dynamic>.from(days[todayKey] as Map);
-          todayMeals = raw.map((k, v) => MapEntry(k.toString(), v as int?));
+        final Map<String, dynamic> todayRaw =
+            (days is Map && days[todayKey] is Map)
+                ? Map<String, dynamic>.from(days[todayKey] as Map)
+                : <String, dynamic>{};
+
+        // slot -> parsed entry
+        final entries = <MapEntry<String, Map<String, dynamic>>>[];
+        for (final e in todayRaw.entries) {
+          final parsed = _parseEntry(e.value);
+          if (parsed == null) continue;
+          entries.add(MapEntry(e.key.toString(), parsed));
         }
+
+        // stable slot order
+        const slotOrder = ['breakfast', 'snack1', 'lunch', 'snack2', 'dinner'];
+        entries.sort((a, b) {
+          final ia = slotOrder.indexOf(a.key);
+          final ib = slotOrder.indexOf(b.key);
+          return (ia == -1 ? 999 : ia).compareTo(ib == -1 ? 999 : ib);
+        });
 
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            Text(
-              "Today's Meals",
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
+            Text("Today's Meals", style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 12),
 
-            if (todayMeals.isEmpty) ...[
+            if (entries.isEmpty) ...[
               const Text("No meals planned for today yet."),
             ] else ...[
-              ...todayMeals.entries.map((e) {
-                final r = _byId(e.value);
-                if (r == null) return const SizedBox();
+              ...entries.map((e) {
+                final slot = e.key;
+                final entry = e.value;
+
+                final note = _entryNoteText(entry);
+                if (note != null) {
+                  return Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.sticky_note_2_outlined),
+                      title: Text(note, style: const TextStyle(fontWeight: FontWeight.w600)),
+                      subtitle: Text(slot.toUpperCase()),
+                    ),
+                  );
+                }
+
+                final rid = _entryRecipeId(entry);
+                final r = _byId(rid);
+
+                if (r == null) {
+                  return Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.restaurant_menu),
+                      title: const Text('Recipe not found'),
+                      subtitle: Text(slot.toUpperCase()),
+                    ),
+                  );
+                }
 
                 final title = _titleOf(r);
                 final thumb = _thumbOf(r);
-                final id = r['id'] as int?;
 
                 return Card(
                   child: ListTile(
@@ -171,17 +243,14 @@ class _HomeScreenState extends State<HomeScreen> {
                             width: 56,
                             height: 56,
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                const Icon(Icons.restaurant_menu),
+                            errorBuilder: (_, __, ___) => const Icon(Icons.restaurant_menu),
                           ),
                     title: Text(title),
-                    subtitle: Text(e.key.toUpperCase()),
-                    onTap: id == null
+                    subtitle: Text(slot.toUpperCase()),
+                    onTap: rid == null
                         ? null
                         : () => Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => RecipeDetailScreen(id: id),
-                              ),
+                              MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
                             ),
                   ),
                 );
@@ -189,9 +258,19 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
 
             const SizedBox(height: 16),
+
+            // ✅ Buttons back
             SizedBox(
               height: 48,
               child: ElevatedButton(
+                onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
+                child: const Text('CUSTOMISE MEAL PLAN'),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 48,
+              child: OutlinedButton(
                 onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
                 child: const Text('VIEW FULL WEEK'),
               ),
