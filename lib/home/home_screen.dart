@@ -1,3 +1,6 @@
+// lib/home/home_screen.dart
+import 'dart:ui' show FontVariation;
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -42,10 +45,31 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    // Clean up controller stream
     _mealCtrl?.stop();
     _mealCtrl = null;
     super.dispose();
+  }
+
+  // ---------- VARIABLE FONT HELPERS ----------
+
+  TextStyle _w(TextStyle base, double wght) {
+    // Keep BOTH fontWeight and fontVariations so variable Montserrat actually moves on wght axis.
+    return base.copyWith(
+      fontWeight: _toFontWeight(wght),
+      fontVariations: [FontVariation('wght', wght)],
+    );
+  }
+
+  FontWeight _toFontWeight(double wght) {
+    if (wght >= 900) return FontWeight.w900;
+    if (wght >= 800) return FontWeight.w800;
+    if (wght >= 700) return FontWeight.w700;
+    if (wght >= 600) return FontWeight.w600;
+    if (wght >= 500) return FontWeight.w500;
+    if (wght >= 400) return FontWeight.w400;
+    if (wght >= 300) return FontWeight.w300;
+    if (wght >= 200) return FontWeight.w200;
+    return FontWeight.w100;
   }
 
   // ---------- DATE HELPERS ----------
@@ -60,7 +84,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String _todayKey() => _dateKey(_dateOnly(DateTime.now()));
 
-  // ✅ MUST match MealPlanController/MealPlanKeys logic
   String _weekId() => MealPlanKeys.currentWeekId();
 
   // ---------- RECIPES ----------
@@ -74,7 +97,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) setState(() => _recipesLoading = false);
     }
 
-    // After recipes are loaded, bootstrap the Firestore meal plan if needed
     await _bootstrapMealPlanIfNeeded();
   }
 
@@ -87,28 +109,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (_recipes.isEmpty) return;
 
-    // Create controller once and keep it alive while Home is alive
     _mealCtrl ??= MealPlanController(
       auth: FirebaseAuth.instance,
       repo: MealPlanRepository(FirebaseFirestore.instance),
       initialWeekId: _weekId(),
     );
 
-    // Keep controller subscribed (not strictly required for bootstrapping,
-    // but useful if anything else updates week data)
     _mealCtrl!.start();
-
-    // Ensure we only attempt once per Home lifetime
     _bootstrappedWeek = true;
 
     try {
-      // This will:
-      // - ensure week doc exists
-      // - load current week data
-      // - write missing slots to Firestore (upsertDays)
       await _mealCtrl!.ensurePlanPopulated(recipes: _recipes);
     } catch (_) {
-      // Silent fail: Home will still render empty state if no plan exists
+      // Silent fail
     }
   }
 
@@ -149,11 +162,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // ---------- ENTRY PARSING ----------
 
   Map<String, dynamic>? _parseEntry(dynamic raw) {
-    // Legacy: int/num recipeId
     if (raw is int) return {'type': 'recipe', 'recipeId': raw};
     if (raw is num) return {'type': 'recipe', 'recipeId': raw.toInt()};
 
-    // New: map
     if (raw is Map) {
       final m = Map<String, dynamic>.from(raw);
       final type = (m['type'] ?? '').toString();
@@ -171,7 +182,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // Sometimes strings sneak in
     if (raw is String) {
       final id = int.tryParse(raw.trim());
       if (id != null) return {'type': 'recipe', 'recipeId': id};
@@ -190,7 +200,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (e == null) return null;
     if (e['type'] != 'note') return null;
     final t = (e['text'] ?? '').toString().trim();
-    return t.isEmpty ? null : t;
+    return t.isNotEmpty ? t : null;
   }
 
   // ---------- FIRESTORE STREAM ----------
@@ -206,6 +216,266 @@ class _HomeScreenState extends State<HomeScreen> {
         .doc(_weekId())
         .snapshots();
   }
+
+  // ---------- UI STYLES ----------
+  static const _heroBg = Color(0xFF044246);
+  static const _heroAccent = Color(0xFF32998D);
+
+  static const _breakfastBg = Color(0xFFF2C35C);
+  static const _lunchBg = Color(0xFFE57A3A);
+  static const _dinnerBg = Color(0xFFE98A97);
+  static const _snacksBg = Color(0xFF5AA5B6);
+
+  static const _onDark = Colors.white;
+
+  // Your requested primary text colour (#00484B)
+  static const _primaryText = Color(0xFF00484B);
+
+  // ---------- UI HELPERS ----------
+
+  Widget _buildBand({
+    required BuildContext context,
+    required String title,
+    required Color bg,
+    required Color headingColor,
+    required List<Widget> children,
+  }) {
+    final theme = Theme.of(context);
+
+    // Take theme token, then ONLY adjust color (keep weight axis),
+    // BUT also force wght just in case this token is coming through “thin”.
+    final baseHeading = theme.textTheme.titleLarge ??
+        const TextStyle(fontSize: 20, fontWeight: FontWeight.w900);
+
+    final headingStyle = _w(baseHeading, 900).copyWith(
+  color: headingColor,
+  letterSpacing: 1.2,
+);
+
+    return Container(
+      width: double.infinity,
+      color: bg,
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(title, style: headingStyle),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Container(
+                  height: 2,
+                  color: headingColor.withOpacity(0.45),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _mealCard({
+    required BuildContext context,
+    required String slotLabel,
+    required Map<String, dynamic>? entry,
+    required Color titleColor,
+  }) {
+    final theme = Theme.of(context);
+
+    final baseTitle =
+        theme.textTheme.titleMedium ?? const TextStyle(fontSize: 16);
+
+    final titleStyle = _w(baseTitle, 800).copyWith(
+      fontSize: 18,
+      color: titleColor,
+    );
+
+    final baseBody = theme.textTheme.bodyMedium ?? const TextStyle(fontSize: 14);
+    final subtitleStyle = _w(baseBody, 600).copyWith(color: _primaryText);
+
+    final baseLabel = theme.textTheme.labelLarge ?? const TextStyle(fontSize: 12);
+    final slotStyle = _w(baseLabel, 700).copyWith(letterSpacing: 0.8);
+
+    final note = _entryNoteText(entry);
+    if (note != null) {
+      final noteTitleBase =
+          theme.textTheme.titleMedium ?? const TextStyle(fontSize: 16);
+      final noteTitleStyle = _w(noteTitleBase, 700).copyWith(color: _primaryText);
+
+      return Card(
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
+          leading: Icon(Icons.sticky_note_2_outlined, color: _primaryText),
+          title: Text(note, style: noteTitleStyle),
+          subtitle: Text(
+            slotLabel.toUpperCase(),
+            style: slotStyle.copyWith(color: _primaryText),
+          ),
+        ),
+      );
+    }
+
+    if (entry == null) {
+      return Card(
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
+          leading: Icon(Icons.restaurant_menu, color: _primaryText),
+          title: Text('Not planned yet', style: subtitleStyle),
+          subtitle: Text(
+            slotLabel.toUpperCase(),
+            style: slotStyle.copyWith(color: _primaryText),
+          ),
+        ),
+      );
+    }
+
+    final rid = _entryRecipeId(entry);
+    final r = _byId(rid);
+
+    if (r == null) {
+      return Card(
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
+          leading: Icon(Icons.restaurant_menu, color: _primaryText),
+          title: Text('Recipe not found', style: subtitleStyle),
+          subtitle: Text(
+            slotLabel.toUpperCase(),
+            style: slotStyle.copyWith(color: _primaryText),
+          ),
+        ),
+      );
+    }
+
+    final displayTitle =
+        _titleOf(r).replaceAll('&#038;', '&').replaceAll('&amp;', '&');
+    final thumb = _thumbOf(r);
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: rid == null
+            ? null
+            : () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => RecipeDetailScreen(id: rid),
+                  ),
+                ),
+        child: SizedBox(
+          height: 86,
+          child: Row(
+            children: [
+              SizedBox(
+                width: 110,
+                height: double.infinity,
+                child: thumb == null
+                    ? Center(
+                        child: Icon(Icons.restaurant_menu, color: _primaryText),
+                      )
+                    : Image.network(
+                        thumb,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Center(
+                          child: Icon(Icons.restaurant_menu, color: _primaryText),
+                        ),
+                      ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        displayTitle,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: titleStyle,
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Icon(Icons.person_outline, size: 18, color: _primaryText),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'Suitable for whole family',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: subtitleStyle,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buttonBar(BuildContext context) {
+  final theme = Theme.of(context);
+
+  final baseLabel = theme.textTheme.labelLarge ?? const TextStyle(fontSize: 12);
+  final btnTextStyle = _w(baseLabel, 800).copyWith(
+    letterSpacing: 0.8,
+    color: _onDark, // ✅ THIS fixes it
+  );
+
+  return Container(
+    width: double.infinity,
+    color: _heroBg,
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+    child: Row(
+      children: [
+        Expanded(
+          child: SizedBox(
+            height: 54,
+            child: OutlinedButton(
+              onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: _onDark,
+                side: BorderSide(
+                  color: _onDark.withOpacity(0.35),
+                  width: 2,
+                ),
+                shape: const StadiumBorder(),
+              ),
+              child: Text('CUSTOMISE', style: btnTextStyle),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: SizedBox(
+            height: 54,
+            child: OutlinedButton(
+              onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: _onDark,
+                side: BorderSide(
+                  color: _onDark.withOpacity(0.35),
+                  width: 2,
+                ),
+                shape: const StadiumBorder(),
+              ),
+              child: Text('FULL WEEK', style: btnTextStyle),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   // ---------- UI ----------
 
@@ -237,109 +507,132 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? Map<String, dynamic>.from(days[todayKey] as Map)
                 : <String, dynamic>{};
 
-        final entries = <MapEntry<String, Map<String, dynamic>>>[];
+        final parsedBySlot = <String, Map<String, dynamic>>{};
         for (final e in todayRaw.entries) {
           final parsed = _parseEntry(e.value);
           if (parsed == null) continue;
-          entries.add(MapEntry(e.key.toString(), parsed));
+          parsedBySlot[e.key.toString()] = parsed;
         }
 
-        const slotOrder = ['breakfast', 'snack1', 'lunch', 'snack2', 'dinner'];
-        entries.sort((a, b) {
-          final ia = slotOrder.indexOf(a.key);
-          final ib = slotOrder.indexOf(b.key);
-          return (ia == -1 ? 999 : ia).compareTo(ib == -1 ? 999 : ib);
-        });
+        final breakfast = parsedBySlot['breakfast'];
+        final lunch = parsedBySlot['lunch'];
+        final dinner = parsedBySlot['dinner'];
+        final snack1 = parsedBySlot['snack1'];
+        final snack2 = parsedBySlot['snack2'];
+
+        final theme = Theme.of(context);
+
+        final heroTodayBase =
+            theme.textTheme.headlineSmall ?? const TextStyle(fontSize: 38);
+        final heroMealBase =
+            theme.textTheme.headlineSmall ?? const TextStyle(fontSize: 46);
+
+        final heroTodayStyle = const TextStyle(
+  fontFamily: 'Montserrat',
+  fontSize: 30,
+  color: Colors.white,
+  height: 1.0,
+  letterSpacing: 0.6,
+  fontWeight: FontWeight.w900,
+  fontVariations: [FontVariation('wght', 900)],
+);
+
+final heroMealPlanStyle = const TextStyle(
+  fontFamily: 'Montserrat',
+  fontSize: 52,
+  color: Color(0xFF32998D),
+  height: 1.0,
+  letterSpacing: 1.04,
+  fontWeight: FontWeight.w900,
+  fontVariations: [FontVariation('wght', 900)],
+);
 
         return ListView(
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.zero,
           children: [
-            Text(
-              "Today's Meals",
-              style: Theme.of(context).textTheme.headlineSmall,
+            // HERO
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 24, 16, 18),
+              color: _heroBg,
+              child: RichText(
+  text: TextSpan(
+    children: [
+      TextSpan(text: "TODAY’S\n", style: heroTodayStyle),
+      TextSpan(text: "MEAL PLAN", style: heroMealPlanStyle),
+    ],
+  ),
+),
             ),
-            const SizedBox(height: 12),
 
-            if (entries.isEmpty) ...[
-              const Text("No meals planned for today yet."),
-            ] else ...[
-              ...entries.map((e) {
-                final slot = e.key;
-                final entry = e.value;
-
-                final note = _entryNoteText(entry);
-                if (note != null) {
-                  return Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.sticky_note_2_outlined),
-                      title: Text(
-                        note,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      subtitle: Text(slot.toUpperCase()),
-                    ),
-                  );
-                }
-
-                final rid = _entryRecipeId(entry);
-                final r = _byId(rid);
-
-                if (r == null) {
-                  return Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.restaurant_menu),
-                      title: const Text('Recipe not found'),
-                      subtitle: Text(slot.toUpperCase()),
-                    ),
-                  );
-                }
-
-                final title = _titleOf(r);
-                final thumb = _thumbOf(r);
-
-                return Card(
-                  child: ListTile(
-                    leading: thumb == null
-                        ? const Icon(Icons.restaurant_menu)
-                        : Image.network(
-                            thumb,
-                            width: 56,
-                            height: 56,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                const Icon(Icons.restaurant_menu),
-                          ),
-                    title: Text(title),
-                    subtitle: Text(slot.toUpperCase()),
-                    onTap: rid == null
-                        ? null
-                        : () => Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => RecipeDetailScreen(id: rid),
-                              ),
-                            ),
-                  ),
-                );
-              }),
-            ],
-
-            const SizedBox(height: 16),
-
-            SizedBox(
-              height: 48,
-              child: ElevatedButton(
-                onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
-                child: const Text('CUSTOMISE MEAL PLAN'),
-              ),
+            _buildBand(
+              context: context,
+              title: 'BREAKFAST',
+              bg: _breakfastBg,
+              headingColor: _onDark,
+              children: [
+                _mealCard(
+                  context: context,
+                  slotLabel: 'breakfast',
+                  entry: breakfast,
+                  titleColor: _breakfastBg,
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 48,
-              child: OutlinedButton(
-                onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
-                child: const Text('VIEW FULL WEEK'),
-              ),
+
+            _buildBand(
+              context: context,
+              title: 'LUNCH',
+              bg: _lunchBg,
+              headingColor: _onDark,
+              children: [
+                _mealCard(
+                  context: context,
+                  slotLabel: 'lunch',
+                  entry: lunch,
+                  titleColor: _lunchBg,
+                ),
+              ],
             ),
+
+            _buildBand(
+              context: context,
+              title: 'DINNER',
+              bg: _dinnerBg,
+              headingColor: _onDark,
+              children: [
+                _mealCard(
+                  context: context,
+                  slotLabel: 'dinner',
+                  entry: dinner,
+                  titleColor: _dinnerBg,
+                ),
+              ],
+            ),
+
+            _buildBand(
+              context: context,
+              title: 'SNACKS',
+              bg: _snacksBg,
+              headingColor: _onDark,
+              children: [
+                _mealCard(
+                  context: context,
+                  slotLabel: 'snack1',
+                  entry: snack1,
+                  titleColor: _snacksBg,
+                ),
+                const SizedBox(height: 4),
+                _mealCard(
+                  context: context,
+                  slotLabel: 'snack2',
+                  entry: snack2,
+                  titleColor: _snacksBg,
+                ),
+              ],
+            ),
+
+            _buttonBar(context),
           ],
         );
       },

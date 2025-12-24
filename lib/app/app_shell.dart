@@ -1,8 +1,10 @@
+// lib/shell/app_shell.dart
+import 'dart:ui' show FontVariation;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../home/home_screen.dart';
-import '../recipes/recipe_list_screen.dart';
+import '../recipes/recipe_hub_screen.dart';
 import '../meal_plan/plans_hub_screen.dart';
 import '../profile/profile_screen.dart';
 
@@ -20,9 +22,9 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   late int _index;
 
-  final _pages = const [
+  final List<Widget> _pages = const [
     HomeScreen(),
-    RecipeListScreen(),
+    RecipeHubScreen(),
     PlansHubScreen(),
     ProfileScreen(),
   ];
@@ -54,7 +56,7 @@ class _AppShellState extends State<AppShell> {
             BlendMode.srcIn,
           ),
         ),
-        const SizedBox(height: 4), // ✅ exact icon → label gap
+        const SizedBox(height: 4),
       ],
     );
   }
@@ -107,14 +109,19 @@ class _AppShellState extends State<AppShell> {
             unselectedItemColor: inactiveColor,
             selectedFontSize: 12,
             unselectedFontSize: 12,
+
+            // ✅ Force variable wght for labels (stops “thin” issue)
             selectedLabelStyle: const TextStyle(
               fontFamily: 'Montserrat',
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w700,
+              fontVariations: [FontVariation('wght', 700)],
             ),
             unselectedLabelStyle: const TextStyle(
               fontFamily: 'Montserrat',
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w700,
+              fontVariations: [FontVariation('wght', 700)],
             ),
+
             items: [
               BottomNavigationBarItem(
                 icon: _navIcon('assets/images/icons/home.svg', false),
