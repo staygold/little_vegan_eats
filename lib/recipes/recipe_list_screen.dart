@@ -67,6 +67,12 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   bool _filterByAllergies = true; // default ON
   bool _includeSwapRecipes = false; // OFF by default
 
+  // ✅ Favourites (IDs only)
+  StreamSubscription<User?>? _authFavSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
+  bool _loadingFavs = true;
+  final Set<int> _favoriteIds = <int>{};
+
   // ------------------------
   // Helpers
   // ------------------------
@@ -75,6 +81,15 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     final u = FirebaseAuth.instance.currentUser;
     if (u == null) return null;
     return FirebaseFirestore.instance.collection('users').doc(u.uid);
+  }
+
+  CollectionReference<Map<String, dynamic>>? _favoritesCol() {
+    final u = FirebaseAuth.instance.currentUser;
+    if (u == null) return null;
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(u.uid)
+        .collection('favorites');
   }
 
   String _titleOf(Map<String, dynamic> r) =>
@@ -183,6 +198,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   void initState() {
     super.initState();
     _listenToHousehold();
+    _listenToFavorites(); // ✅
     _loadCourseTerms();
     _loadRecipes(); // ✅ single source of truth for recipes
   }
@@ -190,9 +206,76 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   @override
   void dispose() {
     _userSub?.cancel();
+    _authFavSub?.cancel();
+    _favSub?.cancel();
     _searchCtrl.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  // ------------------------
+  // ✅ Favorites (IDs only)
+  // ------------------------
+
+  void _listenToFavorites() {
+    // Follow auth and rebind fav collection when user changes.
+    _authFavSub?.cancel();
+    _favSub?.cancel();
+
+    setState(() {
+      _loadingFavs = true;
+      _favoriteIds.clear();
+    });
+
+    _authFavSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+      _favSub?.cancel();
+
+      if (user == null) {
+        if (!mounted) return;
+        setState(() {
+          _loadingFavs = false;
+          _favoriteIds.clear();
+        });
+        return;
+      }
+
+      final col = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('favorites');
+
+      _favSub = col.snapshots().listen(
+        (snap) {
+          final next = <int>{};
+          for (final d in snap.docs) {
+            final data = d.data();
+            final raw = data['recipeId'];
+            final id = (raw is int) ? raw : int.tryParse('$raw') ?? -1;
+            if (id > 0) next.add(id);
+          }
+
+          if (!mounted) return;
+          setState(() {
+            _favoriteIds
+              ..clear()
+              ..addAll(next);
+            _loadingFavs = false;
+          });
+        },
+        onError: (_) {
+          if (!mounted) return;
+          setState(() {
+            _loadingFavs = false;
+            _favoriteIds.clear();
+          });
+        },
+      );
+    });
+  }
+
+  bool _isFavorited(int? recipeId) {
+    if (recipeId == null) return false;
+    return _favoriteIds.contains(recipeId);
   }
 
   // ------------------------
@@ -792,7 +875,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
         Expanded(
           child: RefreshIndicator(
-            // ✅ Pull-to-refresh: force latest now
             onRefresh: () async {
               await RecipeRepository.ensureRecipesLoaded(
                 backgroundRefresh: false,
@@ -830,6 +912,8 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                   activeProfiles: _filterByAllergies ? _activeProfilesForMode() : _allPeople,
                 );
 
+                final isFav = _isFavorited(id);
+
                 return ListTile(
                   leading: SizedBox(
                     width: 56,
@@ -851,7 +935,20 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                   title: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('$title • $courseLabel'),
+                      Row(
+                        children: [
+                          Expanded(child: Text('$title • $courseLabel')),
+                          if (isFav)
+                            const Padding(
+                              padding: EdgeInsets.only(left: 8),
+                              child: Icon(
+                                Icons.star_rounded,
+                                size: 18,
+                                color: Colors.amber,
+                              ),
+                            ),
+                        ],
+                      ),
                       if (tagData.tag != null) ...[
                         const SizedBox(height: 4),
                         Text(tagData.tag!, style: Theme.of(context).textTheme.bodySmall),

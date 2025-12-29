@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math'; // ✅ added (Option A)
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -42,6 +43,202 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userDocSub;
 
+  // ------------------------------------------------------------
+  // ⭐ Favorites (read-only indicator)
+  // ------------------------------------------------------------
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
+  final Set<int> _favoriteIds = <int>{};
+
+  // ------------------------------------------------------------
+  // ✅ Option A: Random inspire (avoid “same order” + avoid recent repeats)
+  // ------------------------------------------------------------
+  final Random _rng = Random();
+  final Map<String, List<int>> _recentBySlot = <String, List<int>>{};
+  static const int _recentWindow = 12;
+
+  int? _pickRandomDifferentId({
+    required List<int> availableIds,
+    required int? currentId,
+    required String dayKey,
+    required String slot,
+  }) {
+    if (availableIds.isEmpty) return null;
+
+    final key = '$dayKey|$slot';
+    final recent = _recentBySlot.putIfAbsent(key, () => <int>[]);
+
+    // 1) Prefer ids that are not current AND not recently used
+    final fresh = availableIds
+        .where((id) => id != currentId && !recent.contains(id))
+        .toList();
+
+    // 2) If we exhausted fresh, allow anything except current
+    final pool = fresh.isNotEmpty
+        ? fresh
+        : availableIds.where((id) => id != currentId).toList();
+
+    if (pool.isEmpty) return null;
+
+    final next = pool[_rng.nextInt(pool.length)];
+
+    recent.add(next);
+    if (recent.length > _recentWindow) {
+      recent.removeAt(0);
+    }
+
+    return next;
+  }
+
+  // ------------------------------------------------------------
+  // ✅ Saved meal plans helpers (day + week snapshots)
+  // ------------------------------------------------------------
+
+  CollectionReference<Map<String, dynamic>>? _savedPlansCol() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return null;
+
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('savedMealPlans');
+  }
+
+  Future<String?> _promptPlanName(
+    BuildContext context, {
+    required String title,
+  }) async {
+    final ctrl = TextEditingController();
+
+    final res = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Name your meal plan',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(null),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(ctrl.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    final name = (res ?? '').trim();
+    if (name.isEmpty) return null;
+    return name;
+  }
+
+  /// Convert an effective entry into a storable snapshot.
+  /// Supports:
+  /// - recipe entry: { kind: 'recipe', id: <int>, source: <string?> }
+  /// - note entry:   { kind: 'note', text: <string> }
+  Map<String, dynamic>? _snapshotSlotEntry(String dayKey, String slot) {
+    final e = _ctrl.effectiveEntry(dayKey, slot);
+    if (e == null) return null;
+
+    if (_ctrl.entryIsRecipe(e)) {
+      final rid = _ctrl.entryRecipeId(e);
+      if (rid == null) return null;
+
+      // Keep source if present in entry (safe even if missing)
+      final src = (e['source'] ?? e['src'] ?? '').toString();
+      return {
+        'kind': 'recipe',
+        'id': rid,
+        if (src.trim().isNotEmpty) 'source': src.trim(),
+      };
+    }
+
+    final note = (_ctrl.entryNoteText(e) ?? '').trim();
+    if (note.isEmpty) return null;
+
+    return {
+      'kind': 'note',
+      'text': note,
+    };
+  }
+
+  /// Snapshot a single day into:
+  /// { breakfast: {kind,id...}, lunch: ..., dinner: ... }
+  Map<String, dynamic> _snapshotDay(String dayKey) {
+    final out = <String, dynamic>{};
+
+    for (final slot in MealPlanSlots.order) {
+      final snap = _snapshotSlotEntry(dayKey, slot);
+      if (snap != null) {
+        out[slot] = snap;
+      }
+    }
+
+    return out;
+  }
+
+  Future<void> _saveDayPlanSnapshot(String dayKey) async {
+    final col = _savedPlansCol();
+    if (col == null) return;
+
+    final name = await _promptPlanName(context, title: 'Save day plan');
+    if (name == null) return;
+
+    final payload = _snapshotDay(dayKey);
+
+    await col.add({
+      'title': name,
+      'type': 'day',
+      'savedAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+      'day': payload,
+      'meta': {
+        'fromDayKey': dayKey,
+        'fromWeekId': _ctrl.weekId,
+      },
+    });
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Saved "$name"')),
+    );
+  }
+
+  Future<void> _saveWeekPlanSnapshot() async {
+    final col = _savedPlansCol();
+    if (col == null) return;
+
+    final name = await _promptPlanName(context, title: 'Save week plan');
+    if (name == null) return;
+
+    final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
+
+    final days = <String, dynamic>{};
+    for (final dk in dayKeys) {
+      days[dk] = _snapshotDay(dk);
+    }
+
+    await col.add({
+      'title': name,
+      'type': 'week',
+      'weekId': _ctrl.weekId,
+      'savedAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+      'days': days,
+    });
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Saved "$name"')),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -73,6 +270,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
       await _loadAllergies();
       await _loadRecipes();
       _startUserDocAllergyListener(); // ✅ live updates after initial load
+      _startFavoritesListener(); // ⭐ favorites (read-only)
     }();
   }
 
@@ -86,6 +284,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   @override
   void dispose() {
     _userDocSub?.cancel();
+    _favSub?.cancel();
     _ctrl.stop();
     _ctrl.dispose();
     super.dispose();
@@ -113,6 +312,45 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 
       if (mounted) setState(() {});
     });
+  }
+
+  // ------------------------------------------------------------
+  // ⭐ Favorites listener (read-only)
+  // Expects: users/{uid}/favorites docs with field { recipeId: <int|string> }
+  // ------------------------------------------------------------
+  void _startFavoritesListener() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    _favSub?.cancel();
+
+    _favSub = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('favorites')
+        .snapshots()
+        .listen((snap) {
+      final next = <int>{};
+
+      for (final d in snap.docs) {
+        final data = d.data();
+        final raw = data['recipeId'];
+        final id = (raw is int) ? raw : int.tryParse(raw?.toString() ?? '');
+        if (id != null && id > 0) next.add(id);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _favoriteIds
+          ..clear()
+          ..addAll(next);
+      });
+    });
+  }
+
+  bool _isFavorited(int? recipeId) {
+    if (recipeId == null) return false;
+    return _favoriteIds.contains(recipeId);
   }
 
   Future<void> _loadAllergies() async {
@@ -370,7 +608,13 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     final ids = _availableSafeRecipeIds();
     final currentEntry = _ctrl.effectiveEntry(dayKey, slot);
     final currentId = _ctrl.entryRecipeId(currentEntry);
-    final next = _ctrl.pickDifferentId(availableIds: ids, currentId: currentId);
+
+    final next = _pickRandomDifferentId(
+      availableIds: ids,
+      currentId: currentId,
+      dayKey: dayKey,
+      slot: slot,
+    );
 
     if (next != null) {
       _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
@@ -464,14 +708,19 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                 thumbOf: _thumbOf,
                 recipeAllowed: _ctrl.recipeAllowed, // safe-only pool (inspire)
                 statusTextOf: _statusTextOf, // ✅ safe vs swap vs blocked
+                isFavorited: _isFavorited, // ⭐ favorites indicator
                 onInspire: (slot) {
                   final ids = _availableSafeRecipeIds();
                   final currentEntry = _ctrl.effectiveEntry(dayKey, slot);
                   final currentId = _ctrl.entryRecipeId(currentEntry);
-                  final next = _ctrl.pickDifferentId(
+
+                  final next = _pickRandomDifferentId(
                     availableIds: ids,
                     currentId: currentId,
+                    dayKey: dayKey,
+                    slot: slot,
                   );
+
                   if (next != null) {
                     _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
                   }
@@ -493,6 +742,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                     SnackBar(content: Text('Saved ${formatDayKeyPretty(dayKey)}')),
                   );
                 },
+                onSaveAsPlan: () => _saveDayPlanSnapshot(dayKey),
                 onViewWeek: onViewWeek,
               );
             }
@@ -536,6 +786,16 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                       ],
                     ),
                   ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    child: SizedBox(
+                      height: 52,
+                      child: OutlinedButton(
+                        onPressed: _saveWeekPlanSnapshot,
+                        child: const Text('SAVE WEEK PLAN'),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             );
@@ -571,6 +831,9 @@ class _DayView extends StatelessWidget {
   /// "safe" | "swap" | "blocked"
   final String Function(Map<String, dynamic> recipe) statusTextOf;
 
+  // ⭐ favorites indicator
+  final bool Function(int? recipeId) isFavorited;
+
   final void Function(String slot) onInspire;
   final void Function(String slot) onChoose;
   final void Function(String slot) onNote;
@@ -578,6 +841,9 @@ class _DayView extends StatelessWidget {
 
   final bool canSave;
   final Future<void> Function() onSave;
+
+  // ✅ new: save as plan (snapshot)
+  final Future<void> Function() onSaveAsPlan;
 
   final VoidCallback? onViewWeek;
 
@@ -594,12 +860,14 @@ class _DayView extends StatelessWidget {
     required this.thumbOf,
     required this.recipeAllowed,
     required this.statusTextOf,
+    required this.isFavorited,
     required this.onInspire,
     required this.onChoose,
     required this.onNote,
     required this.onClear,
     required this.canSave,
     required this.onSave,
+    required this.onSaveAsPlan,
     required this.onViewWeek,
   });
 
@@ -624,6 +892,7 @@ class _DayView extends StatelessWidget {
             thumbOf: thumbOf,
             recipeAllowed: recipeAllowed,
             statusTextOf: statusTextOf,
+            isFavorited: isFavorited,
             onTapRecipe: (id) {
               if (id == null) return;
               Navigator.of(context).push(
@@ -642,7 +911,15 @@ class _DayView extends StatelessWidget {
           height: 52,
           child: ElevatedButton(
             onPressed: canSave ? () => onSave() : null,
-            child: const Text('SAVE DAY'),
+            child: const Text('Save Changes'),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 52,
+          child: OutlinedButton(
+            onPressed: () => onSaveAsPlan(),
+            child: const Text('SAVE DAY PLAN'),
           ),
         ),
         if (onViewWeek != null) ...[
@@ -678,6 +955,9 @@ class _MealSlotCard extends StatelessWidget {
   /// "safe" | "swap" | "blocked"
   final String Function(Map<String, dynamic> recipe) statusTextOf;
 
+  // ⭐ favorites indicator
+  final bool Function(int? recipeId) isFavorited;
+
   final void Function(int? id) onTapRecipe;
 
   final VoidCallback onInspire;
@@ -696,12 +976,47 @@ class _MealSlotCard extends StatelessWidget {
     required this.thumbOf,
     required this.recipeAllowed,
     required this.statusTextOf,
+    required this.isFavorited,
     required this.onTapRecipe,
     required this.onInspire,
     required this.onChoose,
     required this.onNote,
     required this.onClear,
   });
+
+  Widget _withFavBadge(BuildContext context, Widget base, bool show) {
+    if (!show) return base;
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        base,
+        Positioned(
+          right: -4,
+          top: -4,
+          child: Container(
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              borderRadius: BorderRadius.circular(999),
+              boxShadow: const [
+                BoxShadow(
+                  blurRadius: 6,
+                  offset: Offset(0, 2),
+                  color: Colors.black12,
+                ),
+              ],
+            ),
+            child: const Icon(
+              Icons.star_rounded,
+              size: 16,
+              color: Colors.amber,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -745,12 +1060,15 @@ class _MealSlotCard extends StatelessWidget {
     final title = r == null ? 'Not set' : titleOf(r);
     final thumb = r == null ? null : thumbOf(r);
 
+    final fav = isFavorited(rid);
+
     // No recipe selected
     if (r == null) {
       return Card(
         child: ListTile(
           leading: const Icon(Icons.restaurant_menu),
-          title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+          title:
+              Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
           subtitle: Text(slotLabel),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
@@ -782,7 +1100,11 @@ class _MealSlotCard extends StatelessWidget {
       return Card(
         color: Theme.of(context).colorScheme.errorContainer,
         child: ListTile(
-          leading: const Icon(Icons.warning_amber_rounded),
+          leading: _withFavBadge(
+            context,
+            const Icon(Icons.warning_amber_rounded),
+            fav,
+          ),
           title: Text(
             title,
             style: const TextStyle(fontWeight: FontWeight.w700),
@@ -812,7 +1134,11 @@ class _MealSlotCard extends StatelessWidget {
       return Card(
         color: Theme.of(context).colorScheme.tertiaryContainer,
         child: ListTile(
-          leading: const Icon(Icons.swap_horiz),
+          leading: _withFavBadge(
+            context,
+            const Icon(Icons.swap_horiz),
+            fav,
+          ),
           title: Text(
             title,
             style: const TextStyle(fontWeight: FontWeight.w700),
@@ -846,7 +1172,7 @@ class _MealSlotCard extends StatelessWidget {
     // Safe (normal)
     return Card(
       child: ListTile(
-        leading: _Thumb(url: thumb),
+        leading: _withFavBadge(context, _Thumb(url: thumb), fav),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Text(slotLabel),
         trailing: Row(

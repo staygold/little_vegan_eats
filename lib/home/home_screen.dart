@@ -1,4 +1,5 @@
 // lib/home/home_screen.dart
+import 'dart:async';
 import 'dart:ui' show FontVariation;
 
 import 'package:flutter/material.dart';
@@ -32,10 +33,17 @@ class _HomeScreenState extends State<HomeScreen> {
   MealPlanController? _mealCtrl;
   bool _bootstrappedWeek = false;
 
+  // ✅ Favourites (read-only, matches RecipeListScreen)
+  StreamSubscription<User?>? _authFavSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
+  bool _loadingFavs = true;
+  final Set<int> _favoriteIds = <int>{};
+
   @override
   void initState() {
     super.initState();
     _loadRecipesAndBootstrap();
+    _listenToFavorites(); // ✅
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
@@ -45,6 +53,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _authFavSub?.cancel();
+    _favSub?.cancel();
+
     _mealCtrl?.stop();
     _mealCtrl = null;
     super.dispose();
@@ -203,6 +214,68 @@ class _HomeScreenState extends State<HomeScreen> {
     return t.isNotEmpty ? t : null;
   }
 
+  // ---------- ✅ FAVORITES (read-only) ----------
+
+  void _listenToFavorites() {
+    _authFavSub?.cancel();
+    _favSub?.cancel();
+
+    setState(() {
+      _loadingFavs = true;
+      _favoriteIds.clear();
+    });
+
+    _authFavSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+      _favSub?.cancel();
+
+      if (user == null) {
+        if (!mounted) return;
+        setState(() {
+          _loadingFavs = false;
+          _favoriteIds.clear();
+        });
+        return;
+      }
+
+      final col = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('favorites');
+
+      _favSub = col.snapshots().listen(
+        (snap) {
+          final next = <int>{};
+          for (final d in snap.docs) {
+            final data = d.data();
+            final raw = data['recipeId'];
+            final id = (raw is int) ? raw : int.tryParse('$raw') ?? -1;
+            if (id > 0) next.add(id);
+          }
+
+          if (!mounted) return;
+          setState(() {
+            _favoriteIds
+              ..clear()
+              ..addAll(next);
+            _loadingFavs = false;
+          });
+        },
+        onError: (_) {
+          if (!mounted) return;
+          setState(() {
+            _loadingFavs = false;
+            _favoriteIds.clear();
+          });
+        },
+      );
+    });
+  }
+
+  bool _isFavorited(int? recipeId) {
+    if (recipeId == null) return false;
+    return _favoriteIds.contains(recipeId);
+  }
+
   // ---------- FIRESTORE STREAM ----------
 
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _weekStream() {
@@ -242,15 +315,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     final theme = Theme.of(context);
 
-    // Take theme token, then ONLY adjust color (keep weight axis),
-    // BUT also force wght just in case this token is coming through “thin”.
     final baseHeading = theme.textTheme.titleLarge ??
         const TextStyle(fontSize: 20, fontWeight: FontWeight.w900);
 
     final headingStyle = _w(baseHeading, 900).copyWith(
-  color: headingColor,
-  letterSpacing: 1.2,
-);
+      color: headingColor,
+      letterSpacing: 1.2,
+    );
 
     return Container(
       width: double.infinity,
@@ -354,6 +425,8 @@ class _HomeScreenState extends State<HomeScreen> {
         _titleOf(r).replaceAll('&#038;', '&').replaceAll('&amp;', '&');
     final thumb = _thumbOf(r);
 
+    final isFav = _isFavorited(rid);
+
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -390,11 +463,27 @@ class _HomeScreenState extends State<HomeScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(
-                        displayTitle,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: titleStyle,
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              displayTitle,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: titleStyle,
+                            ),
+                          ),
+                          if (isFav)
+                            const Padding(
+                              padding: EdgeInsets.only(left: 8, top: 2),
+                              child: Icon(
+                                Icons.star_rounded,
+                                size: 18,
+                                color: Colors.amber,
+                              ),
+                            ),
+                        ],
                       ),
                       const SizedBox(height: 6),
                       Row(
@@ -423,59 +512,59 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buttonBar(BuildContext context) {
-  final theme = Theme.of(context);
+    final theme = Theme.of(context);
 
-  final baseLabel = theme.textTheme.labelLarge ?? const TextStyle(fontSize: 12);
-  final btnTextStyle = _w(baseLabel, 800).copyWith(
-    letterSpacing: 0.8,
-    color: _onDark, // ✅ THIS fixes it
-  );
+    final baseLabel = theme.textTheme.labelLarge ?? const TextStyle(fontSize: 12);
+    final btnTextStyle = _w(baseLabel, 800).copyWith(
+      letterSpacing: 0.8,
+      color: _onDark, // ✅ THIS fixes it
+    );
 
-  return Container(
-    width: double.infinity,
-    color: _heroBg,
-    padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-    child: Row(
-      children: [
-        Expanded(
-          child: SizedBox(
-            height: 54,
-            child: OutlinedButton(
-              onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: _onDark,
-                side: BorderSide(
-                  color: _onDark.withOpacity(0.35),
-                  width: 2,
+    return Container(
+      width: double.infinity,
+      color: _heroBg,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      child: Row(
+        children: [
+          Expanded(
+            child: SizedBox(
+              height: 54,
+              child: OutlinedButton(
+                onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _onDark,
+                  side: BorderSide(
+                    color: _onDark.withOpacity(0.35),
+                    width: 2,
+                  ),
+                  shape: const StadiumBorder(),
                 ),
-                shape: const StadiumBorder(),
+                child: Text('CUSTOMISE', style: btnTextStyle),
               ),
-              child: Text('CUSTOMISE', style: btnTextStyle),
             ),
           ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: SizedBox(
-            height: 54,
-            child: OutlinedButton(
-              onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: _onDark,
-                side: BorderSide(
-                  color: _onDark.withOpacity(0.35),
-                  width: 2,
+          const SizedBox(width: 12),
+          Expanded(
+            child: SizedBox(
+              height: 54,
+              child: OutlinedButton(
+                onPressed: () => Navigator.of(context).pushNamed('/meal-plan'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _onDark,
+                  side: BorderSide(
+                    color: _onDark.withOpacity(0.35),
+                    width: 2,
+                  ),
+                  shape: const StadiumBorder(),
                 ),
-                shape: const StadiumBorder(),
+                child: Text('FULL WEEK', style: btnTextStyle),
               ),
-              child: Text('FULL WEEK', style: btnTextStyle),
             ),
           ),
-        ),
-      ],
-    ),
-  );
-}
+        ],
+      ),
+    );
+  }
 
   // ---------- UI ----------
 
@@ -520,32 +609,25 @@ class _HomeScreenState extends State<HomeScreen> {
         final snack1 = parsedBySlot['snack1'];
         final snack2 = parsedBySlot['snack2'];
 
-        final theme = Theme.of(context);
-
-        final heroTodayBase =
-            theme.textTheme.headlineSmall ?? const TextStyle(fontSize: 38);
-        final heroMealBase =
-            theme.textTheme.headlineSmall ?? const TextStyle(fontSize: 46);
-
         final heroTodayStyle = const TextStyle(
-  fontFamily: 'Montserrat',
-  fontSize: 30,
-  color: Colors.white,
-  height: 1.0,
-  letterSpacing: 0.6,
-  fontWeight: FontWeight.w900,
-  fontVariations: [FontVariation('wght', 900)],
-);
+          fontFamily: 'Montserrat',
+          fontSize: 30,
+          color: Colors.white,
+          height: 1.0,
+          letterSpacing: 0.6,
+          fontWeight: FontWeight.w900,
+          fontVariations: [FontVariation('wght', 900)],
+        );
 
-final heroMealPlanStyle = const TextStyle(
-  fontFamily: 'Montserrat',
-  fontSize: 52,
-  color: Color(0xFF32998D),
-  height: 1.0,
-  letterSpacing: 1.04,
-  fontWeight: FontWeight.w900,
-  fontVariations: [FontVariation('wght', 900)],
-);
+        final heroMealPlanStyle = const TextStyle(
+          fontFamily: 'Montserrat',
+          fontSize: 52,
+          color: Color(0xFF32998D),
+          height: 1.0,
+          letterSpacing: 1.04,
+          fontWeight: FontWeight.w900,
+          fontVariations: [FontVariation('wght', 900)],
+        );
 
         return ListView(
           padding: EdgeInsets.zero,
@@ -556,13 +638,13 @@ final heroMealPlanStyle = const TextStyle(
               padding: const EdgeInsets.fromLTRB(20, 24, 16, 18),
               color: _heroBg,
               child: RichText(
-  text: TextSpan(
-    children: [
-      TextSpan(text: "TODAY’S\n", style: heroTodayStyle),
-      TextSpan(text: "MEAL PLAN", style: heroMealPlanStyle),
-    ],
-  ),
-),
+                text: TextSpan(
+                  children: [
+                    TextSpan(text: "TODAY’S\n", style: heroTodayStyle),
+                    TextSpan(text: "MEAL PLAN", style: heroMealPlanStyle),
+                  ],
+                ),
+              ),
             ),
 
             _buildBand(
@@ -639,3 +721,5 @@ final heroMealPlanStyle = const TextStyle(
     );
   }
 }
+
+

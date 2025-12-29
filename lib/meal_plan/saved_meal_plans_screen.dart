@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'meal_plan_screen.dart';
+import 'saved_meal_plan_detail_screen.dart';
 
 class SavedMealPlansScreen extends StatelessWidget {
   const SavedMealPlansScreen({super.key});
@@ -22,7 +22,9 @@ class SavedMealPlansScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final q = _query();
     if (q == null) {
-      return const Scaffold(body: Center(child: Text('Log in to view saved meal plans')));
+      return const Scaffold(
+        body: Center(child: Text('Log in to view saved meal plans')),
+      );
     }
 
     return Scaffold(
@@ -52,27 +54,32 @@ class SavedMealPlansScreen extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             itemCount: docs.length,
             itemBuilder: (context, i) {
-              final data = docs[i].data();
-              final weekId = (data['weekId'] ?? '').toString().trim();
-              final title = (data['title'] ?? '').toString().trim();
+              final doc = docs[i];
+              final data = doc.data();
 
-              final display = title.isNotEmpty ? title : (weekId.isNotEmpty ? weekId : 'Saved meal plan');
+              final title = (data['title'] ?? '').toString().trim();
+              final type = (data['type'] ?? '').toString().trim(); // day|week
+
+              final display = title.isNotEmpty ? title : 'Saved meal plan';
 
               return Card(
                 margin: const EdgeInsets.only(bottom: 12),
                 child: ListTile(
-                  title: Text(display, style: const TextStyle(fontWeight: FontWeight.w700)),
-                  subtitle: weekId.isNotEmpty ? Text('Week: $weekId') : null,
+                  title: Text(
+                    display,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: type.isNotEmpty ? Text('Type: $type') : null,
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: weekId.isEmpty
-                      ? null
-                      : () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => MealPlanScreen(weekId: weekId),
-                            ),
-                          );
-                        },
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => SavedMealPlanDetailScreen(
+                          savedPlanId: doc.id,
+                        ),
+                      ),
+                    );
+                  },
                 ),
               );
             },

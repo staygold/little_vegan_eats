@@ -121,7 +121,8 @@ class RecipeRepository {
           if (fresh.isNotEmpty) {
             await RecipeCache.save(fresh);
 
-            final latest = _latestModifiedFromList(fresh) ?? signal.latestModified;
+            final latest =
+                _latestModifiedFromList(fresh) ?? signal.latestModified;
             if (latest != null) {
               await _writeLatestModified(latest);
             }
@@ -231,6 +232,42 @@ class RecipeRepository {
     }
 
     return out;
+  }
+
+  // ----------------------------
+  // Single recipe fetch + cache (by WPRM recipe id)
+  // ----------------------------
+
+  /// Fetches one WPRM recipe from WP by its WPRM id (e.g. 7123).
+  static Future<Map<String, dynamic>> fetchRecipeById(int wprmId) async {
+    final res = await _dio.get(
+      'https://littleveganeats.co/wp-json/wp/v2/wprm_recipe/$wprmId',
+    );
+
+    final data = res.data;
+    if (data is Map) {
+      return Map<String, dynamic>.from(data);
+    }
+    throw Exception('Unexpected recipe payload for id=$wprmId');
+  }
+
+  /// Loads a single recipe quickly:
+  /// - Returns cached version immediately if available
+  /// - Otherwise fetches from WP and caches it
+  ///
+  /// If forceRefresh=true, skips cache and overwrites it.
+  static Future<Map<String, dynamic>> getRecipeById(
+    int wprmId, {
+    bool forceRefresh = false,
+  }) async {
+    if (!forceRefresh) {
+      final cached = await RecipeCache.loadRecipe(wprmId);
+      if (cached != null) return cached;
+    }
+
+    final fresh = await fetchRecipeById(wprmId);
+    await RecipeCache.saveRecipe(wprmId, fresh);
+    return fresh;
   }
 
   // ----------------------------
