@@ -8,19 +8,37 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../utils/text.dart';
 import 'recipe_detail_screen.dart';
 import 'recipe_cache.dart';
-import 'recipe_repository.dart'; // ✅ make sure this path is correct
+import 'recipe_repository.dart';
 import 'allergy_engine.dart';
 import '../recipes/allergy_keys.dart';
 
 class RecipeListScreen extends StatefulWidget {
-  const RecipeListScreen({super.key});
+  const RecipeListScreen({
+    super.key,
+    this.initialCourseSlug,
+    this.lockCourse,
+    this.initialCollectionSlug,
+    this.lockCollection,
+  });
+
+  /// WPRM course term slug, e.g. "mains", "breakfast", "sauces-and-dips"
+  final String? initialCourseSlug;
+
+  /// If true, hide the course dropdown to make it feel like a dedicated page
+  final bool? lockCourse;
+
+  /// WPRM collection term slug, e.g. "15-minute-meals"
+  final String? initialCollectionSlug;
+
+  /// If true, hide the collection dropdown to make it feel like a dedicated page
+  final bool? lockCollection;
 
   @override
   State<RecipeListScreen> createState() => _RecipeListScreenState();
 }
 
 class _RecipeListScreenState extends State<RecipeListScreen> {
-  // Used for loading course terms only
+  // Used for loading terms only
   final Dio _dio = Dio(
     BaseOptions(
       headers: const {
@@ -35,16 +53,28 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   String _query = '';
 
-  bool _loading = true;
+  bool _loading = true; // controlled by boot gate below
   String? _error;
   List<Map<String, dynamic>> _items = [];
 
-  // ---- Course filter ----
+  // ---- Filters ----
   String _selectedCourse = 'All';
+  String _selectedCollection = 'All';
 
-  // ---- Course term mapping (ID -> Name) ----
+  // ---- Term mapping ----
   Map<String, String> _courseIdToName = {}; // "1151" -> "Drinks"
-  bool _loadingCourses = false;
+  Map<String, String> _courseSlugToName = {}; // "mains" -> "Mains"
+
+  Map<String, String> _collectionIdToName = {}; // "123" -> "15 Minute Meals"
+  Map<String, String> _collectionSlugToName = {}; // "15-minute-meals" -> "15 Minute Meals"
+
+  bool _loadingTerms = false;
+  bool _didApplyInitialCourse = false;
+  bool _didApplyInitialCollection = false;
+
+  // boot gate (prevents "show all then snap filter" weirdness)
+  bool _recipesLoaded = false;
+  bool _termsLoaded = false;
 
   // ---- Cache info ----
   DateTime? _cacheUpdatedAt;
@@ -63,7 +93,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   String? _selectedPersonId; // for single-person mode
 
   // Toggles
-  bool _showSuitableFor = true; // shows/hides the whole suitability section (kept)
   bool _filterByAllergies = true; // default ON
   bool _includeSwapRecipes = false; // OFF by default
 
@@ -81,15 +110,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     final u = FirebaseAuth.instance.currentUser;
     if (u == null) return null;
     return FirebaseFirestore.instance.collection('users').doc(u.uid);
-  }
-
-  CollectionReference<Map<String, dynamic>>? _favoritesCol() {
-    final u = FirebaseAuth.instance.currentUser;
-    if (u == null) return null;
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(u.uid)
-        .collection('favorites');
   }
 
   String _titleOf(Map<String, dynamic> r) =>
@@ -159,10 +179,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
     List<String> raw = [];
     if (v is List) {
-      raw = v
-          .map((e) => e.toString().trim())
-          .where((s) => s.isNotEmpty)
-          .toList();
+      raw = v.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
     } else if (v is int) {
       raw = [v.toString()];
     } else if (v is String && v.trim().isNotEmpty) {
@@ -176,7 +193,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       final s = m.trim();
       if (s.isNotEmpty) set.add(s);
     }
-
     final list = set.toList()..sort();
     return list;
   }
@@ -190,6 +206,103 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     return ['All', ...list];
   }
 
+  List<String> get _collectionOptions {
+  final set = <String>{};
+  for (final r in _items) {
+    set.addAll(_collectionsOf(r));
+  }
+  final list = set.toList()..sort();
+  return ['All', ...list];
+}
+
+  // ------------------------
+  // Collections (WPRM)
+  // ------------------------
+
+  List<String> _collectionsOf(Map<String, dynamic> r) {
+  final v = r['wprm_collections']; // ✅ plural
+
+  List<String> raw = [];
+  if (v is List) {
+    raw = v.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
+  } else if (v is int) {
+    raw = [v.toString()];
+  } else if (v is String && v.trim().isNotEmpty) {
+    raw = [v.trim()];
+  }
+
+  final mapped = raw.map((x) => _collectionIdToName[x] ?? x).toList();
+
+  final set = <String>{};
+  for (final m in mapped) {
+    final s = m.trim();
+    if (s.isNotEmpty) set.add(s);
+  }
+  final list = set.toList()..sort();
+  return list;
+}
+
+  // ------------------------
+  // Apply initial filters (slug -> human name)
+  // ------------------------
+
+  void _applyInitialCourseIfNeeded() {
+    if (_didApplyInitialCourse) return;
+
+    final slug = widget.initialCourseSlug?.trim();
+    if (slug == null || slug.isEmpty) {
+      _didApplyInitialCourse = true; // nothing to do
+      return;
+    }
+
+    final name = _courseSlugToName[slug];
+    if (name == null || name.trim().isEmpty) return;
+
+    final opts = _courseOptions;
+    if (opts.contains(name)) {
+      _selectedCourse = name;
+      _didApplyInitialCourse = true;
+    }
+  }
+
+  void _applyInitialCollectionIfNeeded() {
+    if (_didApplyInitialCollection) return;
+
+    final slug = widget.initialCollectionSlug?.trim();
+    if (slug == null || slug.isEmpty) {
+      _didApplyInitialCollection = true; // nothing to do
+      return;
+    }
+
+    final name = _collectionSlugToName[slug];
+    if (name == null || name.trim().isEmpty) return;
+
+    final opts = _collectionOptions;
+    if (opts.contains(name)) {
+      _selectedCollection = name;
+      _didApplyInitialCollection = true;
+    }
+  }
+
+  void _maybeFinishBoot() {
+    // Only finish boot once recipes + terms are loaded AND initial slugs (if any) can be applied.
+    if (!_recipesLoaded || !_termsLoaded) return;
+
+    _applyInitialCourseIfNeeded();
+    _applyInitialCollectionIfNeeded();
+
+    final needCourse = (widget.initialCourseSlug?.trim().isNotEmpty ?? false);
+    final needCollection = (widget.initialCollectionSlug?.trim().isNotEmpty ?? false);
+
+    final courseReady = !needCourse || _didApplyInitialCourse;
+    final collectionReady = !needCollection || _didApplyInitialCollection;
+
+    if (courseReady && collectionReady) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
+  }
+
   // ------------------------
   // Lifecycle
   // ------------------------
@@ -198,9 +311,9 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   void initState() {
     super.initState();
     _listenToHousehold();
-    _listenToFavorites(); // ✅
-    _loadCourseTerms();
-    _loadRecipes(); // ✅ single source of truth for recipes
+    _listenToFavorites();
+    _loadTerms();
+    _loadRecipes();
   }
 
   @override
@@ -218,7 +331,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   // ------------------------
 
   void _listenToFavorites() {
-    // Follow auth and rebind fav collection when user changes.
     _authFavSub?.cancel();
     _favSub?.cancel();
 
@@ -327,8 +439,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
             }
           }
 
-          final canonical =
-              hasAllergies ? (parsed.toSet().toList()..sort()) : <String>[];
+          final canonical = hasAllergies ? (parsed.toSet().toList()..sort()) : <String>[];
 
           adults.add(
             _ProfilePerson(
@@ -359,8 +470,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
             }
           }
 
-          final canonical =
-              hasAllergies ? (parsed.toSet().toList()..sort()) : <String>[];
+          final canonical = hasAllergies ? (parsed.toSet().toList()..sort()) : <String>[];
 
           children.add(
             _ProfilePerson(
@@ -409,9 +519,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   List<_ProfilePerson> get _allPeople => [..._adults, ..._children];
 
-  bool get _hasAnyActiveAllergies =>
-      _allPeople.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
-
   String _activeAllergiesLabelFor(List<_ProfilePerson> people) {
     final set = <String>{};
     for (final p in people) {
@@ -433,39 +540,65 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   }
 
   // ------------------------
-  // Load course terms (ID -> Name)
+  // Load terms (Course + Collection)
   // ------------------------
 
-  Future<void> _loadCourseTerms() async {
-    if (_loadingCourses) return;
-
-    setState(() => _loadingCourses = true);
+  Future<void> _loadTerms() async {
+    if (_loadingTerms) return;
+    setState(() => _loadingTerms = true);
 
     try {
-      final map = <String, String>{};
+      final courseById = <String, String>{};
+      final courseBySlug = <String, String>{};
+      final colById = <String, String>{};
+      final colBySlug = <String, String>{};
+
+      // Courses
       int page = 1;
       const int perPage = 100;
 
       while (true) {
         final res = await _dio.get(
           'https://littleveganeats.co/wp-json/wp/v2/wprm_course',
-          queryParameters: {
-            'per_page': perPage,
-            'page': page,
-          },
+          queryParameters: {'per_page': perPage, 'page': page},
         );
 
         final data = res.data;
         if (data is! List) break;
 
         final batch = data.cast<Map<String, dynamic>>();
-
         for (final t in batch) {
           final id = t['id'];
           final name = (t['name'] ?? '').toString().trim();
-          if (id != null && name.isNotEmpty) {
-            map[id.toString()] = name;
-          }
+          final slug = (t['slug'] ?? '').toString().trim();
+
+          if (id != null && name.isNotEmpty) courseById[id.toString()] = name;
+          if (slug.isNotEmpty && name.isNotEmpty) courseBySlug[slug] = name;
+        }
+
+        if (batch.length < perPage) break;
+        page += 1;
+      }
+
+      // Collections
+      page = 1;
+      while (true) {
+        final res = await _dio.get(
+          'https://littleveganeats.co/wp-json/wp/v2/wprm_collections',
+          queryParameters: {'per_page': perPage, 'page': page},
+        );
+
+        final data = res.data;
+        if (data is! List) break;
+
+        final batch = data.cast<Map<String, dynamic>>();
+        for (final t in batch) {
+          final id = t['id'];
+          final name = (t['name'] ?? '').toString().trim();
+          final slug = (t['slug'] ?? '').toString().trim();
+
+          if (id != null && name.isNotEmpty) colById[id.toString()] = name;
+          if (slug.isNotEmpty && name.isNotEmpty) colBySlug[slug] = name;
         }
 
         if (batch.length < perPage) break;
@@ -475,28 +608,39 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       if (!mounted) return;
 
       setState(() {
-        _courseIdToName = map;
+        _courseIdToName = courseById;
+        _courseSlugToName = courseBySlug;
+        _collectionIdToName = colById;
+        _collectionSlugToName = colBySlug;
+        _termsLoaded = true;
       });
+
+      _maybeFinishBoot();
     } catch (_) {
-      // silent fail
+      // silent fail; still allow app to run
+      if (!mounted) return;
+      setState(() {
+        _termsLoaded = true;
+      });
+      _maybeFinishBoot();
     } finally {
-      if (mounted) setState(() => _loadingCourses = false);
+      if (mounted) setState(() => _loadingTerms = false);
     }
   }
 
   // ------------------------
-  // ✅ Recipes: cache-first via repository (single source of truth)
+  // Recipes: cache-first via repository
   // ------------------------
 
   Future<void> _loadRecipes({bool forceRefresh = false}) async {
     setState(() {
-      _loading = true;
       _error = null;
+      // do NOT set _loading=false here; boot gate controls it
     });
 
     try {
       final recipes = await RecipeRepository.ensureRecipesLoaded(
-        backgroundRefresh: true, // cache-first, then background refresh (throttled)
+        backgroundRefresh: true,
         forceRefresh: forceRefresh,
       );
 
@@ -507,18 +651,18 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         _items = recipes;
         _cacheUpdatedAt = updatedAt;
         _loadedFromCache = true;
-        _loading = false;
+        _recipesLoaded = true;
       });
 
-      // Background refresh may update the cache shortly after boot
-      unawaited(
-        Future.delayed(const Duration(seconds: 2), _upgradeItemsFromCacheIfNewer),
-      );
+      _maybeFinishBoot();
+
+      unawaited(Future.delayed(const Duration(seconds: 2), _upgradeItemsFromCacheIfNewer));
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _error = e.toString();
-        _loading = false;
+        _recipesLoaded = true;
+        _loading = false; // show error state
       });
     }
   }
@@ -548,8 +692,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     required String ingredientsText,
     required List<_ProfilePerson> activeProfiles,
   }) {
-    final anyActive =
-        activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
+    final anyActive = activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
     if (!anyActive) return (tag: null, swapHint: null);
 
     bool anySwap = false;
@@ -577,9 +720,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
     if (anySwap) {
       return (
-        tag: activeProfiles.length > 1
-            ? '⚠️ Swap required (one or more people)'
-            : '⚠️ Swap required',
+        tag: activeProfiles.length > 1 ? '⚠️ Swap required (one or more people)' : '⚠️ Swap required',
         swapHint: firstSwap,
       );
     }
@@ -599,61 +740,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final courseOptions = _courseOptions;
-    final selectedCourse =
-        courseOptions.contains(_selectedCourse) ? _selectedCourse : 'All';
-    if (selectedCourse != _selectedCourse) _selectedCourse = selectedCourse;
-
-    final q = _query.trim().toLowerCase();
-
-    final activeProfiles = _filterByAllergies ? _activeProfilesForMode() : _allPeople;
-
-    final hasAnyAllergies =
-        activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
-
-    final visible = _items.where((r) {
-      final courses = _coursesOf(r);
-      final matchesCourse =
-          (_selectedCourse == 'All') || courses.contains(_selectedCourse);
-
-      final titleMatch = q.isEmpty || _titleOf(r).toLowerCase().contains(q);
-
-      final ingredients = r['recipe']?['ingredients_flat'];
-      final ingredientMatch = q.isEmpty
-          ? true
-          : (ingredients is List &&
-              ingredients.any((row) {
-                if (row is! Map) return false;
-                final name = (row['name'] ?? '').toString().toLowerCase();
-                final notes =
-                    stripHtml((row['notes'] ?? '').toString()).toLowerCase();
-                return name.contains(q) || notes.contains(q);
-              }));
-
-      if (!(matchesCourse && (titleMatch || ingredientMatch))) return false;
-
-      if (_filterByAllergies && hasAnyAllergies) {
-        final ingredientsText = _ingredientsTextOf(r);
-        for (final p in _activeProfilesForMode()) {
-          if (!_isAllowedForPerson(p: p, ingredientsText: ingredientsText)) {
-            debugPrint(
-              '[RecipeList] FILTERED BY ALLERGY id=${r['id']} title="${_titleOf(r)}"',
-            );
-            return false;
-          }
-        }
-      }
-
-      return true;
-    }).toList();
-
-    debugPrint(
-      '[RecipeList] items=${_items.length} visible=${visible.length} '
-      'course=$_selectedCourse query="${_query.trim()}" '
-      'filterByAllergies=$_filterByAllergies mode=$_mode '
-      'people=${_allPeople.length}',
-    );
-
     if (_loading) return const Center(child: CircularProgressIndicator());
 
     if (_items.isEmpty && _error != null) {
@@ -675,27 +761,60 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       );
     }
 
+    final courseOptions = _courseOptions;
+    final collectionOptions = _collectionOptions;
+
+    final selectedCourse = courseOptions.contains(_selectedCourse) ? _selectedCourse : 'All';
+    if (selectedCourse != _selectedCourse) _selectedCourse = selectedCourse;
+
+    final selectedCollection =
+        collectionOptions.contains(_selectedCollection) ? _selectedCollection : 'All';
+    if (selectedCollection != _selectedCollection) _selectedCollection = selectedCollection;
+
+    final q = _query.trim().toLowerCase();
+
+    final activeProfiles = _filterByAllergies ? _activeProfilesForMode() : _allPeople;
+    final hasAnyAllergies = activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
+
+    final visible = _items.where((r) {
+      final courses = _coursesOf(r);
+      final collections = _collectionsOf(r);
+
+      final matchesCourse = (_selectedCourse == 'All') || courses.contains(_selectedCourse);
+      final matchesCollection =
+          (_selectedCollection == 'All') || collections.contains(_selectedCollection);
+
+      final titleMatch = q.isEmpty || _titleOf(r).toLowerCase().contains(q);
+
+      final ingredients = r['recipe']?['ingredients_flat'];
+      final ingredientMatch = q.isEmpty
+          ? true
+          : (ingredients is List &&
+              ingredients.any((row) {
+                if (row is! Map) return false;
+                final name = (row['name'] ?? '').toString().toLowerCase();
+                final notes = stripHtml((row['notes'] ?? '').toString()).toLowerCase();
+                return name.contains(q) || notes.contains(q);
+              }));
+
+      if (!(matchesCourse && matchesCollection && (titleMatch || ingredientMatch))) return false;
+
+      if (_filterByAllergies && hasAnyAllergies) {
+        final ingredientsText = _ingredientsTextOf(r);
+        for (final p in _activeProfilesForMode()) {
+          if (!_isAllowedForPerson(p: p, ingredientsText: ingredientsText)) {
+            return false;
+          }
+        }
+      }
+
+      return true;
+    }).toList();
+
     final suitabilityItems = <DropdownMenuItem<String>>[
       const DropdownMenuItem(value: '__whole__', child: Text('Whole family')),
       const DropdownMenuItem(value: '__kids__', child: Text('All children')),
-      if (_adults.isNotEmpty)
-        const DropdownMenuItem(
-          value: '__sep1__',
-          enabled: false,
-          child: Text('— Adults —'),
-        ),
-      ..._adults.map((a) {
-        final label = a.id == 'adult_0'
-            ? 'Adult 1 (You): ${a.name}'
-            : 'Adult: ${a.name}';
-        return DropdownMenuItem(value: a.id, child: Text(label));
-      }),
-      if (_children.isNotEmpty)
-        const DropdownMenuItem(
-          value: '__sep2__',
-          enabled: false,
-          child: Text('— Children —'),
-        ),
+      ..._adults.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name))), // ✅ just names
       ..._children.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name))),
     ];
 
@@ -710,6 +829,9 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       if (!exists) suitabilityValue = '__whole__';
     }
 
+    final lockCourse = widget.lockCourse ?? false;
+    final lockCollection = widget.lockCollection ?? false;
+
     return Column(
       children: [
         Padding(
@@ -719,7 +841,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
               TextField(
                 controller: _searchCtrl,
                 decoration: InputDecoration(
-                  hintText: 'Search recipes...',
+                  hintText: 'Search by recipe or ingredients',
                   prefixIcon: const Icon(Icons.search),
                   suffixIcon: _query.isEmpty
                       ? null
@@ -733,17 +855,12 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                 ),
                 onChanged: (v) => setState(() => _query = v),
               ),
-
               const SizedBox(height: 10),
 
               if (_loadingHousehold) ...[
                 const Row(
                   children: [
-                    SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
+                    SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
                     SizedBox(width: 10),
                     Text('Loading family profiles...'),
                   ],
@@ -760,10 +877,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    TextButton(
-                      onPressed: _listenToHousehold,
-                      child: const Text('Retry'),
-                    ),
+                    TextButton(onPressed: _listenToHousehold, child: const Text('Retry')),
                   ],
                 ),
               ] else ...[
@@ -787,12 +901,9 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                         child: DropdownButton<String>(
                           isExpanded: true,
                           value: suitabilityValue,
-                          items: suitabilityItems
-                              .where((i) => i.value != '__sep1__' && i.value != '__sep2__')
-                              .toList(),
+                          items: suitabilityItems,
                           onChanged: (v) {
                             if (v == null) return;
-
                             setState(() {
                               if (v == '__whole__') {
                                 _mode = _SuitabilityMode.wholeFamily;
@@ -804,7 +915,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                                 _mode = _SuitabilityMode.singlePerson;
                                 _selectedPersonId = v;
                               }
-
                               _includeSwapRecipes = false;
                             });
                           },
@@ -812,9 +922,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                       ),
                     ],
                   ),
-
                   const SizedBox(height: 6),
-
                   Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
@@ -824,7 +932,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
-
                   if (hasAnyAllergies) ...[
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
@@ -839,25 +946,48 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
               const SizedBox(height: 8),
 
-              Row(
-                children: [
-                  const Text('Course:'),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: DropdownButton<String>(
-                      isExpanded: true,
-                      value: selectedCourse,
-                      items: courseOptions
-                          .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                          .toList(),
-                      onChanged: (v) {
-                        if (v == null) return;
-                        setState(() => _selectedCourse = v);
-                      },
+              if (!lockCourse) ...[
+                Row(
+                  children: [
+                    const Text('Course:'),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        value: selectedCourse,
+                        items: courseOptions.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                        onChanged: (v) {
+                          if (v == null) return;
+                          setState(() => _selectedCourse = v);
+                        },
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
+              ],
+
+              if (!lockCollection) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('Collection:'),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        value: selectedCollection,
+                        items: collectionOptions
+                            .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                            .toList(),
+                        onChanged: (v) {
+                          if (v == null) return;
+                          setState(() => _selectedCollection = v);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ],
 
               if (_loadedFromCache || _cacheUpdatedAt != null) ...[
                 const SizedBox(height: 8),
@@ -876,10 +1006,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         Expanded(
           child: RefreshIndicator(
             onRefresh: () async {
-              await RecipeRepository.ensureRecipesLoaded(
-                backgroundRefresh: false,
-                forceRefresh: true,
-              );
+              await RecipeRepository.ensureRecipesLoaded(backgroundRefresh: false, forceRefresh: true);
 
               final updated = await RecipeCache.load();
               final updatedAt = await RecipeCache.lastUpdated();
@@ -906,7 +1033,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                 final courseLabel = courses.isEmpty ? 'No course' : courses.first;
 
                 final ingredientsText = _ingredientsTextOf(r);
-
                 final tagData = _tagForRecipe(
                   ingredientsText: ingredientsText,
                   activeProfiles: _filterByAllergies ? _activeProfilesForMode() : _allPeople,
@@ -927,8 +1053,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                               width: 56,
                               height: 56,
                               fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) =>
-                                  const Icon(Icons.restaurant_menu),
+                              errorBuilder: (_, __, ___) => const Icon(Icons.restaurant_menu),
                             ),
                     ),
                   ),
@@ -941,11 +1066,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                           if (isFav)
                             const Padding(
                               padding: EdgeInsets.only(left: 8),
-                              child: Icon(
-                                Icons.star_rounded,
-                                size: 18,
-                                color: Colors.amber,
-                              ),
+                              child: Icon(Icons.star_rounded, size: 18, color: Colors.amber),
                             ),
                         ],
                       ),
