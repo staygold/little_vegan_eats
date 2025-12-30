@@ -93,7 +93,8 @@ class MealSlotCard extends StatelessWidget {
             noteText,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
-          subtitle: Text(slotLabel),
+          // ✅ removed course/slot label subtitle
+          subtitle: null,
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -129,7 +130,8 @@ class MealSlotCard extends StatelessWidget {
         child: ListTile(
           leading: const Icon(Icons.restaurant_menu),
           title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-          subtitle: Text(slotLabel),
+          // ✅ removed course/slot label subtitle
+          subtitle: null,
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -166,7 +168,8 @@ class MealSlotCard extends StatelessWidget {
             fav,
           ),
           title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-          subtitle: Text('$slotLabel • Not suitable for current allergies'),
+          // ✅ removed slot label from subtitle string
+          subtitle: const Text('Not suitable for current allergies'),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -197,7 +200,8 @@ class MealSlotCard extends StatelessWidget {
             fav,
           ),
           title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-          subtitle: Text('$slotLabel • Needs swap to be allergy-safe'),
+          // ✅ removed slot label from subtitle string
+          subtitle: const Text('Needs swap to be allergy-safe'),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -228,7 +232,8 @@ class MealSlotCard extends StatelessWidget {
       child: ListTile(
         leading: _withFavBadge(context, MealSlotThumb(url: thumb), fav),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text(slotLabel),
+        // ✅ removed course/slot label subtitle
+        subtitle: null,
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [

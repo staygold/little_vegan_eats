@@ -24,6 +24,9 @@ class AppColors {
 class AppRadii {
   static const r4 = BorderRadius.all(Radius.circular(4));
   static const r8 = BorderRadius.all(Radius.circular(8));
+  static const r12 = BorderRadius.all(Radius.circular(12));
+  static const r16 = BorderRadius.all(Radius.circular(16));
+  static const r20 = BorderRadius.all(Radius.circular(20));
 }
 
 class AppSpace {
@@ -89,7 +92,7 @@ ThemeData buildAppTheme() {
 
       headlineMedium: const TextStyle(
         fontSize: 20,
-        fontWeight: FontWeight.w900,
+        fontWeight: FontWeight.w700,
         letterSpacing: 0.8,
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 900)],
@@ -97,29 +100,29 @@ ThemeData buildAppTheme() {
 
       titleLarge: const TextStyle(
         fontSize: 30,
-        fontWeight: FontWeight.w900,
-        letterSpacing: 4.0,
-        color: AppColors.textPrimary,
-        fontVariations: [FontVariation('wght', 900)],
-      ),
-
-      titleMedium: const TextStyle(
-        fontSize: 16,
         fontWeight: FontWeight.w700,
+        letterSpacing: 4.0,
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 700)],
       ),
 
+      titleMedium: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w800,
+        color: AppColors.textPrimary,
+        fontVariations: [FontVariation('wght', 800)],
+      ),
+
       bodyLarge: const TextStyle(
         fontSize: 16,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w800,
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 600)],
       ),
 
       bodyMedium: const TextStyle(
         fontSize: 14,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w700,
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 600)],
       ),
@@ -145,7 +148,7 @@ ThemeData buildAppTheme() {
       elevation: 0,
       clipBehavior: Clip.antiAlias,
       color: AppColors.white,
-      shape: RoundedRectangleBorder(borderRadius: AppRadii.r4),
+      shape: RoundedRectangleBorder(borderRadius: AppRadii.r20),
     ),
 
     // ✅ Global list tile defaults

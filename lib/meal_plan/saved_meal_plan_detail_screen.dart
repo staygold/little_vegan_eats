@@ -17,8 +17,7 @@ class SavedMealPlanDetailScreen extends StatefulWidget {
   });
 
   @override
-  State<SavedMealPlanDetailScreen> createState() =>
-      _SavedMealPlanDetailScreenState();
+  State<SavedMealPlanDetailScreen> createState() => _SavedMealPlanDetailScreenState();
 }
 
 class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
@@ -105,6 +104,10 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
     }
   }
 
+  // ----------------------------
+  // Recipe helpers
+  // ----------------------------
+
   int? _recipeIdFrom(Map<String, dynamic> r) {
     final raw = r['id'];
     if (raw is int) return raw;
@@ -122,11 +125,21 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
     return null;
   }
 
+  String _decodeHtmlLite(String s) {
+    return s
+        .replaceAll('&#038;', '&')
+        .replaceAll('&amp;', '&')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#39;', "'")
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>');
+  }
+
   String _titleOf(Map<String, dynamic> r) {
     final t = r['title'];
     if (t is Map && (t['rendered'] is String)) {
       final s = (t['rendered'] as String).trim();
-      if (s.isNotEmpty) return s;
+      if (s.isNotEmpty) return _decodeHtmlLite(s);
     }
     return 'Untitled';
   }
@@ -139,6 +152,10 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
     }
     return null;
   }
+
+  // ----------------------------
+  // Date formatting
+  // ----------------------------
 
   String _prettyDayKey(String dayKey) {
     final dt = MealPlanKeys.parseDayKey(dayKey);
@@ -173,7 +190,10 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
     return '$weekday, ${dt.day} $mon';
   }
 
-  // Saved plan entry parsing (kept flexible)
+  // ----------------------------
+  // Saved plan entry parsing
+  // ----------------------------
+
   bool _entryIsRecipe(dynamic entry) {
     if (entry is Map) {
       final kind = entry['kind']?.toString();
@@ -205,8 +225,6 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
 
   // ----------------------------
   // USE (apply saved -> active plan)
-  // Day plan: replace today only
-  // Week plan: replace from today -> end of week (maps saved days in order)
   // ----------------------------
 
   Future<bool> _confirmUse() async {
@@ -285,7 +303,6 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
       final batch = FirebaseFirestore.instance.batch();
 
       if (type == 'day') {
-        // ✅ Replace TODAY only
         final todayKey = MealPlanKeys.todayKey();
         final day = plan['day'];
 
@@ -301,7 +318,6 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
           );
         }
       } else {
-        // ✅ Replace from TODAY -> end of week
         final days = plan['days'];
         if (days is Map) {
           final remapped = _remapSavedWeekDaysFromToday(days);
@@ -370,7 +386,7 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
       await doc.delete();
 
       if (!mounted) return;
-      Navigator.of(context).pop(); // back to list
+      Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Saved plan deleted.')),
       );
@@ -382,25 +398,30 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
     }
   }
 
-  // ---- UI render helpers ----
+  // ----------------------------
+  // Card UI bits
+  // ----------------------------
 
-  Widget _thumb(String? url) {
-    const size = 44.0;
+  static const _bg = Color(0xFFECF3F4);
+  static const _headerBg = Color(0xFFE7EFF0);
+
+  Widget _thumbSmall(String? url) {
+    const size = 38.0;
 
     if (url == null || url.trim().isEmpty) {
       return Container(
         width: size,
         height: size,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
         ),
-        child: const Icon(Icons.image, size: 20),
+        child: const Icon(Icons.restaurant_menu, size: 16),
       );
     }
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(12),
       child: Image.network(
         url,
         width: size,
@@ -410,87 +431,138 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
           width: size,
           height: size,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(12),
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
           ),
-          child: const Icon(Icons.broken_image, size: 20),
+          child: const Icon(Icons.restaurant_menu, size: 16),
         ),
       ),
     );
   }
 
-  Widget _slotTile({
+  String _slotLabel(String slot) => slot.toUpperCase();
+
+  Widget _slotMiniCard({
     required String slot,
     required dynamic entry,
   }) {
-    final label = slot.toUpperCase();
+    final theme = Theme.of(context);
+    final label = _slotLabel(slot);
 
-    if (_entryIsRecipe(entry)) {
-      final rid = _entryRecipeId(entry);
-      final r = _byId(rid);
-      final title = (r == null) ? 'Recipe #$rid' : _titleOf(r);
-      final thumb = (r == null) ? null : _thumbOf(r);
+    // resolve row content
+    final bool isRecipe = _entryIsRecipe(entry);
+    final int? rid = isRecipe ? _entryRecipeId(entry) : null;
+    final Map<String, dynamic>? r = isRecipe ? _byId(rid) : null;
+    final String title = isRecipe ? ((r == null) ? 'Recipe #$rid' : _titleOf(r)) : 'Not set';
+    final String? thumb = isRecipe ? ((r == null) ? null : _thumbOf(r)) : null;
 
-      return ListTile(
-        leading: _thumb(thumb),
-        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(label),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: rid == null
-            ? null
-            : () {
-                Navigator.of(context).push(
+    final String? note = !isRecipe ? _entryNoteText(entry) : null;
+    final bool isNote = note != null && note.trim().isNotEmpty;
+
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: isRecipe && rid != null
+            ? () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
-                );
-              },
-      );
-    }
-
-    final note = _entryNoteText(entry);
-    if (note != null && note.isNotEmpty) {
-      return ListTile(
-        leading: const Icon(Icons.sticky_note_2_outlined),
-        title: Text(note, maxLines: 2, overflow: TextOverflow.ellipsis),
-        subtitle: Text(label),
-      );
-    }
-
-    return ListTile(
-      leading: const Icon(Icons.remove_circle_outline),
-      title: const Text('Not set'),
-      subtitle: Text(label),
+                )
+            : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          child: Row(
+            children: [
+              if (isRecipe)
+                _thumbSmall(thumb)
+              else
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: theme.colorScheme.surfaceContainerHighest,
+                  ),
+                  child: Icon(
+                    isNote ? Icons.sticky_note_2_outlined : Icons.remove_circle_outline,
+                    size: 16,
+                  ),
+                ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isNote ? note! : title,
+                      maxLines: isNote ? 2 : 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        height: 1.1,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      label,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        letterSpacing: 0.6,
+                        fontWeight: FontWeight.w800,
+                        height: 1.0,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (isRecipe)
+                const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Icon(Icons.chevron_right, size: 20),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
-  Widget _daySection({
+  Widget _daySectionCard({
     required String title,
     required Map day,
   }) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
+    final theme = Theme.of(context);
+
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(22),
+      clipBehavior: Clip.antiAlias,
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-              child: Text(
-                title,
-                style: const TextStyle(fontWeight: FontWeight.w800),
+            Text(
+              title,
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w900,
               ),
             ),
-            const Divider(height: 1),
-            for (final slot in MealPlanSlots.order)
-              _slotTile(
-                slot: slot,
-                entry: day[slot],
-              ),
+            const SizedBox(height: 10),
+
+            // ✅ mini cards per slot
+            for (final slot in MealPlanSlots.order) ...[
+              _slotMiniCard(slot: slot, entry: day[slot]),
+              const SizedBox(height: 10),
+            ]
           ],
         ),
       ),
     );
   }
+
+  // ----------------------------
+  // Build
+  // ----------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -520,7 +592,11 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
     final type = (plan['type'] ?? 'week').toString(); // 'week' | 'day'
 
     return Scaffold(
+      backgroundColor: _bg,
       appBar: AppBar(
+        backgroundColor: _bg,
+        elevation: 0,
+        scrolledUnderElevation: 0,
         title: Text(title.isNotEmpty ? title : 'Saved plan'),
         actions: [
           IconButton(
@@ -531,54 +607,68 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  type == 'day' ? 'Saved day plan' : 'Saved week plan',
-                  style: Theme.of(context).textTheme.titleMedium,
+          // header bar
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+            decoration: BoxDecoration(
+              color: _headerBg,
+              borderRadius: BorderRadius.circular(22),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    type == 'day' ? 'Saved day plan' : 'Saved week plan',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                  ),
                 ),
-              ),
-              ElevatedButton.icon(
-                onPressed: _usePlan,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('USE'),
-              ),
-            ],
+                ElevatedButton.icon(
+                  onPressed: _usePlan,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('USE'),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                  ),
+                ),
+              ],
+            ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
 
           if (type == 'week') ...[
             Builder(builder: (_) {
               final days = plan['days'];
-              if (days is! Map) {
-                return const Text('No days found in this saved plan.');
-              }
+              if (days is! Map) return const Text('No days found in this saved plan.');
 
               final keys = days.keys.map((k) => k.toString()).toList()..sort();
 
-              return Column(
-                children: [
-                  for (final dayKey in keys)
-                    if (days[dayKey] is Map)
-                      _daySection(
-                        title: _prettyDayKey(dayKey),
-                        day: days[dayKey] as Map,
-                      ),
-                ],
-              );
+              final widgets = <Widget>[];
+              for (final dayKey in keys) {
+                final day = days[dayKey];
+                if (day is! Map) continue;
+
+                widgets.add(_daySectionCard(
+                  title: _prettyDayKey(dayKey),
+                  day: day,
+                ));
+                widgets.add(const SizedBox(height: 14));
+              }
+
+              if (widgets.isNotEmpty) widgets.removeLast();
+              return Column(children: widgets);
             }),
           ] else ...[
             Builder(builder: (_) {
               final day = plan['day'];
-              if (day is! Map) {
-                return const Text('No day data found in this saved plan.');
-              }
-              final dayKey =
-                  (plan['dayKey'] ?? MealPlanKeys.todayKey()).toString();
-              return _daySection(
+              if (day is! Map) return const Text('No day data found in this saved plan.');
+
+              final dayKey = (plan['dayKey'] ?? MealPlanKeys.todayKey()).toString();
+              return _daySectionCard(
                 title: _prettyDayKey(dayKey),
                 day: day,
               );

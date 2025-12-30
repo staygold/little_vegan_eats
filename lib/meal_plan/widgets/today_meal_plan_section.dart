@@ -1,6 +1,4 @@
 // lib/meal_plan/widgets/today_meal_plan_section.dart
-import 'dart:ui' show FontVariation;
-
 import 'package:flutter/material.dart';
 
 import '../../recipes/recipe_detail_screen.dart';
@@ -13,7 +11,10 @@ class TodayMealPlanSection extends StatelessWidget {
     required this.todayRaw,
     required this.recipes,
     required this.favoriteIds,
-    required this.onOpenMealPlan,
+
+    /// Optional: if null, no footer button bar renders (perfect for MealPlanScreen).
+    this.onOpenMealPlan,
+
     this.heroTopText = "TODAY’S",
     this.heroBottomText = "MEAL PLAN",
 
@@ -23,6 +24,7 @@ class TodayMealPlanSection extends StatelessWidget {
     this.onNoteSlot,
     this.onClearSlot,
 
+    /// Only shows when canSave == true AND onSaveChanges != null
     this.canSave = false,
     this.onSaveChanges,
   });
@@ -36,8 +38,8 @@ class TodayMealPlanSection extends StatelessWidget {
   /// Favorite IDs set (read-only)
   final Set<int> favoriteIds;
 
-  /// Called for both buttons (Customise / Full Week)
-  final VoidCallback onOpenMealPlan;
+  /// Called for footer buttons (Customise / Full Week) on Home only.
+  final VoidCallback? onOpenMealPlan;
 
   /// Hero text override (so week tabs can show "MONDAY", etc.)
   final String heroTopText;
@@ -59,6 +61,8 @@ class TodayMealPlanSection extends StatelessWidget {
       onClearSlot != null ||
       onSaveChanges != null;
 
+  bool get _showFooterButtons => onOpenMealPlan != null;
+
   // -----------------------------
   // THEME TOKENS (SSoT)
   // -----------------------------
@@ -72,28 +76,6 @@ class TodayMealPlanSection extends StatelessWidget {
 
   Color get _onDark => AppColors.white;
   Color get _primaryText => AppColors.textPrimary;
-
-  // -----------------------------
-  // VARIABLE FONT HELPERS
-  // -----------------------------
-  TextStyle _w(TextStyle base, double wght) {
-    return base.copyWith(
-      fontWeight: _toFontWeight(wght),
-      fontVariations: [FontVariation('wght', wght)],
-    );
-  }
-
-  FontWeight _toFontWeight(double wght) {
-    if (wght >= 900) return FontWeight.w900;
-    if (wght >= 800) return FontWeight.w800;
-    if (wght >= 700) return FontWeight.w700;
-    if (wght >= 600) return FontWeight.w600;
-    if (wght >= 500) return FontWeight.w500;
-    if (wght >= 400) return FontWeight.w400;
-    if (wght >= 300) return FontWeight.w300;
-    if (wght >= 200) return FontWeight.w200;
-    return FontWeight.w100;
-  }
 
   // -----------------------------
   // DATA HELPERS
@@ -110,7 +92,10 @@ class TodayMealPlanSection extends StatelessWidget {
   String _titleOf(Map<String, dynamic> r) {
     final t = r['title'];
     if (t is Map && t['rendered'] is String) {
-      final s = (t['rendered'] as String).trim();
+      final s = (t['rendered'] as String)
+          .replaceAll('&#038;', '&')
+          .replaceAll('&amp;', '&')
+          .trim();
       if (s.isNotEmpty) return s;
     }
     return 'Untitled';
@@ -166,20 +151,19 @@ class TodayMealPlanSection extends StatelessWidget {
   }) {
     final theme = Theme.of(context);
 
-    // Prefer theme tokens; only override what we need.
-    final baseHeading = theme.textTheme.titleLarge ??
-        const TextStyle(fontSize: 20, fontWeight: FontWeight.w900);
-
-    final headingStyle = _w(baseHeading, 900).copyWith(
-      color: headingColor,
-      // keep the “band” look but don’t fight theme sizes
-      letterSpacing: 1.2,
-    );
+    final headingStyle = (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
+  color: headingColor,
+  fontSize: ((theme.textTheme.titleLarge?.fontSize) ?? 30) - 4, // slightly smaller than hero
+  fontWeight: FontWeight.w800,
+  fontVariations: const [FontVariation('wght', 800)],
+  letterSpacing: 1.0,
+  height: 1.0,
+);
 
     return Container(
       width: double.infinity,
       color: bg,
-      padding: const EdgeInsets.fromLTRB(AppSpace.s16, 18, AppSpace.s16, 18),
+      padding: const EdgeInsets.fromLTRB(AppSpace.s16, AppSpace.s12, AppSpace.s16, AppSpace.s12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -195,7 +179,7 @@ class TodayMealPlanSection extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: AppSpace.s4),
           ...children,
         ],
       ),
@@ -259,39 +243,33 @@ class TodayMealPlanSection extends StatelessWidget {
   Widget _mealCard({
     required BuildContext context,
     required String slotKey,
-    required String slotLabel,
     required Map<String, dynamic>? entry,
     required Color titleColor,
   }) {
     final theme = Theme.of(context);
 
-    final baseTitle = theme.textTheme.titleMedium ?? const TextStyle(fontSize: 16);
-    final titleStyle = _w(baseTitle, 800).copyWith(
-      fontSize: 18,
-      color: titleColor,
+    // Recipe title: titleMedium (16 / w700) from theme
+    final titleStyle = (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+  color: titleColor,
+  height: 1.3,
+  fontWeight: FontWeight.w800,
+  fontVariations: const [FontVariation('wght', 800)],
+);
+
+    // Supporting copy: bodyMedium (14 / w600) from theme
+    final bodyStyle = (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+      color: _primaryText,
     );
-
-    final baseBody = theme.textTheme.bodyMedium ?? const TextStyle(fontSize: 14);
-    final subtitleStyle = _w(baseBody, 600).copyWith(color: _primaryText);
-
-    final baseLabel = theme.textTheme.labelLarge ?? const TextStyle(fontSize: 12);
-    final slotStyle = _w(baseLabel, 700).copyWith(letterSpacing: 0.8);
 
     // NOTE entry
     final note = MealPlanEntryParser.entryNoteText(entry);
     if (note != null) {
-      final noteTitleBase = theme.textTheme.titleMedium ?? const TextStyle(fontSize: 16);
-      final noteTitleStyle = _w(noteTitleBase, 700).copyWith(color: _primaryText);
-
       return Card(
         clipBehavior: Clip.antiAlias,
         child: ListTile(
+          dense: true,
           leading: Icon(Icons.sticky_note_2_outlined, color: _primaryText),
-          title: Text(note, style: noteTitleStyle),
-          subtitle: Text(
-            slotLabel.toUpperCase(),
-            style: slotStyle.copyWith(color: _primaryText),
-          ),
+          title: Text(note, style: (theme.textTheme.titleMedium ?? const TextStyle())),
           trailing: _slotActions(context: context, slotKey: slotKey, hasEntry: true),
           onTap: _editable && onNoteSlot != null ? () => onNoteSlot!(slotKey) : null,
         ),
@@ -303,12 +281,9 @@ class TodayMealPlanSection extends StatelessWidget {
       return Card(
         clipBehavior: Clip.antiAlias,
         child: ListTile(
+          dense: true,
           leading: Icon(Icons.restaurant_menu, color: _primaryText),
-          title: Text('Not planned yet', style: subtitleStyle),
-          subtitle: Text(
-            slotLabel.toUpperCase(),
-            style: slotStyle.copyWith(color: _primaryText),
-          ),
+          title: Text('Not planned yet', style: bodyStyle),
           trailing: _slotActions(context: context, slotKey: slotKey, hasEntry: false),
         ),
       );
@@ -322,22 +297,21 @@ class TodayMealPlanSection extends StatelessWidget {
       return Card(
         clipBehavior: Clip.antiAlias,
         child: ListTile(
+          dense: true,
           leading: Icon(Icons.restaurant_menu, color: _primaryText),
-          title: Text('Recipe not found', style: subtitleStyle),
-          subtitle: Text(
-            slotLabel.toUpperCase(),
-            style: slotStyle.copyWith(color: _primaryText),
-          ),
+          title: Text('Recipe not found', style: bodyStyle),
           trailing: _slotActions(context: context, slotKey: slotKey, hasEntry: true),
         ),
       );
     }
 
-    final displayTitle = _titleOf(r).replaceAll('&#038;', '&').replaceAll('&amp;', '&');
+    final displayTitle = _titleOf(r);
     final thumb = _thumbOf(r);
     final fav = _isFavorited(rid);
 
     return Card(
+      // Override global r20 for this compact card (you asked for 12)
+      shape: const RoundedRectangleBorder(borderRadius: AppRadii.r12),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: rid == null
@@ -346,11 +320,11 @@ class TodayMealPlanSection extends StatelessWidget {
                   MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
                 ),
         child: SizedBox(
-          height: 92,
+          height: 74, // layout value
           child: Row(
             children: [
               SizedBox(
-                width: 112,
+                width: 88, // layout value
                 height: double.infinity,
                 child: thumb == null
                     ? Center(child: Icon(Icons.restaurant_menu, color: _primaryText))
@@ -366,17 +340,17 @@ class TodayMealPlanSection extends StatelessWidget {
                           ),
                           if (fav)
                             Positioned(
-                              top: 8,
-                              right: 8,
+                              top: 6,
+                              right: 6,
                               child: Container(
-                                padding: const EdgeInsets.all(6),
+                                padding: const EdgeInsets.all(5),
                                 decoration: BoxDecoration(
                                   color: Colors.white.withOpacity(0.9),
                                   shape: BoxShape.circle,
                                 ),
                                 child: const Icon(
                                   Icons.star_rounded,
-                                  size: 18,
+                                  size: 16,
                                   color: Colors.amber,
                                 ),
                               ),
@@ -386,24 +360,17 @@ class TodayMealPlanSection extends StatelessWidget {
               ),
               Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(AppSpace.s16, 14, 10, 14),
+                  padding: const EdgeInsets.fromLTRB(AppSpace.s12, AppSpace.s12, AppSpace.s12, AppSpace.s12),
                   child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         displayTitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                        maxLines: 2,
+                        softWrap: true,
+                        overflow: TextOverflow.clip,
                         style: titleStyle,
-                      ),
-                      const SizedBox(height: AppSpace.s4),
-                      Text(
-                        slotLabel.toUpperCase(),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: slotStyle.copyWith(color: _primaryText),
                       ),
                     ],
                   ),
@@ -421,50 +388,43 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   Widget _buttonBar(BuildContext context) {
+    if (!_showFooterButtons) return const SizedBox.shrink();
     final theme = Theme.of(context);
 
-    final baseLabel = theme.textTheme.labelLarge ?? const TextStyle(fontSize: 12);
-    final btnTextStyle = _w(baseLabel, 800).copyWith(
-      letterSpacing: 0.8,
+    // labelLarge is already 12 / w700 / ls 0.8 in your theme
+    final btnTextStyle = (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
       color: _onDark,
     );
 
-    // Use Stadium here intentionally to keep the “hero CTA” look
     return Container(
       width: double.infinity,
       color: _heroBg,
-      padding: const EdgeInsets.fromLTRB(AppSpace.s16, AppSpace.s16, AppSpace.s16, AppSpace.s16),
+      padding: const EdgeInsets.fromLTRB(AppSpace.s16, AppSpace.s8, AppSpace.s16, AppSpace.s8),
       child: Row(
         children: [
           Expanded(
             child: SizedBox(
-              height: 54,
+              height: 40,
               child: OutlinedButton(
                 onPressed: onOpenMealPlan,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: _onDark,
-                  side: BorderSide(
-                    color: _onDark.withOpacity(0.35),
-                    width: 2,
-                  ),
+                  side: BorderSide(color: _onDark.withOpacity(0.35), width: 2),
                   shape: const StadiumBorder(),
                 ),
                 child: Text('CUSTOMISE', style: btnTextStyle),
               ),
             ),
           ),
-          const SizedBox(width: AppSpace.s12),
+          const SizedBox(width: AppSpace.s4),
           Expanded(
             child: SizedBox(
-              height: 54,
+              height: 40,
               child: OutlinedButton(
                 onPressed: onOpenMealPlan,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: _onDark,
-                  side: BorderSide(
-                    color: _onDark.withOpacity(0.35),
-                    width: 2,
-                  ),
+                  side: BorderSide(color: _onDark.withOpacity(0.35), width: 2),
                   shape: const StadiumBorder(),
                 ),
                 child: Text('FULL WEEK', style: btnTextStyle),
@@ -478,12 +438,11 @@ class TodayMealPlanSection extends StatelessWidget {
 
   Widget _saveBar(BuildContext context) {
     if (onSaveChanges == null) return const SizedBox.shrink();
+    if (!canSave) return const SizedBox.shrink();
 
     final theme = Theme.of(context);
-    final baseLabel = theme.textTheme.labelLarge ?? const TextStyle(fontSize: 12);
 
-    final btnTextStyle = _w(baseLabel, 900).copyWith(
-      letterSpacing: 0.8,
+    final btnTextStyle = (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
       color: AppColors.white,
     );
 
@@ -494,7 +453,7 @@ class TodayMealPlanSection extends StatelessWidget {
       child: SizedBox(
         height: 52,
         child: ElevatedButton(
-          onPressed: canSave ? () => onSaveChanges!.call() : null,
+          onPressed: () => onSaveChanges!.call(),
           style: ElevatedButton.styleFrom(
             backgroundColor: _heroAccent,
             shape: const StadiumBorder(),
@@ -507,6 +466,7 @@ class TodayMealPlanSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final parsed = _parsedBySlot();
 
     final breakfast = parsed['breakfast'];
@@ -515,46 +475,41 @@ class TodayMealPlanSection extends StatelessWidget {
     final snack1 = parsed['snack1'];
     final snack2 = parsed['snack2'];
 
-    // Use theme family, but keep your strong hero sizing
-    final heroTopStyle = TextStyle(
-      fontFamily: AppText.fontFamily,
-      fontSize: 30,
-      color: AppColors.white,
-      height: 1.0,
-      letterSpacing: 0.6,
-      fontWeight: FontWeight.w900,
-      fontVariations: const [FontVariation('wght', 900)],
-    );
+    // ✅ Hero: use existing styles
+    final heroTopStyle = (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
+  color: AppColors.white,
+  fontSize: ((theme.textTheme.titleLarge?.fontSize) ?? 28), // bigger
+  fontWeight: FontWeight.w800, // stronger
+  fontVariations: const [FontVariation('wght', 800)], // locks bold for Montserrat variable
+  letterSpacing: 1.2,
+  height: 1.0,
+);
 
-    final heroBottomStyle = TextStyle(
-      fontFamily: AppText.fontFamily,
-      fontSize: 52,
+    // Bottom line can stay as titleLarge too, just change colour
+    final heroBottomStyle = (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
       color: _heroAccent,
-      height: 1.0,
-      letterSpacing: 1.04,
-      fontWeight: FontWeight.w900,
-      fontVariations: const [FontVariation('wght', 900)],
+      letterSpacing: 1.2,
     );
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // ✅ HERO
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(20, 24, 16, 18),
+          padding: const EdgeInsets.fromLTRB(20, 16, 16, 16),
           color: _heroBg,
-          child: RichText(
-            text: TextSpan(
-              children: [
-                TextSpan(text: '$heroTopText\n', style: heroTopStyle),
-                TextSpan(text: heroBottomText, style: heroBottomStyle),
-              ],
-            ),
-          ),
+          child: heroBottomText.trim().isEmpty
+              ? Text(heroTopText, style: heroTopStyle)
+              : RichText(
+                  text: TextSpan(
+                    children: [
+                      TextSpan(text: '$heroTopText\n', style: heroTopStyle),
+                      TextSpan(text: heroBottomText, style: heroBottomStyle),
+                    ],
+                  ),
+                ),
         ),
 
-        // ✅ BANDS (all colours now come from AppColors = SSoT)
         _buildBand(
           context: context,
           title: 'BREAKFAST',
@@ -564,7 +519,6 @@ class TodayMealPlanSection extends StatelessWidget {
             _mealCard(
               context: context,
               slotKey: 'breakfast',
-              slotLabel: 'breakfast',
               entry: breakfast,
               titleColor: _breakfastBg,
             ),
@@ -579,7 +533,6 @@ class TodayMealPlanSection extends StatelessWidget {
             _mealCard(
               context: context,
               slotKey: 'lunch',
-              slotLabel: 'lunch',
               entry: lunch,
               titleColor: _lunchBg,
             ),
@@ -594,7 +547,6 @@ class TodayMealPlanSection extends StatelessWidget {
             _mealCard(
               context: context,
               slotKey: 'dinner',
-              slotLabel: 'dinner',
               entry: dinner,
               titleColor: _dinnerBg,
             ),
@@ -609,25 +561,20 @@ class TodayMealPlanSection extends StatelessWidget {
             _mealCard(
               context: context,
               slotKey: 'snack1',
-              slotLabel: 'snack1',
               entry: snack1,
               titleColor: _snacksBg,
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 0),
             _mealCard(
               context: context,
               slotKey: 'snack2',
-              slotLabel: 'snack2',
               entry: snack2,
               titleColor: _snacksBg,
             ),
           ],
         ),
 
-        // ✅ Buttons
         _buttonBar(context),
-
-        // ✅ Save changes (editable mode only)
         _saveBar(context),
       ],
     );

@@ -78,7 +78,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     final pool = (fresh.isNotEmpty)
         ? fresh.toList()
         : availableIds.where((id) => id != currentId).toList();
-
     if (pool.isEmpty) return null;
 
     final next = pool[_rng.nextInt(pool.length)];
@@ -175,20 +174,19 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 
   Map<String, dynamic> _snapshotDay(String dayKey) {
     final out = <String, dynamic>{};
-
     for (final slot in MealPlanSlots.order) {
       final snap = _snapshotSlotEntry(dayKey, slot);
       if (snap != null) out[slot] = snap;
     }
-
     return out;
   }
 
-  Future<void> _saveDayPlanSnapshot(String dayKey) async {
+  Future<void> _addDayPlanToFavourites(String dayKey) async {
     final col = _savedPlansCol();
     if (col == null) return;
 
-    final name = await _promptPlanName(context, title: 'Save day plan');
+    final name =
+        await _promptPlanName(context, title: 'Add day plan to favourites');
     if (name == null) return;
 
     final payload = _snapshotDay(dayKey);
@@ -207,14 +205,15 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 
     if (!mounted) return;
     ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('Saved "$name"')));
+        .showSnackBar(SnackBar(content: Text('Added "$name" to favourites')));
   }
 
-  Future<void> _saveWeekPlanSnapshot() async {
+  Future<void> _addWeekPlanToFavourites() async {
     final col = _savedPlansCol();
     if (col == null) return;
 
-    final name = await _promptPlanName(context, title: 'Save week plan');
+    final name =
+        await _promptPlanName(context, title: 'Add week plan to favourites');
     if (name == null) return;
 
     final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
@@ -235,7 +234,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 
     if (!mounted) return;
     ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('Saved "$name"')));
+        .showSnackBar(SnackBar(content: Text('Added "$name" to favourites')));
   }
 
   @override
@@ -339,11 +338,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
           ..addAll(next);
       });
     });
-  }
-
-  bool _isFavorited(int? recipeId) {
-    if (recipeId == null) return false;
-    return _favoriteIds.contains(recipeId);
   }
 
   Future<void> _loadAllergies() async {
@@ -513,8 +507,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     }
   }
 
-  /// Build a raw slot map for a given day using controller effective entries.
-  /// TodayMealPlanSection will parse entries via MealPlanEntryParser internally.
   Map<String, dynamic> _dayRawFromController(String dayKey) {
     final out = <String, dynamic>{};
     for (final slot in MealPlanSlots.order) {
@@ -617,9 +609,8 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   }) async {
     final ids = _availableSafeRecipeIds();
 
-    final currentParsed = MealPlanEntryParser.parse(
-      _ctrl.effectiveEntry(dayKey, slot),
-    );
+    final currentParsed =
+        MealPlanEntryParser.parse(_ctrl.effectiveEntry(dayKey, slot));
     final currentId = MealPlanEntryParser.entryRecipeId(currentParsed);
 
     final next = _pickRandomDifferentId(
@@ -641,6 +632,10 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     }
     return true;
   }
+
+  // ------------------------------------------------------------
+  // UI
+  // ------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -682,18 +677,32 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
           actions: _reviewMode
               ? []
               : [
+                  // ⭐ Add plan to favourites (day or week)
                   IconButton(
-                    tooltip: 'Today',
-                    icon: const Icon(Icons.today),
-                    onPressed: () =>
-                        setState(() => _mode = MealPlanViewMode.today),
+                    tooltip: 'Add plan to favourites',
+                    icon: const Icon(Icons.star_border_rounded),
+                    onPressed: () async {
+                      if (_mode == MealPlanViewMode.today) {
+                        await _addDayPlanToFavourites(focusDayKey);
+                      } else {
+                        await _addWeekPlanToFavourites();
+                      }
+                    },
                   ),
-                  IconButton(
-                    tooltip: 'Next 7 days',
-                    icon: const Icon(Icons.calendar_month),
-                    onPressed: () =>
-                        setState(() => _mode = MealPlanViewMode.week),
-                  ),
+
+                  // ✅ One toggle button only
+                  if (_mode == MealPlanViewMode.today)
+                    IconButton(
+                      tooltip: 'View week',
+                      icon: const Icon(Icons.calendar_month),
+                      onPressed: () => setState(() => _mode = MealPlanViewMode.week),
+                    )
+                  else
+                    IconButton(
+                      tooltip: 'View today',
+                      icon: const Icon(Icons.today),
+                      onPressed: () => setState(() => _mode = MealPlanViewMode.today),
+                    ),
                 ],
         ),
         body: AnimatedBuilder(
@@ -704,96 +713,107 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
               return const Center(child: CircularProgressIndicator());
             }
 
+            // ✅ Day renderer (now with STICKY Save Changes bar)
             Widget buildColourfulDay(
               String dayKey, {
               required String heroTop,
               required String heroBottom,
-              VoidCallback? onViewWeek,
-              bool includeSaveDayPlanButton = true,
             }) {
               final dayRaw = _dayRawFromController(dayKey);
+              final canSave = _ctrl.hasDraftChanges(dayKey);
 
-              final pretty = formatDayKeyPretty(dayKey).toUpperCase();
-
-              return ListView(
-                padding: EdgeInsets.zero,
+              return Stack(
                 children: [
-                  TodayMealPlanSection(
-                    todayRaw: dayRaw,
-                    recipes: _recipes,
-                    favoriteIds: _favoriteIds,
-
-                    // ✅ WEEK HERO NOW HAS THE DATE
-                    heroTopText: heroTop,
-                    heroBottomText: heroBottom,
-
-                    onOpenMealPlan: () {
-                      if (_mode == MealPlanViewMode.today) {
-                        setState(() => _mode = MealPlanViewMode.week);
-                      }
-                    },
-
-                    // ✅ Keep all functionality
-                    onInspireSlot: (slot) =>
-                        _inspireSlot(dayKey: dayKey, slot: slot),
-                    onChooseSlot: (slot) =>
-                        _chooseRecipe(dayKey: dayKey, slot: slot),
-                    onNoteSlot: (slot) async {
-                      final currentParsed = MealPlanEntryParser.parse(
-                        _ctrl.effectiveEntry(dayKey, slot),
-                      );
-                      final initial =
-                          MealPlanEntryParser.entryNoteText(currentParsed);
-                      await _addOrEditNote(
-                        dayKey: dayKey,
-                        slot: slot,
-                        initial: initial,
-                      );
-                    },
-                    onClearSlot: (slot) =>
-                        _clearSlot(dayKey: dayKey, slot: slot),
-
-                    canSave: _ctrl.hasDraftChanges(dayKey),
-                    onSaveChanges: () async {
-                      await _ctrl.saveDay(dayKey);
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(this.context).showSnackBar(
-                        SnackBar(
-                          content: Text('Saved ${formatDayKeyPretty(dayKey)}'),
-                        ),
-                      );
-                    },
-                  ),
-
-                  // Extra buttons that existed in the old DayView
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-                    child: Column(
-                      children: [
-                        if (includeSaveDayPlanButton) ...[
-                          SizedBox(
-                            height: 52,
-                            width: double.infinity,
-                            child: OutlinedButton(
-                              onPressed: () => _saveDayPlanSnapshot(dayKey),
-                              child: const Text('SAVE DAY PLAN'),
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                        ],
-                        if (onViewWeek != null) ...[
-                          SizedBox(
-                            height: 52,
-                            width: double.infinity,
-                            child: OutlinedButton(
-                              onPressed: onViewWeek,
-                              child: const Text('VIEW NEXT 7 DAYS'),
-                            ),
-                          ),
-                        ],
-                      ],
+                  ListView(
+                    padding: EdgeInsets.only(
+                      bottom: canSave ? 86 : 0, // space for sticky bar
                     ),
+                    children: [
+                      TodayMealPlanSection(
+                        todayRaw: dayRaw,
+                        recipes: _recipes,
+                        favoriteIds: _favoriteIds,
+
+                        heroTopText: heroTop,
+                        heroBottomText: heroBottom,
+
+                        // ✅ No customise/full-week footer in MealPlanScreen
+                        onOpenMealPlan: null,
+
+                        // ✅ Keep all functionality
+                        onInspireSlot: (slot) =>
+                            _inspireSlot(dayKey: dayKey, slot: slot),
+                        onChooseSlot: (slot) =>
+                            _chooseRecipe(dayKey: dayKey, slot: slot),
+                        onNoteSlot: (slot) async {
+                          final currentParsed = MealPlanEntryParser.parse(
+                            _ctrl.effectiveEntry(dayKey, slot),
+                          );
+                          final initial =
+                              MealPlanEntryParser.entryNoteText(currentParsed);
+                          await _addOrEditNote(
+                            dayKey: dayKey,
+                            slot: slot,
+                            initial: initial,
+                          );
+                        },
+                        onClearSlot: (slot) =>
+                            _clearSlot(dayKey: dayKey, slot: slot),
+
+                        // ✅ IMPORTANT: disable in-section save bar so it doesn't scroll
+                        canSave: false,
+                        onSaveChanges: null,
+                      ),
+                    ],
                   ),
+
+                  // ✅ Sticky save bar overlay
+                  if (canSave)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: SafeArea(
+                        top: false,
+                        child: Container(
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF044246), // hero bg
+                            boxShadow: [
+                              BoxShadow(
+                                offset: Offset(0, -6),
+                                blurRadius: 18,
+                                spreadRadius: 0,
+                                color: Color.fromRGBO(0, 0, 0, 0.10),
+                              ),
+                            ],
+                          ),
+                          padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                          child: SizedBox(
+                            height: 52,
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              onPressed: () async {
+                                await _ctrl.saveDay(dayKey);
+                                if (!mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      'Saved ${formatDayKeyPretty(dayKey)}',
+                                    ),
+                                  ),
+                                );
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor:
+                                    const Color(0xFF32998D), // hero accent
+                                shape: const StadiumBorder(),
+                              ),
+                              child: const Text('SAVE CHANGES'),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               );
             }
@@ -804,7 +824,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                 focusDayKey,
                 heroTop: "TODAY’S",
                 heroBottom: "MEAL PLAN",
-                onViewWeek: () => setState(() => _mode = MealPlanViewMode.week),
               );
             }
 
@@ -828,8 +847,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                         for (final k in dayKeys)
                           Tab(
                             text: _weekdayLetter(
-                              MealPlanKeys.parseDayKey(k) ?? now,
-                            ),
+                                MealPlanKeys.parseDayKey(k) ?? now),
                           ),
                       ],
                     ),
@@ -840,25 +858,10 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                         for (final dayKey in dayKeys)
                           buildColourfulDay(
                             dayKey,
-
-                            // ✅ NEW: Date in the hero (instead of "Monday Meal Plan")
                             heroTop: formatDayKeyPretty(dayKey).toUpperCase(),
-                            heroBottom: 'MEAL PLAN',
-
-                            includeSaveDayPlanButton: true,
+                            heroBottom: '',
                           ),
                       ],
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                    child: SizedBox(
-                      height: 52,
-                      width: double.infinity,
-                      child: OutlinedButton(
-                        onPressed: _saveWeekPlanSnapshot,
-                        child: const Text('SAVE WEEK PLAN'),
-                      ),
                     ),
                   ),
                 ],
@@ -983,8 +986,7 @@ class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
                           ),
                     title: Text(title),
                     subtitle: swap ? const Text('Needs swap') : null,
-                    trailing:
-                        swap ? const Icon(Icons.swap_horiz, size: 18) : null,
+                    trailing: swap ? const Icon(Icons.swap_horiz, size: 18) : null,
                     onTap: !enabled ? null : () => Navigator.of(context).pop(id),
                   );
                 },
@@ -1011,8 +1013,3 @@ class _NoteResult {
   const _NoteResult.cancel() : this._(_NoteResultKind.cancel, null);
   _NoteResult.save(String text) : this._(_NoteResultKind.save, text);
 }
-
-// ----------------------------------------------------
-// ✅ Allergy review dialog choice (kept for future use)
-// ----------------------------------------------------
-enum _AllergyReviewChoice { keep, review }
