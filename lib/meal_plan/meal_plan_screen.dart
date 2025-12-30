@@ -1,11 +1,11 @@
+// lib/meal_plan/meal_plan_screen.dart
 import 'dart:async';
-import 'dart:math'; // ✅ added (Option A)
+import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import '../recipes/recipe_detail_screen.dart';
 import '../recipes/recipe_repository.dart';
 import '../recipes/allergy_engine.dart';
 
@@ -14,6 +14,12 @@ import 'core/meal_plan_controller.dart';
 import 'core/meal_plan_keys.dart';
 import 'core/meal_plan_repository.dart';
 import 'core/meal_plan_slots.dart';
+
+// ✅ Canonical entry parser
+import 'widgets/meal_plan_entry_parser.dart';
+
+// ✅ Colourful shared UI (Home version) used everywhere
+import 'widgets/today_meal_plan_section.dart';
 
 enum MealPlanViewMode { today, week }
 
@@ -33,7 +39,6 @@ class MealPlanScreen extends StatefulWidget {
 
 class _MealPlanScreenState extends State<MealPlanScreen> {
   late MealPlanViewMode _mode;
-
   bool _reviewMode = false;
 
   List<Map<String, dynamic>> _recipes = [];
@@ -50,7 +55,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   final Set<int> _favoriteIds = <int>{};
 
   // ------------------------------------------------------------
-  // ✅ Option A: Random inspire (avoid “same order” + avoid recent repeats)
+  // ✅ Random inspire (avoid “same order” + avoid recent repeats)
   // ------------------------------------------------------------
   final Random _rng = Random();
   final Map<String, List<int>> _recentBySlot = <String, List<int>>{};
@@ -67,14 +72,11 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     final key = '$dayKey|$slot';
     final recent = _recentBySlot.putIfAbsent(key, () => <int>[]);
 
-    // 1) Prefer ids that are not current AND not recently used
-    final fresh = availableIds
-        .where((id) => id != currentId && !recent.contains(id))
-        .toList();
+    final fresh =
+        availableIds.where((id) => id != currentId && !recent.contains(id));
 
-    // 2) If we exhausted fresh, allow anything except current
-    final pool = fresh.isNotEmpty
-        ? fresh
+    final pool = (fresh.isNotEmpty)
+        ? fresh.toList()
         : availableIds.where((id) => id != currentId).toList();
 
     if (pool.isEmpty) return null;
@@ -82,9 +84,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     final next = pool[_rng.nextInt(pool.length)];
 
     recent.add(next);
-    if (recent.length > _recentWindow) {
-      recent.removeAt(0);
-    }
+    if (recent.length > _recentWindow) recent.removeAt(0);
 
     return next;
   }
@@ -139,19 +139,24 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   }
 
   /// Convert an effective entry into a storable snapshot.
-  /// Supports:
-  /// - recipe entry: { kind: 'recipe', id: <int>, source: <string?> }
-  /// - note entry:   { kind: 'note', text: <string> }
+  /// Stored snapshot format:
+  /// - recipe: { kind: 'recipe', id: <int>, source?: <string> }
+  /// - note:   { kind: 'note', text: <string> }
+  ///
+  /// ✅ Uses MealPlanEntryParser so notes/recipes are interpreted consistently.
   Map<String, dynamic>? _snapshotSlotEntry(String dayKey, String slot) {
-    final e = _ctrl.effectiveEntry(dayKey, slot);
+    final raw = _ctrl.effectiveEntry(dayKey, slot);
+    final e = MealPlanEntryParser.parse(raw);
     if (e == null) return null;
 
-    if (_ctrl.entryIsRecipe(e)) {
-      final rid = _ctrl.entryRecipeId(e);
-      if (rid == null) return null;
+    final rid = MealPlanEntryParser.entryRecipeId(e);
+    if (rid != null) {
+      String src = '';
+      if (raw is Map) {
+        final m = Map<String, dynamic>.from(raw as Map);
+        src = (m['source'] ?? m['src'] ?? '').toString();
+      }
 
-      // Keep source if present in entry (safe even if missing)
-      final src = (e['source'] ?? e['src'] ?? '').toString();
       return {
         'kind': 'recipe',
         'id': rid,
@@ -159,7 +164,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
       };
     }
 
-    final note = (_ctrl.entryNoteText(e) ?? '').trim();
+    final note = (MealPlanEntryParser.entryNoteText(e) ?? '').trim();
     if (note.isEmpty) return null;
 
     return {
@@ -168,16 +173,12 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     };
   }
 
-  /// Snapshot a single day into:
-  /// { breakfast: {kind,id...}, lunch: ..., dinner: ... }
   Map<String, dynamic> _snapshotDay(String dayKey) {
     final out = <String, dynamic>{};
 
     for (final slot in MealPlanSlots.order) {
       final snap = _snapshotSlotEntry(dayKey, slot);
-      if (snap != null) {
-        out[slot] = snap;
-      }
+      if (snap != null) out[slot] = snap;
     }
 
     return out;
@@ -205,9 +206,8 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     });
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Saved "$name"')),
-    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('Saved "$name"')));
   }
 
   Future<void> _saveWeekPlanSnapshot() async {
@@ -234,23 +234,18 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     });
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Saved "$name"')),
-    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('Saved "$name"')));
   }
 
   @override
   void initState() {
     super.initState();
 
-    // Mode
-    if (widget.focusDayKey != null && widget.focusDayKey!.trim().isNotEmpty) {
-      _mode = MealPlanViewMode.today;
-    } else {
-      _mode = MealPlanViewMode.week;
-    }
+    _mode = (widget.focusDayKey != null && widget.focusDayKey!.trim().isNotEmpty)
+        ? MealPlanViewMode.today
+        : MealPlanViewMode.week;
 
-    // Week
     final resolvedWeekId =
         (widget.weekId != null && widget.weekId!.trim().isNotEmpty)
             ? widget.weekId!.trim()
@@ -265,12 +260,11 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     _ctrl.start();
     _ctrl.ensureWeek();
 
-    // IMPORTANT: run in sequence so populate sees correct allergy sets
     () async {
       await _loadAllergies();
       await _loadRecipes();
-      _startUserDocAllergyListener(); // ✅ live updates after initial load
-      _startFavoritesListener(); // ⭐ favorites (read-only)
+      _startUserDocAllergyListener();
+      _startFavoritesListener();
     }();
   }
 
@@ -333,8 +327,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
       final next = <int>{};
 
       for (final d in snap.docs) {
-        final data = d.data();
-        final raw = data['recipeId'];
+        final raw = d.data()['recipeId'];
         final id = (raw is int) ? raw : int.tryParse(raw?.toString() ?? '');
         if (id != null && id > 0) next.add(id);
       }
@@ -370,11 +363,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
         childAllergens: sets.childAllergens,
       );
     } catch (_) {
-      // fail open
-      _ctrl.setAllergySets(
-        excludedAllergens: {},
-        childAllergens: {},
-      );
+      _ctrl.setAllergySets(excludedAllergens: {}, childAllergens: {});
     }
   }
 
@@ -414,7 +403,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 
   /// Returns: "safe" | "swap" | "blocked"
   String _statusTextOf(Map<String, dynamic> recipe) {
-    // If no allergies, treat all as safe
     if (_ctrl.excludedAllergens.isEmpty && _ctrl.childAllergens.isEmpty) {
       return 'safe';
     }
@@ -440,20 +428,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   }
 
   int? _recipeIdFrom(Map<String, dynamic> r) {
-    final raw = r['id'];
-    if (raw is int) return raw;
-    if (raw is num) return raw.toInt();
-    if (raw is String) return int.tryParse(raw.trim());
-    return int.tryParse(raw?.toString() ?? '');
-  }
-
-  Map<String, dynamic>? _byId(int? id) {
-    if (id == null) return null;
-    for (final r in _recipes) {
-      final rid = _recipeIdFrom(r);
-      if (rid == id) return r;
-    }
-    return null;
+    return MealPlanEntryParser.recipeIdFromAny(r['id']);
   }
 
   String _titleOf(Map<String, dynamic> r) {
@@ -538,6 +513,17 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     }
   }
 
+  /// Build a raw slot map for a given day using controller effective entries.
+  /// TodayMealPlanSection will parse entries via MealPlanEntryParser internally.
+  Map<String, dynamic> _dayRawFromController(String dayKey) {
+    final out = <String, dynamic>{};
+    for (final slot in MealPlanSlots.order) {
+      final raw = _ctrl.effectiveEntry(dayKey, slot);
+      if (raw != null) out[slot] = raw;
+    }
+    return out;
+  }
+
   Future<void> _chooseRecipe({
     required String dayKey,
     required String slot,
@@ -550,7 +536,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
         titleOf: _titleOf,
         thumbOf: _thumbOf,
         idOf: _recipeIdFrom,
-        statusTextOf: _statusTextOf, // ✅ safe/swap/blocked
+        statusTextOf: _statusTextOf,
       ),
     );
 
@@ -606,8 +592,10 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     required String slot,
   }) async {
     final ids = _availableSafeRecipeIds();
-    final currentEntry = _ctrl.effectiveEntry(dayKey, slot);
-    final currentId = _ctrl.entryRecipeId(currentEntry);
+
+    final raw = _ctrl.effectiveEntry(dayKey, slot);
+    final parsed = MealPlanEntryParser.parse(raw);
+    final currentId = MealPlanEntryParser.entryRecipeId(parsed);
 
     final next = _pickRandomDifferentId(
       availableIds: ids,
@@ -623,9 +611,31 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     }
   }
 
+  Future<void> _inspireSlot({
+    required String dayKey,
+    required String slot,
+  }) async {
+    final ids = _availableSafeRecipeIds();
+
+    final currentParsed = MealPlanEntryParser.parse(
+      _ctrl.effectiveEntry(dayKey, slot),
+    );
+    final currentId = MealPlanEntryParser.entryRecipeId(currentParsed);
+
+    final next = _pickRandomDifferentId(
+      availableIds: ids,
+      currentId: currentId,
+      dayKey: dayKey,
+      slot: slot,
+    );
+
+    if (next != null) {
+      _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
+    }
+  }
+
   Future<bool> _handleBack() async {
     if (_reviewMode) {
-      // ✅ In review mode: always go to "home" by returning to root
       Navigator.of(context).popUntil((r) => r.isFirst);
       return false;
     }
@@ -694,66 +704,111 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
               return const Center(child: CircularProgressIndicator());
             }
 
-            Widget buildDay(String dayKey, {VoidCallback? onViewWeek}) {
-              return _DayView(
-                prettyDate: formatDayKeyPretty(dayKey),
-                dayKey: dayKey,
-                slotOrder: MealPlanSlots.order,
-                effectiveEntryFor: (dk, slot) => _ctrl.effectiveEntry(dk, slot),
-                isRecipe: _ctrl.entryIsRecipe,
-                recipeIdOf: _ctrl.entryRecipeId,
-                noteTextOf: _ctrl.entryNoteText,
-                byId: _byId,
-                titleOf: _titleOf,
-                thumbOf: _thumbOf,
-                recipeAllowed: _ctrl.recipeAllowed, // safe-only pool (inspire)
-                statusTextOf: _statusTextOf, // ✅ safe vs swap vs blocked
-                isFavorited: _isFavorited, // ⭐ favorites indicator
-                onInspire: (slot) {
-                  final ids = _availableSafeRecipeIds();
-                  final currentEntry = _ctrl.effectiveEntry(dayKey, slot);
-                  final currentId = _ctrl.entryRecipeId(currentEntry);
+            Widget buildColourfulDay(
+              String dayKey, {
+              required String heroTop,
+              required String heroBottom,
+              VoidCallback? onViewWeek,
+              bool includeSaveDayPlanButton = true,
+            }) {
+              final dayRaw = _dayRawFromController(dayKey);
 
-                  final next = _pickRandomDifferentId(
-                    availableIds: ids,
-                    currentId: currentId,
-                    dayKey: dayKey,
-                    slot: slot,
-                  );
+              final pretty = formatDayKeyPretty(dayKey).toUpperCase();
 
-                  if (next != null) {
-                    _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
-                  }
-                },
-                onChoose: (slot) => _chooseRecipe(dayKey: dayKey, slot: slot),
-                onNote: (slot) {
-                  final current = _ctrl.effectiveEntry(dayKey, slot);
-                  final initial = _ctrl.entryNoteText(current);
-                  _addOrEditNote(dayKey: dayKey, slot: slot, initial: initial);
-                },
-                onClear: (slot) => _clearSlot(dayKey: dayKey, slot: slot),
-                canSave: _ctrl.hasDraftChanges(dayKey),
-                onSave: () async {
-                  await _ctrl.saveDay(dayKey);
+              return ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  TodayMealPlanSection(
+                    todayRaw: dayRaw,
+                    recipes: _recipes,
+                    favoriteIds: _favoriteIds,
 
-                  if (!mounted) return;
+                    // ✅ WEEK HERO NOW HAS THE DATE
+                    heroTopText: heroTop,
+                    heroBottomText: heroBottom,
 
-                  ScaffoldMessenger.of(this.context).showSnackBar(
-                    SnackBar(content: Text('Saved ${formatDayKeyPretty(dayKey)}')),
-                  );
-                },
-                onSaveAsPlan: () => _saveDayPlanSnapshot(dayKey),
-                onViewWeek: onViewWeek,
+                    onOpenMealPlan: () {
+                      if (_mode == MealPlanViewMode.today) {
+                        setState(() => _mode = MealPlanViewMode.week);
+                      }
+                    },
+
+                    // ✅ Keep all functionality
+                    onInspireSlot: (slot) =>
+                        _inspireSlot(dayKey: dayKey, slot: slot),
+                    onChooseSlot: (slot) =>
+                        _chooseRecipe(dayKey: dayKey, slot: slot),
+                    onNoteSlot: (slot) async {
+                      final currentParsed = MealPlanEntryParser.parse(
+                        _ctrl.effectiveEntry(dayKey, slot),
+                      );
+                      final initial =
+                          MealPlanEntryParser.entryNoteText(currentParsed);
+                      await _addOrEditNote(
+                        dayKey: dayKey,
+                        slot: slot,
+                        initial: initial,
+                      );
+                    },
+                    onClearSlot: (slot) =>
+                        _clearSlot(dayKey: dayKey, slot: slot),
+
+                    canSave: _ctrl.hasDraftChanges(dayKey),
+                    onSaveChanges: () async {
+                      await _ctrl.saveDay(dayKey);
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(this.context).showSnackBar(
+                        SnackBar(
+                          content: Text('Saved ${formatDayKeyPretty(dayKey)}'),
+                        ),
+                      );
+                    },
+                  ),
+
+                  // Extra buttons that existed in the old DayView
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                    child: Column(
+                      children: [
+                        if (includeSaveDayPlanButton) ...[
+                          SizedBox(
+                            height: 52,
+                            width: double.infinity,
+                            child: OutlinedButton(
+                              onPressed: () => _saveDayPlanSnapshot(dayKey),
+                              child: const Text('SAVE DAY PLAN'),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                        ],
+                        if (onViewWeek != null) ...[
+                          SizedBox(
+                            height: 52,
+                            width: double.infinity,
+                            child: OutlinedButton(
+                              onPressed: onViewWeek,
+                              child: const Text('VIEW NEXT 7 DAYS'),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
               );
             }
 
+            // ✅ TODAY MODE (colourful)
             if (_mode == MealPlanViewMode.today) {
-              return buildDay(
+              return buildColourfulDay(
                 focusDayKey,
+                heroTop: "TODAY’S",
+                heroBottom: "MEAL PLAN",
                 onViewWeek: () => setState(() => _mode = MealPlanViewMode.week),
               );
             }
 
+            // ✅ WEEK MODE (tabs + colourful day section in each tab)
             final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
             final initialIndex = () {
               final idx = dayKeys.indexOf(focusDayKey);
@@ -782,7 +837,16 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                   Expanded(
                     child: TabBarView(
                       children: [
-                        for (final dayKey in dayKeys) buildDay(dayKey),
+                        for (final dayKey in dayKeys)
+                          buildColourfulDay(
+                            dayKey,
+
+                            // ✅ NEW: Date in the hero (instead of "Monday Meal Plan")
+                            heroTop: formatDayKeyPretty(dayKey).toUpperCase(),
+                            heroBottom: 'MEAL PLAN',
+
+                            includeSaveDayPlanButton: true,
+                          ),
                       ],
                     ),
                   ),
@@ -790,6 +854,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                     child: SizedBox(
                       height: 52,
+                      width: double.infinity,
                       child: OutlinedButton(
                         onPressed: _saveWeekPlanSnapshot,
                         child: const Text('SAVE WEEK PLAN'),
@@ -801,442 +866,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
             );
           },
         ),
-      ),
-    );
-  }
-}
-
-// ----------------------------------------------------
-// Day view
-// ----------------------------------------------------
-class _DayView extends StatelessWidget {
-  final String prettyDate;
-  final String dayKey;
-
-  final List<String> slotOrder;
-
-  final Map<String, dynamic>? Function(String dayKey, String slot)
-      effectiveEntryFor;
-  final bool Function(Map<String, dynamic>? e) isRecipe;
-  final int? Function(Map<String, dynamic>? e) recipeIdOf;
-  final String? Function(Map<String, dynamic>? e) noteTextOf;
-
-  final Map<String, dynamic>? Function(int? id) byId;
-  final String Function(Map<String, dynamic> r) titleOf;
-  final String? Function(Map<String, dynamic> r) thumbOf;
-
-  /// safe-only pool (for Inspire + general allow checks)
-  final bool Function(Map<String, dynamic> recipe) recipeAllowed;
-
-  /// "safe" | "swap" | "blocked"
-  final String Function(Map<String, dynamic> recipe) statusTextOf;
-
-  // ⭐ favorites indicator
-  final bool Function(int? recipeId) isFavorited;
-
-  final void Function(String slot) onInspire;
-  final void Function(String slot) onChoose;
-  final void Function(String slot) onNote;
-  final void Function(String slot) onClear;
-
-  final bool canSave;
-  final Future<void> Function() onSave;
-
-  // ✅ new: save as plan (snapshot)
-  final Future<void> Function() onSaveAsPlan;
-
-  final VoidCallback? onViewWeek;
-
-  const _DayView({
-    required this.prettyDate,
-    required this.dayKey,
-    required this.slotOrder,
-    required this.effectiveEntryFor,
-    required this.isRecipe,
-    required this.recipeIdOf,
-    required this.noteTextOf,
-    required this.byId,
-    required this.titleOf,
-    required this.thumbOf,
-    required this.recipeAllowed,
-    required this.statusTextOf,
-    required this.isFavorited,
-    required this.onInspire,
-    required this.onChoose,
-    required this.onNote,
-    required this.onClear,
-    required this.canSave,
-    required this.onSave,
-    required this.onSaveAsPlan,
-    required this.onViewWeek,
-  });
-
-  String _slotLabel(String slot) => slot.toUpperCase();
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Text(prettyDate, style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 12),
-        for (final slot in slotOrder) ...[
-          _MealSlotCard(
-            slotLabel: _slotLabel(slot),
-            entry: effectiveEntryFor(dayKey, slot),
-            isRecipe: isRecipe,
-            recipeIdOf: recipeIdOf,
-            noteTextOf: noteTextOf,
-            byId: byId,
-            titleOf: titleOf,
-            thumbOf: thumbOf,
-            recipeAllowed: recipeAllowed,
-            statusTextOf: statusTextOf,
-            isFavorited: isFavorited,
-            onTapRecipe: (id) {
-              if (id == null) return;
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: id)),
-              );
-            },
-            onInspire: () => onInspire(slot),
-            onChoose: () => onChoose(slot),
-            onNote: () => onNote(slot),
-            onClear: () => onClear(slot),
-          ),
-          const SizedBox(height: 12),
-        ],
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 52,
-          child: ElevatedButton(
-            onPressed: canSave ? () => onSave() : null,
-            child: const Text('Save Changes'),
-          ),
-        ),
-        const SizedBox(height: 10),
-        SizedBox(
-          height: 52,
-          child: OutlinedButton(
-            onPressed: () => onSaveAsPlan(),
-            child: const Text('SAVE DAY PLAN'),
-          ),
-        ),
-        if (onViewWeek != null) ...[
-          const SizedBox(height: 12),
-          SizedBox(
-            height: 52,
-            child: OutlinedButton(
-              onPressed: onViewWeek,
-              child: const Text('VIEW NEXT 7 DAYS'),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _MealSlotCard extends StatelessWidget {
-  final String slotLabel;
-  final Map<String, dynamic>? entry;
-
-  final bool Function(Map<String, dynamic>? e) isRecipe;
-  final int? Function(Map<String, dynamic>? e) recipeIdOf;
-  final String? Function(Map<String, dynamic>? e) noteTextOf;
-
-  final Map<String, dynamic>? Function(int? id) byId;
-  final String Function(Map<String, dynamic> r) titleOf;
-  final String? Function(Map<String, dynamic> r) thumbOf;
-
-  /// safe-only pool
-  final bool Function(Map<String, dynamic> recipe) recipeAllowed;
-
-  /// "safe" | "swap" | "blocked"
-  final String Function(Map<String, dynamic> recipe) statusTextOf;
-
-  // ⭐ favorites indicator
-  final bool Function(int? recipeId) isFavorited;
-
-  final void Function(int? id) onTapRecipe;
-
-  final VoidCallback onInspire;
-  final VoidCallback onChoose;
-  final VoidCallback onNote;
-  final VoidCallback onClear;
-
-  const _MealSlotCard({
-    required this.slotLabel,
-    required this.entry,
-    required this.isRecipe,
-    required this.recipeIdOf,
-    required this.noteTextOf,
-    required this.byId,
-    required this.titleOf,
-    required this.thumbOf,
-    required this.recipeAllowed,
-    required this.statusTextOf,
-    required this.isFavorited,
-    required this.onTapRecipe,
-    required this.onInspire,
-    required this.onChoose,
-    required this.onNote,
-    required this.onClear,
-  });
-
-  Widget _withFavBadge(BuildContext context, Widget base, bool show) {
-    if (!show) return base;
-
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        base,
-        Positioned(
-          right: -4,
-          top: -4,
-          child: Container(
-            padding: const EdgeInsets.all(2),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surface,
-              borderRadius: BorderRadius.circular(999),
-              boxShadow: const [
-                BoxShadow(
-                  blurRadius: 6,
-                  offset: Offset(0, 2),
-                  color: Colors.black12,
-                ),
-              ],
-            ),
-            child: const Icon(
-              Icons.star_rounded,
-              size: 16,
-              color: Colors.amber,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final e = entry;
-
-    // Note entry
-    final noteText = noteTextOf(e);
-    if (noteText != null && noteText.trim().isNotEmpty && !isRecipe(e)) {
-      return Card(
-        child: ListTile(
-          leading: const Icon(Icons.sticky_note_2_outlined),
-          title: Text(
-            noteText,
-            style: const TextStyle(fontWeight: FontWeight.w600),
-          ),
-          subtitle: Text(slotLabel),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                tooltip: 'Clear',
-                icon: const Icon(Icons.close),
-                onPressed: onClear,
-              ),
-              IconButton(
-                tooltip: 'Edit note',
-                icon: const Icon(Icons.edit_note),
-                onPressed: onNote,
-              ),
-            ],
-          ),
-          onTap: onNote,
-        ),
-      );
-    }
-
-    // Recipe entry (or unset)
-    final rid = recipeIdOf(e);
-    final r = byId(rid);
-
-    final title = r == null ? 'Not set' : titleOf(r);
-    final thumb = r == null ? null : thumbOf(r);
-
-    final fav = isFavorited(rid);
-
-    // No recipe selected
-    if (r == null) {
-      return Card(
-        child: ListTile(
-          leading: const Icon(Icons.restaurant_menu),
-          title:
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-          subtitle: Text(slotLabel),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                tooltip: 'Inspire',
-                onPressed: onInspire,
-              ),
-              IconButton(
-                icon: const Icon(Icons.search),
-                tooltip: 'Choose recipe',
-                onPressed: onChoose,
-              ),
-              IconButton(
-                icon: const Icon(Icons.edit_note),
-                tooltip: 'Add note',
-                onPressed: onNote,
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    final status = statusTextOf(r); // safe | swap | blocked
-
-    if (status == 'blocked') {
-      return Card(
-        color: Theme.of(context).colorScheme.errorContainer,
-        child: ListTile(
-          leading: _withFavBadge(
-            context,
-            const Icon(Icons.warning_amber_rounded),
-            fav,
-          ),
-          title: Text(
-            title,
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
-          subtitle: Text('$slotLabel • Not suitable for current allergies'),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                tooltip: 'Inspire (safe only)',
-                onPressed: onInspire,
-              ),
-              IconButton(
-                icon: const Icon(Icons.search),
-                tooltip: 'Choose recipe',
-                onPressed: onChoose,
-              ),
-            ],
-          ),
-          onTap: () => onTapRecipe(rid),
-        ),
-      );
-    }
-
-    if (status == 'swap') {
-      return Card(
-        color: Theme.of(context).colorScheme.tertiaryContainer,
-        child: ListTile(
-          leading: _withFavBadge(
-            context,
-            const Icon(Icons.swap_horiz),
-            fav,
-          ),
-          title: Text(
-            title,
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
-          subtitle: Text('$slotLabel • Needs swap to be allergy-safe'),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                tooltip: 'Inspire (safe only)',
-                onPressed: onInspire,
-              ),
-              IconButton(
-                icon: const Icon(Icons.search),
-                tooltip: 'Choose recipe',
-                onPressed: onChoose,
-              ),
-              IconButton(
-                icon: const Icon(Icons.edit_note),
-                tooltip: 'Add note',
-                onPressed: onNote,
-              ),
-            ],
-          ),
-          onTap: () => onTapRecipe(rid),
-        ),
-      );
-    }
-
-    // Safe (normal)
-    return Card(
-      child: ListTile(
-        leading: _withFavBadge(context, _Thumb(url: thumb), fav),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text(slotLabel),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Inspire',
-              onPressed: onInspire,
-            ),
-            IconButton(
-              icon: const Icon(Icons.search),
-              tooltip: 'Choose recipe',
-              onPressed: onChoose,
-            ),
-            IconButton(
-              icon: const Icon(Icons.edit_note),
-              tooltip: 'Add note',
-              onPressed: onNote,
-            ),
-          ],
-        ),
-        onTap: () => onTapRecipe(rid),
-      ),
-    );
-  }
-}
-
-class _Thumb extends StatelessWidget {
-  final String? url;
-  const _Thumb({this.url});
-
-  @override
-  Widget build(BuildContext context) {
-    final u = url;
-    const size = 56.0;
-
-    if (u == null || u.trim().isEmpty) {
-      return Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: const Icon(Icons.image, size: 22),
-      );
-    }
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: Image.network(
-        u,
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) {
-          return Container(
-            width: size,
-            height: size,
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: const Icon(Icons.broken_image, size: 22),
-          );
-        },
       ),
     );
   }
@@ -1288,7 +917,6 @@ class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
 
   @override
   Widget build(BuildContext context) {
-    // Hide only BLOCKED. Keep safe + needs swap.
     final filtered = widget.recipes.where((r) {
       if (_isBlocked(r)) return false;
 
@@ -1339,7 +967,6 @@ class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
                   final safe = _isSafe(r);
                   final swap = _needsSwap(r);
 
-                  // Allow selecting safe + needs swap
                   final enabled = id != null && (safe || swap);
 
                   return ListTile(

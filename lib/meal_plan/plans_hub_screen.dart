@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'meal_plan_screen.dart';
 import 'saved_meal_plans_screen.dart';
-import 'core/meal_plan_keys.dart'; // ✅ correct path
+import 'core/meal_plan_keys.dart';
 
 class PlansHubScreen extends StatelessWidget {
   const PlansHubScreen({super.key});
@@ -20,7 +20,10 @@ class PlansHubScreen extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 12),
         child: ListTile(
           leading: Icon(icon),
-          title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+          title: Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
           trailing: const Icon(Icons.chevron_right),
           onTap: onTap,
         ),
@@ -48,7 +51,9 @@ class PlansHubScreen extends StatelessWidget {
             title: "Next 7 days",
             onTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const MealPlanScreen()),
+                MaterialPageRoute(
+                  builder: (_) => const MealPlanScreen(),
+                ),
               );
             },
           ),
@@ -57,16 +62,9 @@ class PlansHubScreen extends StatelessWidget {
             title: 'Saved meal plans',
             onTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const SavedMealPlansScreen()),
-              );
-            },
-          ),
-          card(
-            icon: Icons.history,
-            title: 'Previous meal plans',
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const SavedMealPlansScreen()),
+                MaterialPageRoute(
+                  builder: (_) => const SavedMealPlansScreen(),
+                ),
               );
             },
           ),
