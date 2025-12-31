@@ -1,7 +1,9 @@
+// lib/recipes/home_collection_rail.dart
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
 
 import '../utils/images.dart'; // upscaleJetpackImage
+import '../theme/app_theme.dart';
 import 'recipe_detail_screen.dart';
 import 'collection_page.dart';
 
@@ -63,7 +65,8 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
 
       final data = res.data;
       if (data is! List || data.isEmpty) {
-        throw Exception('Collection not found for slug "${widget.collectionSlug}"');
+        throw Exception(
+            'Collection not found for slug "${widget.collectionSlug}"');
       }
 
       final obj = data.first;
@@ -149,15 +152,30 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    final heading = theme.textTheme.titleMedium ??
-        const TextStyle(fontSize: 16, fontWeight: FontWeight.w700);
+    // ✅ Match "HERE'S SOME IDEAS FOR TODAY" style
+    final sectionTitleStyle =
+        (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w900,
+      fontVariations: const [FontVariation('wght', 900)],
+      letterSpacing: 1.0,
+      height: 1.0,
+    );
+
+    // ✅ Match the lorem line style used under recipe title in accordion
+    final cardTextStyle =
+        (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+      color: AppColors.textPrimary.withOpacity(0.85),
+      fontWeight: FontWeight.w600,
+      height: 1.25,
+    );
 
     if (_loading) {
       return Padding(
         padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
         child: Row(
           children: [
-            Expanded(child: Text(widget.title, style: heading)),
+            Expanded(child: Text(widget.title, style: sectionTitleStyle)),
             const SizedBox(width: 10),
             const SizedBox(
               width: 18,
@@ -174,8 +192,14 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
         padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
         child: Row(
           children: [
-            Expanded(child: Text('${widget.title} (couldn’t load)', style: heading)),
-            TextButton(onPressed: _loadCollectionTermId, child: const Text('Retry')),
+            Expanded(
+              child: Text('${widget.title} (couldn’t load)',
+                  style: sectionTitleStyle),
+            ),
+            TextButton(
+              onPressed: _loadCollectionTermId,
+              child: const Text('Retry'),
+            ),
           ],
         ),
       );
@@ -189,7 +213,7 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
         padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
         child: Row(
           children: [
-            Expanded(child: Text(widget.title, style: heading)),
+            Expanded(child: Text(widget.title, style: sectionTitleStyle)),
             const SizedBox(width: 10),
             Text('No recipes yet', style: theme.textTheme.bodySmall),
           ],
@@ -198,15 +222,14 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
     }
 
     // ✅ Make cards less wide (more square / 4:3 feel)
-    // Aim: ~2.5 visible cards on most phones.
     final screenW = MediaQuery.of(context).size.width;
     final cardW = (screenW * 0.42).clamp(150.0, 190.0);
 
-    // Rail height: image + title block, safe & consistent
+    // Rail height: image + title block
     const railH = 190.0;
 
-    // Title block height is fixed so we never overflow.
-    const titleBlockH = 52.0;
+    // Title block height fixed
+    const titleBlockH = 60.0;
 
     // Image sizing: crisp
     final dpr = MediaQuery.of(context).devicePixelRatio;
@@ -219,12 +242,12 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Header aligned with app padding
+        // Header
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
+          padding: const EdgeInsets.fromLTRB(16, 18, 4, 10),
           child: Row(
             children: [
-              Expanded(child: Text(widget.title, style: heading)),
+              Expanded(child: Text(widget.title, style: sectionTitleStyle)),
               TextButton(
                 onPressed: () {
                   final termId = _termId!;
@@ -240,7 +263,15 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                     ),
                   );
                 },
-                child: const Text('View all'),
+                child: Text(
+  'VIEW ALL',
+  style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+    color: AppColors.brandDark,
+    fontWeight: FontWeight.w700,
+    fontVariations: const [FontVariation('wght', 700)],
+    letterSpacing: 0.2,
+  ),
+),
               ),
             ],
           ),
@@ -249,7 +280,6 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
         SizedBox(
           height: railH,
           child: ListView.separated(
-            // ✅ Starts 16px inset; once you scroll, cards can slide off-screen
             padding: const EdgeInsets.only(left: 16, right: 12),
             scrollDirection: Axis.horizontal,
             physics: const BouncingScrollPhysics(),
@@ -272,7 +302,8 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                 height: railH,
                 child: Material(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
+                  // ✅ 12px radius
+                  borderRadius: BorderRadius.circular(12),
                   clipBehavior: Clip.antiAlias,
                   child: InkWell(
                     onTap: id == null
@@ -285,7 +316,6 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // ✅ Image fills remaining space safely
                         Expanded(
                           child: Stack(
                             fit: StackFit.expand,
@@ -300,34 +330,36 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                                   cacheWidth: cacheW,
                                   cacheHeight: cacheH,
                                   gaplessPlayback: true,
-                                  errorBuilder: (_, __, ___) =>
-                                      const Center(child: Icon(Icons.restaurant_menu)),
+                                  errorBuilder: (_, __, ___) => const Center(
+                                    child: Icon(Icons.restaurant_menu),
+                                  ),
                                 ),
                               if (isFav)
                                 const Positioned(
                                   right: 10,
                                   top: 10,
-                                  child: Icon(Icons.star_rounded, color: Colors.amber),
+                                  child: Icon(
+                                    Icons.star_rounded,
+                                    color: Colors.amber,
+                                  ),
                                 ),
                             ],
                           ),
                         ),
 
-                        // ✅ Fixed-height title block prevents overflow forever
+                        // ✅ Fixed title block
                         SizedBox(
                           height: titleBlockH,
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
                             child: Align(
-                              alignment: Alignment.centerLeft,
+                              alignment: Alignment.topLeft,
                               child: Text(
                                 title,
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.titleSmall?.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                  height: 1.1,
-                                ),
+                                // ✅ match lorem style
+                                style: cardTextStyle,
                               ),
                             ),
                           ),

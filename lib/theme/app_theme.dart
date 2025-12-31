@@ -6,16 +6,16 @@ class AppColors {
   static const bg = Color(0xFFECF3F4);
 
   // Brand
-  static const brandDark = Color(0xFF044246);
+  static const brandDark = Color(0xFF005A4F);
   static const brandActive = Color(0xFF32998D);
 
   // Primary text: #00484B
-  static const textPrimary = Color(0xFF00484B);
+  static const textPrimary = Color(0xFF005A4F);
 
   static const white = Colors.white;
 
   // Meal plan bands
-  static const breakfast = Color(0xFFF2C35C);
+  static const breakfast = Color(0xFFF3BD4E);
   static const lunch = Color(0xFFE57A3A);
   static const dinner = Color(0xFFE98A97);
   static const snacks = Color(0xFF5AA5B6);
@@ -55,17 +55,15 @@ ThemeData buildAppTheme() {
       primary: AppColors.brandActive,
       secondary: AppColors.brandDark,
       surface: AppColors.white,
-      background: AppColors.bg,
 
       // default “on” colours
       onSurface: AppColors.textPrimary,
-      onBackground: AppColors.textPrimary,
       onPrimary: AppColors.white,
       onSecondary: AppColors.white,
     ),
   );
 
-  final transparentOverlay = MaterialStateProperty.all(Colors.transparent);
+  final transparentOverlay = WidgetStateProperty.all(Colors.transparent);
 
   // Explicitly colored text theme (Material 3 won’t override)
   final textTheme = base.textTheme.apply(
@@ -161,13 +159,13 @@ ThemeData buildAppTheme() {
     // ✅ Elevated buttons
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ButtonStyle(
-        backgroundColor: MaterialStateProperty.all(AppColors.brandActive),
-        foregroundColor: MaterialStateProperty.all(AppColors.white),
+        backgroundColor: WidgetStateProperty.all(AppColors.brandActive),
+        foregroundColor: WidgetStateProperty.all(AppColors.white),
         overlayColor: transparentOverlay,
-        shape: MaterialStateProperty.all(
+        shape: WidgetStateProperty.all(
           const RoundedRectangleBorder(borderRadius: AppRadii.r4),
         ),
-        textStyle: MaterialStateProperty.all(
+        textStyle: WidgetStateProperty.all(
           const TextStyle(
             fontWeight: FontWeight.w700,
             fontVariations: [FontVariation('wght', 700)],
@@ -180,15 +178,15 @@ ThemeData buildAppTheme() {
     // ✅ Outlined buttons
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: ButtonStyle(
-        foregroundColor: MaterialStateProperty.all(AppColors.textPrimary),
+        foregroundColor: WidgetStateProperty.all(AppColors.textPrimary),
         overlayColor: transparentOverlay,
-        side: MaterialStateProperty.all(
+        side: WidgetStateProperty.all(
           const BorderSide(color: AppColors.textPrimary, width: 1),
         ),
-        shape: MaterialStateProperty.all(
+        shape: WidgetStateProperty.all(
           const RoundedRectangleBorder(borderRadius: AppRadii.r4),
         ),
-        textStyle: MaterialStateProperty.all(
+        textStyle: WidgetStateProperty.all(
           const TextStyle(
             fontWeight: FontWeight.w700,
             fontVariations: [FontVariation('wght', 700)],
@@ -200,9 +198,9 @@ ThemeData buildAppTheme() {
     // ✅ Text buttons
     textButtonTheme: TextButtonThemeData(
       style: ButtonStyle(
-        foregroundColor: MaterialStateProperty.all(AppColors.textPrimary),
+        foregroundColor: WidgetStateProperty.all(AppColors.textPrimary),
         overlayColor: transparentOverlay,
-        textStyle: MaterialStateProperty.all(
+        textStyle: WidgetStateProperty.all(
           const TextStyle(
             fontWeight: FontWeight.w700,
             fontVariations: [FontVariation('wght', 700)],
@@ -214,7 +212,7 @@ ThemeData buildAppTheme() {
     // ✅ Icon buttons
     iconButtonTheme: IconButtonThemeData(
       style: ButtonStyle(
-        foregroundColor: MaterialStateProperty.all(AppColors.textPrimary),
+        foregroundColor: WidgetStateProperty.all(AppColors.textPrimary),
         overlayColor: transparentOverlay,
       ),
     ),

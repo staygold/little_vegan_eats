@@ -74,7 +74,7 @@ class FavoritesService {
 
     final snap = await col.get();
 
-    int _parseRecipeId(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    int parseRecipeId(QueryDocumentSnapshot<Map<String, dynamic>> d) {
       final data = d.data();
       final raw = data['recipeId'];
       final fromField = (raw is int) ? raw : int.tryParse('$raw');
@@ -87,7 +87,7 @@ class FavoritesService {
     final Map<int, List<QueryDocumentSnapshot<Map<String, dynamic>>>> buckets = {};
 
     for (final d in snap.docs) {
-      final rid = _parseRecipeId(d);
+      final rid = parseRecipeId(d);
       if (rid <= 0) continue;
       buckets.putIfAbsent(rid, () => []).add(d);
     }

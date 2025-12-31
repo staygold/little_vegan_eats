@@ -1,4 +1,7 @@
 // lib/meal_plan/widgets/today_meal_plan_section.dart
+import 'dart:async';
+import 'dart:ui' show FontVariation;
+
 import 'package:flutter/material.dart';
 
 import '../../recipes/recipe_detail_screen.dart';
@@ -12,11 +15,19 @@ class TodayMealPlanSection extends StatelessWidget {
     required this.recipes,
     required this.favoriteIds,
 
-    /// Optional: if null, no footer button bar renders (perfect for MealPlanScreen).
+    /// Back-compat: if provided, will be used for BOTH buttons.
+    /// Prefer using [onOpenToday] and [onOpenWeek].
     this.onOpenMealPlan,
+
+    /// ✅ New: separate intents
+    this.onOpenToday,
+    this.onOpenWeek,
 
     this.heroTopText = "TODAY’S",
     this.heroBottomText = "MEAL PLAN",
+
+    /// ✅ Home-only UI (accordion style like the mock)
+    this.homeAccordion = false,
 
     // ✅ Editable mode (optional)
     this.onInspireSlot,
@@ -27,6 +38,11 @@ class TodayMealPlanSection extends StatelessWidget {
     /// Only shows when canSave == true AND onSaveChanges != null
     this.canSave = false,
     this.onSaveChanges,
+
+    /// ✅ Home accordion section title tuning (BREAKFAST/LUNCH/DINNER/SNACKS)
+    /// Example: homeSectionTitleSize: 22, homeSectionTitleWeight: 900
+    this.homeSectionTitleSize,
+    this.homeSectionTitleWeight,
   });
 
   /// Map of slots for a day (breakfast/lunch/dinner/snack1/snack2 etc)
@@ -38,12 +54,21 @@ class TodayMealPlanSection extends StatelessWidget {
   /// Favorite IDs set (read-only)
   final Set<int> favoriteIds;
 
-  /// Called for footer buttons (Customise / Full Week) on Home only.
+  /// Back-compat: used for BOTH buttons if [onOpenToday]/[onOpenWeek] not set
   final VoidCallback? onOpenMealPlan;
+
+  /// Customise Plan -> Today's plan screen
+  final VoidCallback? onOpenToday;
+
+  /// View Full Week -> Week screen
+  final VoidCallback? onOpenWeek;
 
   /// Hero text override (so week tabs can show "MONDAY", etc.)
   final String heroTopText;
   final String heroBottomText;
+
+  /// Home-only accordion layout
+  final bool homeAccordion;
 
   // ✅ Optional callbacks to enable editing controls
   final Future<void> Function(String slot)? onInspireSlot;
@@ -54,6 +79,10 @@ class TodayMealPlanSection extends StatelessWidget {
   final bool canSave;
   final Future<void> Function()? onSaveChanges;
 
+  /// ✅ Home accordion section title tuning (BREAKFAST/LUNCH/DINNER/SNACKS)
+  final double? homeSectionTitleSize;
+  final int? homeSectionTitleWeight; // 100..900 (FontVariation + fontWeight)
+
   bool get _editable =>
       onInspireSlot != null ||
       onChooseSlot != null ||
@@ -61,7 +90,37 @@ class TodayMealPlanSection extends StatelessWidget {
       onClearSlot != null ||
       onSaveChanges != null;
 
-  bool get _showFooterButtons => onOpenMealPlan != null;
+  VoidCallback? get _openToday => onOpenToday ?? onOpenMealPlan;
+  VoidCallback? get _openWeek => onOpenWeek ?? onOpenMealPlan;
+
+  bool get _showFooterButtons => _openToday != null || _openWeek != null;
+
+  int _clampWght(int v) => v.clamp(100, 900);
+
+  FontWeight _fontWeightFromWght(int w) {
+    // 100..900 -> w100..w900
+    final step = (w / 100).round().clamp(1, 9);
+    switch (step) {
+      case 1:
+        return FontWeight.w100;
+      case 2:
+        return FontWeight.w200;
+      case 3:
+        return FontWeight.w300;
+      case 4:
+        return FontWeight.w400;
+      case 5:
+        return FontWeight.w500;
+      case 6:
+        return FontWeight.w600;
+      case 7:
+        return FontWeight.w700;
+      case 8:
+        return FontWeight.w800;
+      default:
+        return FontWeight.w900;
+    }
+  }
 
   // -----------------------------
   // THEME TOKENS (SSoT)
@@ -76,6 +135,9 @@ class TodayMealPlanSection extends StatelessWidget {
 
   Color get _onDark => AppColors.white;
   Color get _primaryText => AppColors.textPrimary;
+
+  // Home mock background
+  static const Color _homePanelBgConst = Color(0xFFECF3F4);
 
   // -----------------------------
   // DATA HELPERS
@@ -119,10 +181,16 @@ class TodayMealPlanSection extends StatelessWidget {
   /// snack_1 -> snack1, snack_2 -> snack2
   String _normaliseSlotKey(String key) {
     final k = key.trim().toLowerCase();
-    if (k == 'snack_1' || k == 'snacks_1' || k == 'snack 1' || k == 'snacks 1') {
+    if (k == 'snack_1' ||
+        k == 'snacks_1' ||
+        k == 'snack 1' ||
+        k == 'snacks 1') {
       return 'snack1';
     }
-    if (k == 'snack_2' || k == 'snacks_2' || k == 'snack 2' || k == 'snacks 2') {
+    if (k == 'snack_2' ||
+        k == 'snacks_2' ||
+        k == 'snack 2' ||
+        k == 'snacks 2') {
       return 'snack2';
     }
     return k;
@@ -140,7 +208,518 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   // -----------------------------
-  // UI BUILDERS
+  // EDITING ACTIONS (shared)
+  // -----------------------------
+  Widget _slotActions({
+    required BuildContext context,
+    required String slotKey,
+    required bool hasEntry,
+    Color? iconColor,
+  }) {
+    if (!_editable) return const SizedBox.shrink();
+
+    final buttons = <Widget>[];
+
+    if (onInspireSlot != null) {
+      buttons.add(
+        IconButton(
+          tooltip: 'Inspire',
+          icon: Icon(Icons.refresh, color: iconColor),
+          onPressed: () => onInspireSlot!(slotKey),
+        ),
+      );
+    }
+    if (onChooseSlot != null) {
+      buttons.add(
+        IconButton(
+          tooltip: 'Choose',
+          icon: Icon(Icons.search, color: iconColor),
+          onPressed: () => onChooseSlot!(slotKey),
+        ),
+      );
+    }
+    if (onNoteSlot != null) {
+      buttons.add(
+        IconButton(
+          tooltip: 'Note',
+          icon: Icon(Icons.edit_note, color: iconColor),
+          onPressed: () => onNoteSlot!(slotKey),
+        ),
+      );
+    }
+    if (hasEntry && onClearSlot != null) {
+      buttons.add(
+        IconButton(
+          tooltip: 'Clear',
+          icon: Icon(Icons.close, color: iconColor),
+          onPressed: () => onClearSlot!(slotKey),
+        ),
+      );
+    }
+
+    if (buttons.isEmpty) return const SizedBox.shrink();
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: buttons,
+    );
+  }
+
+  // -----------------------------
+  // HOME ACCORDION UI
+  // -----------------------------
+  Widget _homeHero(BuildContext context) {
+    final theme = Theme.of(context);
+
+    final heroStyle =
+        (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w900,
+      fontVariations: const [FontVariation('wght', 900)],
+      letterSpacing: 1.0,
+      height: 1.0,
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(AppSpace.s16, 18, AppSpace.s16, 14),
+      child: Text(
+        '${heroTopText.trim()} ${heroBottomText.trim()}'.trim(),
+        style: heroStyle,
+      ),
+    );
+  }
+
+  Widget _homeAccordionItem({
+    required BuildContext context,
+    required String title,
+    required Color bg,
+    required bool expanded,
+    required VoidCallback onToggle,
+    required List<Widget> expandedChildren,
+  }) {
+    final theme = Theme.of(context);
+
+    final base = (theme.textTheme.titleLarge ?? const TextStyle());
+
+    // ✅ Adjustable size + weight for BREAKFAST/LUNCH/DINNER/SNACKS headers
+    final wght = _clampWght(homeSectionTitleWeight ?? 800);
+    final titleStyle = base.copyWith(
+      color: Colors.white,
+      fontSize: 21,
+      fontWeight: _fontWeightFromWght(wght),
+      fontVariations: [FontVariation('wght', wght.toDouble())],
+      letterSpacing: 1.25,
+      height: 1.0,
+    );
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+      // ✅ 4px spacing between bars
+      margin: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onToggle,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Text(title, style: titleStyle),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Container(
+                      height: 2,
+                      color: Colors.white.withOpacity(0.25),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Icon(
+                    expanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    color: Colors.white,
+                    size: 28,
+                  ),
+                ],
+              ),
+              if (expanded) ...[
+                const SizedBox(height: 12),
+                ...expandedChildren,
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _homeMealCard({
+    required BuildContext context,
+    required String slotKey,
+    required Map<String, dynamic>? entry,
+    required Color titleTint,
+  }) {
+    final theme = Theme.of(context);
+
+    final note = MealPlanEntryParser.entryNoteText(entry);
+    if (note != null) {
+      return Container(
+        height: 86,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(width: 12),
+            Icon(Icons.sticky_note_2_outlined, color: _primaryText),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                note,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: (theme.textTheme.titleMedium ?? const TextStyle())
+                    .copyWith(
+                  color: _primaryText,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            _slotActions(
+              context: context,
+              slotKey: slotKey,
+              hasEntry: true,
+              iconColor: _primaryText,
+            ),
+            const SizedBox(width: 6),
+          ],
+        ),
+      );
+    }
+
+    if (entry == null) {
+      return Container(
+        height: 86,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: Row(
+          children: [
+            Icon(Icons.restaurant_menu, color: _primaryText),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Not planned yet',
+                style: (theme.textTheme.bodyMedium ?? const TextStyle())
+                    .copyWith(
+                  color: _primaryText,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            _slotActions(
+              context: context,
+              slotKey: slotKey,
+              hasEntry: false,
+              iconColor: _primaryText,
+            ),
+          ],
+        ),
+      );
+    }
+
+    final rid = MealPlanEntryParser.entryRecipeId(entry);
+    final r = _byId(rid);
+
+    if (r == null) {
+      return Container(
+        height: 86,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: Row(
+          children: [
+            Icon(Icons.restaurant_menu, color: _primaryText),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Recipe not found',
+                style: (theme.textTheme.bodyMedium ?? const TextStyle())
+                    .copyWith(
+                  color: _primaryText,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            _slotActions(
+              context: context,
+              slotKey: slotKey,
+              hasEntry: true,
+              iconColor: _primaryText,
+            ),
+          ],
+        ),
+      );
+    }
+
+    final displayTitle = _titleOf(r);
+    final thumb = _thumbOf(r);
+    final fav = _isFavorited(rid);
+
+    final smallLabelStyle =
+        (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+      color: _primaryText.withOpacity(0.85),
+      fontWeight: FontWeight.w600,
+    );
+
+    final titleStyle =
+        (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+      color: titleTint,
+      fontWeight: FontWeight.w900,
+      fontVariations: const [FontVariation('wght', 900)],
+      height: 1.1,
+    );
+
+    return InkWell(
+      onTap: rid == null
+          ? null
+          : () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
+              ),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        height: 86,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Row(
+          children: [
+            SizedBox(
+              width: 110,
+              height: double.infinity,
+              child: thumb == null
+                  ? Center(
+                      child: Icon(Icons.restaurant_menu, color: _primaryText),
+                    )
+                  : Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Image.network(
+                          thumb,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Center(
+                            child: Icon(
+                              Icons.restaurant_menu,
+                              color: _primaryText,
+                            ),
+                          ),
+                        ),
+                        if (fav)
+                          Positioned(
+                            top: 8,
+                            left: 8,
+                            child: Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.92),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.star_rounded,
+                                size: 16,
+                                color: Colors.amber,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      displayTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: titleStyle,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Lorem ipsum dolor sit amet',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: smallLabelStyle,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (_editable)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: _slotActions(
+                  context: context,
+                  slotKey: slotKey,
+                  hasEntry: true,
+                  iconColor: _primaryText,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _homeButtons(BuildContext context) {
+    if (!_showFooterButtons) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+
+    final labelStyle =
+        (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w800,
+      fontVariations: const [FontVariation('wght', 800)],
+      letterSpacing: 0.8,
+    );
+
+    final btnStyle = OutlinedButton.styleFrom(
+      foregroundColor: AppColors.brandDark,
+      side: BorderSide(
+        color: AppColors.brandDark.withOpacity(0.35),
+        width: 2,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(AppSpace.s16, 16, AppSpace.s16, 18),
+      child: Row(
+        children: [
+          Expanded(
+            child: SizedBox(
+              height: 52,
+              child: OutlinedButton(
+                onPressed: _openToday,
+                style: btnStyle,
+                child: Text('CUSTOMISE PLAN', style: labelStyle),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: SizedBox(
+              height: 52,
+              child: OutlinedButton(
+                onPressed: _openWeek,
+                style: btnStyle,
+                child: Text('VIEW FULL WEEK', style: labelStyle),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _homeSection(BuildContext context) {
+    final parsed = _parsedBySlot();
+
+    final breakfast = parsed['breakfast'];
+    final lunch = parsed['lunch'];
+    final dinner = parsed['dinner'];
+    final snack1 = parsed['snack1'];
+    final snack2 = parsed['snack2'];
+
+    return _HomeAccordionScaffold(
+      panelBg: _homePanelBgConst,
+      hero: _homeHero(context),
+      breakfastBg: _breakfastBg,
+      lunchBg: _lunchBg,
+      dinnerBg: _dinnerBg,
+      snacksBg: _snacksBg,
+      buildItem: ({
+        required String title,
+        required Color bg,
+        required bool expanded,
+        required VoidCallback onToggle,
+        required List<Widget> children,
+      }) {
+        return _homeAccordionItem(
+          context: context,
+          title: title,
+          bg: bg,
+          expanded: expanded,
+          onToggle: onToggle,
+          expandedChildren: children,
+        );
+      },
+      buildBreakfast: (_) => [
+        _homeMealCard(
+          context: context,
+          slotKey: 'breakfast',
+          entry: breakfast,
+          titleTint: _breakfastBg,
+        ),
+      ],
+      buildLunch: (_) => [
+        _homeMealCard(
+          context: context,
+          slotKey: 'lunch',
+          entry: lunch,
+          titleTint: _lunchBg,
+        ),
+      ],
+      buildDinner: (_) => [
+        _homeMealCard(
+          context: context,
+          slotKey: 'dinner',
+          entry: dinner,
+          titleTint: _dinnerBg,
+        ),
+      ],
+      buildSnacks: (_) => [
+        _homeMealCard(
+          context: context,
+          slotKey: 'snack1',
+          entry: snack1,
+          titleTint: _snacksBg,
+        ),
+        const SizedBox(height: 10),
+        _homeMealCard(
+          context: context,
+          slotKey: 'snack2',
+          entry: snack2,
+          titleTint: _snacksBg,
+        ),
+      ],
+      footer: _homeButtons(context),
+    );
+  }
+
+  // -----------------------------
+  // ORIGINAL (non-home) UI
   // -----------------------------
   Widget _buildBand({
     required BuildContext context,
@@ -151,19 +730,25 @@ class TodayMealPlanSection extends StatelessWidget {
   }) {
     final theme = Theme.of(context);
 
-    final headingStyle = (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
-  color: headingColor,
-  fontSize: ((theme.textTheme.titleLarge?.fontSize) ?? 30) - 4, // slightly smaller than hero
-  fontWeight: FontWeight.w800,
-  fontVariations: const [FontVariation('wght', 800)],
-  letterSpacing: 1.0,
-  height: 1.0,
-);
+    final headingStyle =
+        (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
+      color: headingColor,
+      fontSize: ((theme.textTheme.titleLarge?.fontSize) ?? 30) - 4,
+      fontWeight: FontWeight.w800,
+      fontVariations: const [FontVariation('wght', 800)],
+      letterSpacing: 1.0,
+      height: 1.0,
+    );
 
     return Container(
       width: double.infinity,
       color: bg,
-      padding: const EdgeInsets.fromLTRB(AppSpace.s16, AppSpace.s12, AppSpace.s16, AppSpace.s12),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpace.s16,
+        AppSpace.s12,
+        AppSpace.s16,
+        AppSpace.s12,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -186,60 +771,6 @@ class TodayMealPlanSection extends StatelessWidget {
     );
   }
 
-  Widget _slotActions({
-    required BuildContext context,
-    required String slotKey,
-    required bool hasEntry,
-  }) {
-    if (!_editable) return const SizedBox.shrink();
-
-    final buttons = <Widget>[];
-
-    if (onInspireSlot != null) {
-      buttons.add(
-        IconButton(
-          tooltip: 'Inspire',
-          icon: const Icon(Icons.refresh),
-          onPressed: () => onInspireSlot!(slotKey),
-        ),
-      );
-    }
-    if (onChooseSlot != null) {
-      buttons.add(
-        IconButton(
-          tooltip: 'Choose',
-          icon: const Icon(Icons.search),
-          onPressed: () => onChooseSlot!(slotKey),
-        ),
-      );
-    }
-    if (onNoteSlot != null) {
-      buttons.add(
-        IconButton(
-          tooltip: 'Note',
-          icon: const Icon(Icons.edit_note),
-          onPressed: () => onNoteSlot!(slotKey),
-        ),
-      );
-    }
-    if (hasEntry && onClearSlot != null) {
-      buttons.add(
-        IconButton(
-          tooltip: 'Clear',
-          icon: const Icon(Icons.close),
-          onPressed: () => onClearSlot!(slotKey),
-        ),
-      );
-    }
-
-    if (buttons.isEmpty) return const SizedBox.shrink();
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: buttons,
-    );
-  }
-
   Widget _mealCard({
     required BuildContext context,
     required String slotKey,
@@ -248,20 +779,18 @@ class TodayMealPlanSection extends StatelessWidget {
   }) {
     final theme = Theme.of(context);
 
-    // Recipe title: titleMedium (16 / w700) from theme
-    final titleStyle = (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
-  color: titleColor,
-  height: 1.3,
-  fontWeight: FontWeight.w800,
-  fontVariations: const [FontVariation('wght', 800)],
-);
+    final titleStyle =
+        (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+      color: titleColor,
+      height: 1.3,
+      fontWeight: FontWeight.w800,
+      fontVariations: const [FontVariation('wght', 800)],
+    );
 
-    // Supporting copy: bodyMedium (14 / w600) from theme
     final bodyStyle = (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
       color: _primaryText,
     );
 
-    // NOTE entry
     final note = MealPlanEntryParser.entryNoteText(entry);
     if (note != null) {
       return Card(
@@ -269,14 +798,21 @@ class TodayMealPlanSection extends StatelessWidget {
         child: ListTile(
           dense: true,
           leading: Icon(Icons.sticky_note_2_outlined, color: _primaryText),
-          title: Text(note, style: (theme.textTheme.titleMedium ?? const TextStyle())),
-          trailing: _slotActions(context: context, slotKey: slotKey, hasEntry: true),
-          onTap: _editable && onNoteSlot != null ? () => onNoteSlot!(slotKey) : null,
+          title: Text(
+            note,
+            style: (theme.textTheme.titleMedium ?? const TextStyle()),
+          ),
+          trailing: _slotActions(
+            context: context,
+            slotKey: slotKey,
+            hasEntry: true,
+          ),
+          onTap:
+              _editable && onNoteSlot != null ? () => onNoteSlot!(slotKey) : null,
         ),
       );
     }
 
-    // EMPTY
     if (entry == null) {
       return Card(
         clipBehavior: Clip.antiAlias,
@@ -284,12 +820,15 @@ class TodayMealPlanSection extends StatelessWidget {
           dense: true,
           leading: Icon(Icons.restaurant_menu, color: _primaryText),
           title: Text('Not planned yet', style: bodyStyle),
-          trailing: _slotActions(context: context, slotKey: slotKey, hasEntry: false),
+          trailing: _slotActions(
+            context: context,
+            slotKey: slotKey,
+            hasEntry: false,
+          ),
         ),
       );
     }
 
-    // RECIPE
     final rid = MealPlanEntryParser.entryRecipeId(entry);
     final r = _byId(rid);
 
@@ -300,7 +839,11 @@ class TodayMealPlanSection extends StatelessWidget {
           dense: true,
           leading: Icon(Icons.restaurant_menu, color: _primaryText),
           title: Text('Recipe not found', style: bodyStyle),
-          trailing: _slotActions(context: context, slotKey: slotKey, hasEntry: true),
+          trailing: _slotActions(
+            context: context,
+            slotKey: slotKey,
+            hasEntry: true,
+          ),
         ),
       );
     }
@@ -310,7 +853,6 @@ class TodayMealPlanSection extends StatelessWidget {
     final fav = _isFavorited(rid);
 
     return Card(
-      // Override global r20 for this compact card (you asked for 12)
       shape: const RoundedRectangleBorder(borderRadius: AppRadii.r12),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -320,14 +862,16 @@ class TodayMealPlanSection extends StatelessWidget {
                   MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
                 ),
         child: SizedBox(
-          height: 74, // layout value
+          height: 74,
           child: Row(
             children: [
               SizedBox(
-                width: 88, // layout value
+                width: 88,
                 height: double.infinity,
                 child: thumb == null
-                    ? Center(child: Icon(Icons.restaurant_menu, color: _primaryText))
+                    ? Center(
+                        child: Icon(Icons.restaurant_menu, color: _primaryText),
+                      )
                     : Stack(
                         fit: StackFit.expand,
                         children: [
@@ -335,7 +879,10 @@ class TodayMealPlanSection extends StatelessWidget {
                             thumb,
                             fit: BoxFit.cover,
                             errorBuilder: (_, __, ___) => Center(
-                              child: Icon(Icons.restaurant_menu, color: _primaryText),
+                              child: Icon(
+                                Icons.restaurant_menu,
+                                color: _primaryText,
+                              ),
                             ),
                           ),
                           if (fav)
@@ -360,7 +907,12 @@ class TodayMealPlanSection extends StatelessWidget {
               ),
               Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(AppSpace.s12, AppSpace.s12, AppSpace.s12, AppSpace.s12),
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpace.s12,
+                    AppSpace.s12,
+                    AppSpace.s12,
+                    AppSpace.s12,
+                  ),
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -378,7 +930,11 @@ class TodayMealPlanSection extends StatelessWidget {
               ),
               Padding(
                 padding: const EdgeInsets.only(right: AppSpace.s4),
-                child: _slotActions(context: context, slotKey: slotKey, hasEntry: true),
+                child: _slotActions(
+                  context: context,
+                  slotKey: slotKey,
+                  hasEntry: true,
+                ),
               ),
             ],
           ),
@@ -391,22 +947,27 @@ class TodayMealPlanSection extends StatelessWidget {
     if (!_showFooterButtons) return const SizedBox.shrink();
     final theme = Theme.of(context);
 
-    // labelLarge is already 12 / w700 / ls 0.8 in your theme
-    final btnTextStyle = (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
+    final btnTextStyle =
+        (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
       color: _onDark,
     );
 
     return Container(
       width: double.infinity,
       color: _heroBg,
-      padding: const EdgeInsets.fromLTRB(AppSpace.s16, AppSpace.s8, AppSpace.s16, AppSpace.s8),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpace.s16,
+        AppSpace.s8,
+        AppSpace.s16,
+        AppSpace.s8,
+      ),
       child: Row(
         children: [
           Expanded(
             child: SizedBox(
               height: 40,
               child: OutlinedButton(
-                onPressed: onOpenMealPlan,
+                onPressed: _openToday,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: _onDark,
                   side: BorderSide(color: _onDark.withOpacity(0.35), width: 2),
@@ -421,7 +982,7 @@ class TodayMealPlanSection extends StatelessWidget {
             child: SizedBox(
               height: 40,
               child: OutlinedButton(
-                onPressed: onOpenMealPlan,
+                onPressed: _openWeek,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: _onDark,
                   side: BorderSide(color: _onDark.withOpacity(0.35), width: 2),
@@ -442,14 +1003,16 @@ class TodayMealPlanSection extends StatelessWidget {
 
     final theme = Theme.of(context);
 
-    final btnTextStyle = (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
+    final btnTextStyle =
+        (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
       color: AppColors.white,
     );
 
     return Container(
       width: double.infinity,
       color: _heroBg,
-      padding: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, AppSpace.s16),
+      padding:
+          const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, AppSpace.s16),
       child: SizedBox(
         height: 52,
         child: ElevatedButton(
@@ -464,8 +1027,7 @@ class TodayMealPlanSection extends StatelessWidget {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _classicSection(BuildContext context) {
     final theme = Theme.of(context);
     final parsed = _parsedBySlot();
 
@@ -475,18 +1037,18 @@ class TodayMealPlanSection extends StatelessWidget {
     final snack1 = parsed['snack1'];
     final snack2 = parsed['snack2'];
 
-    // ✅ Hero: use existing styles
-    final heroTopStyle = (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
-  color: AppColors.white,
-  fontSize: ((theme.textTheme.titleLarge?.fontSize) ?? 28), // bigger
-  fontWeight: FontWeight.w800, // stronger
-  fontVariations: const [FontVariation('wght', 800)], // locks bold for Montserrat variable
-  letterSpacing: 1.2,
-  height: 1.0,
-);
+    final heroTopStyle =
+        (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
+      color: AppColors.white,
+      fontSize: ((theme.textTheme.titleLarge?.fontSize) ?? 28),
+      fontWeight: FontWeight.w800,
+      fontVariations: const [FontVariation('wght', 800)],
+      letterSpacing: 1.2,
+      height: 1.0,
+    );
 
-    // Bottom line can stay as titleLarge too, just change colour
-    final heroBottomStyle = (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
+    final heroBottomStyle =
+        (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
       color: _heroAccent,
       letterSpacing: 1.2,
     );
@@ -509,7 +1071,6 @@ class TodayMealPlanSection extends StatelessWidget {
                   ),
                 ),
         ),
-
         _buildBand(
           context: context,
           title: 'BREAKFAST',
@@ -573,10 +1134,137 @@ class TodayMealPlanSection extends StatelessWidget {
             ),
           ],
         ),
-
         _buttonBar(context),
         _saveBar(context),
       ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (homeAccordion) return _homeSection(context);
+    return _classicSection(context);
+  }
+}
+
+/// Home accordion scaffold: stateful ONLY for accordion open state + time-based default.
+class _HomeAccordionScaffold extends StatefulWidget {
+  const _HomeAccordionScaffold({
+    required this.panelBg,
+    required this.hero,
+    required this.breakfastBg,
+    required this.lunchBg,
+    required this.dinnerBg,
+    required this.snacksBg,
+    required this.buildItem,
+    required this.buildBreakfast,
+    required this.buildLunch,
+    required this.buildDinner,
+    required this.buildSnacks,
+    required this.footer,
+  });
+
+  final Color panelBg;
+  final Widget hero;
+
+  final Color breakfastBg;
+  final Color lunchBg;
+  final Color dinnerBg;
+  final Color snacksBg;
+
+  final Widget Function({
+    required String title,
+    required Color bg,
+    required bool expanded,
+    required VoidCallback onToggle,
+    required List<Widget> children,
+  }) buildItem;
+
+  final List<Widget> Function(bool expanded) buildBreakfast;
+  final List<Widget> Function(bool expanded) buildLunch;
+  final List<Widget> Function(bool expanded) buildDinner;
+  final List<Widget> Function(bool expanded) buildSnacks;
+
+  final Widget footer;
+
+  @override
+  State<_HomeAccordionScaffold> createState() => _HomeAccordionScaffoldState();
+}
+
+class _HomeAccordionScaffoldState extends State<_HomeAccordionScaffold> {
+  String _open = 'lunch';
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _open = _slotForNow();
+
+    _timer = Timer.periodic(const Duration(minutes: 10), (_) {
+      final next = _slotForNow();
+      if (!mounted) return;
+      if (next != _open) setState(() => _open = next);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  String _slotForNow() {
+    final h = DateTime.now().hour;
+    if (h >= 4 && h <= 10) return 'breakfast';
+    if (h >= 10 && h <= 14) return 'lunch';
+    if (h >= 14 && h <= 20) return 'dinner';
+    return 'snacks';
+  }
+
+  void _toggle(String slot) {
+    setState(() => _open = (_open == slot) ? '' : slot);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      // ✅ light grey background inside the clipped panel (the outer green clip happens in HomeScreen)
+      color: widget.panelBg,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          widget.hero,
+          widget.buildItem(
+            title: 'BREAKFAST',
+            bg: widget.breakfastBg,
+            expanded: _open == 'breakfast',
+            onToggle: () => _toggle('breakfast'),
+            children: widget.buildBreakfast(_open == 'breakfast'),
+          ),
+          widget.buildItem(
+            title: 'LUNCH',
+            bg: widget.lunchBg,
+            expanded: _open == 'lunch',
+            onToggle: () => _toggle('lunch'),
+            children: widget.buildLunch(_open == 'lunch'),
+          ),
+          widget.buildItem(
+            title: 'DINNER',
+            bg: widget.dinnerBg,
+            expanded: _open == 'dinner',
+            onToggle: () => _toggle('dinner'),
+            children: widget.buildDinner(_open == 'dinner'),
+          ),
+          widget.buildItem(
+            title: 'SNACKS',
+            bg: widget.snacksBg,
+            expanded: _open == 'snacks',
+            onToggle: () => _toggle('snacks'),
+            children: widget.buildSnacks(_open == 'snacks'),
+          ),
+          widget.footer,
+        ],
+      ),
     );
   }
 }

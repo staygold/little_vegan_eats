@@ -597,7 +597,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         ? Map<String, dynamic>.from(_data!['recipe'] as Map)
         : null;
 
-    String? _str(dynamic v) =>
+    String? str(dynamic v) =>
         (v is String && v.trim().isNotEmpty) ? v.trim() : null;
 
     final title = (_data?['title']?['rendered'] as String?) ??
@@ -607,10 +607,10 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final prep = recipe?['prep_time'];
     final cook = recipe?['cook_time'];
 
-    final imageUrl = _str(recipe?['image_url_full']) ??
-        _str(recipe?['image_url']) ??
-        _str(recipe?['image']) ??
-        _str(recipe?['thumbnail_url']);
+    final imageUrl = str(recipe?['image_url_full']) ??
+        str(recipe?['image_url']) ??
+        str(recipe?['image']) ??
+        str(recipe?['thumbnail_url']);
 
     final heroUrl = upscaleJetpackImage(imageUrl, w: 1400, h: 788);
 

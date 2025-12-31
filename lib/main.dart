@@ -1,5 +1,6 @@
 // lib/main.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
@@ -14,6 +15,15 @@ import 'app/no_scrollbar_behavior.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ✅ Status bar: let UI draw behind it, make icons white
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent, // iOS ignores colour; must be transparent
+      statusBarIconBrightness: Brightness.light, // Android icons
+      statusBarBrightness: Brightness.dark, // iOS icons (dark bg => light icons)
+    ),
+  );
 
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
@@ -71,28 +81,28 @@ class MyApp extends StatelessWidget {
       hoverColor: Colors.transparent,
 
       textTheme: textTheme.copyWith(
-  headlineSmall: const TextStyle(
-    fontSize: 24,
-    fontWeight: FontWeight.w700,
-    color: brandDark,
-  ),
-  titleMedium: const TextStyle(
-    fontSize: 16,
-    fontWeight: FontWeight.w600,
-    color: brandDark,
-  ),
-  bodyMedium: const TextStyle(
-    fontSize: 14,
-    fontWeight: FontWeight.w500,
-    color: brandDark,
-  ),
-  labelLarge: const TextStyle(
-    fontSize: 12,
-    fontWeight: FontWeight.w600,
-    letterSpacing: 0.4,
-    color: brandDark,
-  ),
-),
+        headlineSmall: const TextStyle(
+          fontSize: 24,
+          fontWeight: FontWeight.w700,
+          color: brandDark,
+        ),
+        titleMedium: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+          color: brandDark,
+        ),
+        bodyMedium: const TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+          color: brandDark,
+        ),
+        labelLarge: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.4,
+          color: brandDark,
+        ),
+      ),
 
       // 🧱 Global card style
       cardTheme: const CardThemeData(

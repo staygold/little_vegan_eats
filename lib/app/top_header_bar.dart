@@ -1,30 +1,31 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-import '../recipes/recipes_bootstrap_gate.dart';
-import '../recipes/recipe_list_page.dart';
-
 class TopHeaderBar extends StatelessWidget {
-  const TopHeaderBar({super.key});
+  final String? firstName;
+  final VoidCallback onProfileTap;
 
-  void _openRecipeSearch(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => const RecipesBootstrapGate(
-          child: RecipeListPage(),
-        ),
-      ),
-    );
-  }
+  const TopHeaderBar({
+    super.key,
+    required this.firstName,
+    required this.onProfileTap,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final topInset = MediaQuery.of(context).padding.top;
+
+    const bg = Color(0xFF005A4F);
+    const pillBg = Colors.white;
+    const pillText = Color(0xFF044246);
+
+    final name = (firstName ?? '').trim();
+    final displayName = name.isEmpty ? '…' : name;
+
     return Container(
-      height: 72,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFEAF2F3).withOpacity(0.9),
-      ),
+      color: bg,
+      height: topInset + 72,
+      padding: EdgeInsets.fromLTRB(16, topInset + 10, 16, 10),
       child: Row(
         children: [
           // Logo
@@ -32,41 +33,59 @@ class TopHeaderBar extends StatelessWidget {
             'assets/images/LVE.svg',
             height: 44,
             fit: BoxFit.contain,
-            placeholderBuilder: (_) => const SizedBox(
-              height: 44,
-              width: 44,
-            ),
+            // If you want the logo forced white, uncomment:
+            // colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcIn),
+            placeholderBuilder: (_) => const SizedBox(height: 44, width: 44),
           ),
 
           const Spacer(),
 
-          // Search pill
-          InkWell(
-            borderRadius: BorderRadius.circular(999),
-            onTap: () => _openRecipeSearch(context),
+          // Profile pill (NO InkWell to avoid first-tap highlight flash)
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onProfileTap,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              height: 40,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: pillBg,
                 borderRadius: BorderRadius.circular(999),
                 boxShadow: const [
                   BoxShadow(
-                    color: Color.fromRGBO(0, 0, 0, 0.06),
-                    blurRadius: 8,
-                    offset: Offset(0, 2),
+                    color: Color.fromRGBO(0, 0, 0, 0.10),
+                    blurRadius: 10,
+                    offset: Offset(0, 3),
                   ),
                 ],
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
-                children: const [
-                  Icon(Icons.search, size: 18),
-                  SizedBox(width: 6),
-                  Text(
-                    'Search',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
+                children: [
+                  // Keep width stable to reduce micro-jank
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(minWidth: 36),
+                    child: Text(
+                      displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: pillText,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.2,
+                      ),
                     ),
+                  ),
+                  const SizedBox(width: 10),
+                  SvgPicture.asset(
+                    'assets/images/icons/profile.svg',
+                    width: 18,
+                    height: 18,
+                    colorFilter: const ColorFilter.mode(
+                      pillText,
+                      BlendMode.srcIn,
+                    ),
+                    placeholderBuilder: (_) =>
+                        const SizedBox(width: 18, height: 18),
                   ),
                 ],
               ),

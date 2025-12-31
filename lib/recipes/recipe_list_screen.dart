@@ -12,6 +12,10 @@ import 'recipe_repository.dart';
 import 'allergy_engine.dart';
 import '../recipes/allergy_keys.dart';
 
+// ✅ Use your shared card UI
+// Adjust this import path if your RecipeCard lives elsewhere.
+import 'widgets/recipe_card.dart';
+
 class RecipeListScreen extends StatefulWidget {
   const RecipeListScreen({
     super.key,
@@ -207,40 +211,40 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   }
 
   List<String> get _collectionOptions {
-  final set = <String>{};
-  for (final r in _items) {
-    set.addAll(_collectionsOf(r));
+    final set = <String>{};
+    for (final r in _items) {
+      set.addAll(_collectionsOf(r));
+    }
+    final list = set.toList()..sort();
+    return ['All', ...list];
   }
-  final list = set.toList()..sort();
-  return ['All', ...list];
-}
 
   // ------------------------
   // Collections (WPRM)
   // ------------------------
 
   List<String> _collectionsOf(Map<String, dynamic> r) {
-  final v = r['wprm_collections']; // ✅ plural
+    final v = r['wprm_collections']; // ✅ plural
 
-  List<String> raw = [];
-  if (v is List) {
-    raw = v.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
-  } else if (v is int) {
-    raw = [v.toString()];
-  } else if (v is String && v.trim().isNotEmpty) {
-    raw = [v.trim()];
+    List<String> raw = [];
+    if (v is List) {
+      raw = v.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
+    } else if (v is int) {
+      raw = [v.toString()];
+    } else if (v is String && v.trim().isNotEmpty) {
+      raw = [v.trim()];
+    }
+
+    final mapped = raw.map((x) => _collectionIdToName[x] ?? x).toList();
+
+    final set = <String>{};
+    for (final m in mapped) {
+      final s = m.trim();
+      if (s.isNotEmpty) set.add(s);
+    }
+    final list = set.toList()..sort();
+    return list;
   }
-
-  final mapped = raw.map((x) => _collectionIdToName[x] ?? x).toList();
-
-  final set = <String>{};
-  for (final m in mapped) {
-    final s = m.trim();
-    if (s.isNotEmpty) set.add(s);
-  }
-  final list = set.toList()..sort();
-  return list;
-}
 
   // ------------------------
   // Apply initial filters (slug -> human name)
@@ -439,7 +443,8 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
             }
           }
 
-          final canonical = hasAllergies ? (parsed.toSet().toList()..sort()) : <String>[];
+          final canonical =
+              hasAllergies ? (parsed.toSet().toList()..sort()) : <String>[];
 
           adults.add(
             _ProfilePerson(
@@ -470,7 +475,8 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
             }
           }
 
-          final canonical = hasAllergies ? (parsed.toSet().toList()..sort()) : <String>[];
+          final canonical =
+              hasAllergies ? (parsed.toSet().toList()..sort()) : <String>[];
 
           children.add(
             _ProfilePerson(
@@ -656,7 +662,8 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
       _maybeFinishBoot();
 
-      unawaited(Future.delayed(const Duration(seconds: 2), _upgradeItemsFromCacheIfNewer));
+      unawaited(Future.delayed(
+          const Duration(seconds: 2), _upgradeItemsFromCacheIfNewer));
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -692,7 +699,8 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     required String ingredientsText,
     required List<_ProfilePerson> activeProfiles,
   }) {
-    final anyActive = activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
+    final anyActive =
+        activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
     if (!anyActive) return (tag: null, swapHint: null);
 
     bool anySwap = false;
@@ -720,7 +728,9 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
     if (anySwap) {
       return (
-        tag: activeProfiles.length > 1 ? '⚠️ Swap required (one or more people)' : '⚠️ Swap required',
+        tag: activeProfiles.length > 1
+            ? '⚠️ Swap required (one or more people)'
+            : '⚠️ Swap required',
         swapHint: firstSwap,
       );
     }
@@ -732,6 +742,17 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       return (tag: '✅ Safe for all children', swapHint: null);
     }
     return (tag: '✅ Safe for whole family', swapHint: null);
+  }
+
+  Widget _favBadge() {
+    return Container(
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.90),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: const Icon(Icons.star_rounded, size: 18, color: Colors.amber),
+    );
   }
 
   // ------------------------
@@ -764,23 +785,29 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     final courseOptions = _courseOptions;
     final collectionOptions = _collectionOptions;
 
-    final selectedCourse = courseOptions.contains(_selectedCourse) ? _selectedCourse : 'All';
+    final selectedCourse =
+        courseOptions.contains(_selectedCourse) ? _selectedCourse : 'All';
     if (selectedCourse != _selectedCourse) _selectedCourse = selectedCourse;
 
-    final selectedCollection =
-        collectionOptions.contains(_selectedCollection) ? _selectedCollection : 'All';
-    if (selectedCollection != _selectedCollection) _selectedCollection = selectedCollection;
+    final selectedCollection = collectionOptions.contains(_selectedCollection)
+        ? _selectedCollection
+        : 'All';
+    if (selectedCollection != _selectedCollection) {
+      _selectedCollection = selectedCollection;
+    }
 
     final q = _query.trim().toLowerCase();
 
     final activeProfiles = _filterByAllergies ? _activeProfilesForMode() : _allPeople;
-    final hasAnyAllergies = activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
+    final hasAnyAllergies =
+        activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
 
     final visible = _items.where((r) {
       final courses = _coursesOf(r);
       final collections = _collectionsOf(r);
 
-      final matchesCourse = (_selectedCourse == 'All') || courses.contains(_selectedCourse);
+      final matchesCourse =
+          (_selectedCourse == 'All') || courses.contains(_selectedCourse);
       final matchesCollection =
           (_selectedCollection == 'All') || collections.contains(_selectedCollection);
 
@@ -793,11 +820,14 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
               ingredients.any((row) {
                 if (row is! Map) return false;
                 final name = (row['name'] ?? '').toString().toLowerCase();
-                final notes = stripHtml((row['notes'] ?? '').toString()).toLowerCase();
+                final notes =
+                    stripHtml((row['notes'] ?? '').toString()).toLowerCase();
                 return name.contains(q) || notes.contains(q);
               }));
 
-      if (!(matchesCourse && matchesCollection && (titleMatch || ingredientMatch))) return false;
+      if (!(matchesCourse && matchesCollection && (titleMatch || ingredientMatch))) {
+        return false;
+      }
 
       if (_filterByAllergies && hasAnyAllergies) {
         final ingredientsText = _ingredientsTextOf(r);
@@ -814,7 +844,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     final suitabilityItems = <DropdownMenuItem<String>>[
       const DropdownMenuItem(value: '__whole__', child: Text('Whole family')),
       const DropdownMenuItem(value: '__kids__', child: Text('All children')),
-      ..._adults.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name))), // ✅ just names
+      ..._adults.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name))),
       ..._children.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name))),
     ];
 
@@ -860,7 +890,10 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
               if (_loadingHousehold) ...[
                 const Row(
                   children: [
-                    SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                    SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2)),
                     SizedBox(width: 10),
                     Text('Loading family profiles...'),
                   ],
@@ -955,7 +988,9 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                       child: DropdownButton<String>(
                         isExpanded: true,
                         value: selectedCourse,
-                        items: courseOptions.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                        items: courseOptions
+                            .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                            .toList(),
                         onChanged: (v) {
                           if (v == null) return;
                           setState(() => _selectedCourse = v);
@@ -1006,7 +1041,8 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         Expanded(
           child: RefreshIndicator(
             onRefresh: () async {
-              await RecipeRepository.ensureRecipesLoaded(backgroundRefresh: false, forceRefresh: true);
+              await RecipeRepository.ensureRecipesLoaded(
+                  backgroundRefresh: false, forceRefresh: true);
 
               final updated = await RecipeCache.load();
               final updatedAt = await RecipeCache.lastUpdated();
@@ -1020,10 +1056,11 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
               });
             },
             child: ListView.separated(
-              controller: _scroll,
-              itemCount: visible.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (context, index) {
+  controller: _scroll,
+  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16), // ✅ 16px sides
+  itemCount: visible.length,
+  separatorBuilder: (_, __) => const SizedBox(height: 8),
+  itemBuilder: (context, index) {
                 final r = visible[index];
                 final id = r['id'] as int?;
                 final title = _titleOf(r);
@@ -1040,46 +1077,20 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
                 final isFav = _isFavorited(id);
 
-                return ListTile(
-                  leading: SizedBox(
-                    width: 56,
-                    height: 56,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: thumb == null
-                          ? const Icon(Icons.restaurant_menu)
-                          : Image.network(
-                              thumb,
-                              width: 56,
-                              height: 56,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => const Icon(Icons.restaurant_menu),
-                            ),
-                    ),
-                  ),
-                  title: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(child: Text('$title • $courseLabel')),
-                          if (isFav)
-                            const Padding(
-                              padding: EdgeInsets.only(left: 8),
-                              child: Icon(Icons.star_rounded, size: 18, color: Colors.amber),
-                            ),
-                        ],
-                      ),
-                      if (tagData.tag != null) ...[
-                        const SizedBox(height: 4),
-                        Text(tagData.tag!, style: Theme.of(context).textTheme.bodySmall),
-                      ],
-                      if (tagData.swapHint != null) ...[
-                        const SizedBox(height: 2),
-                        Text(tagData.swapHint!, style: Theme.of(context).textTheme.bodySmall),
-                      ],
-                    ],
-                  ),
+                final subtitleParts = <String>[
+                  courseLabel,
+                  if (tagData.tag != null) tagData.tag!,
+                  if (tagData.swapHint != null) tagData.swapHint!,
+                ];
+                final subtitle = subtitleParts.where((s) => s.trim().isNotEmpty).join(' • ');
+
+                return RecipeCard(
+                  title: title,
+                  subtitle: subtitle.isEmpty ? null : subtitle,
+                  imageUrl: thumb,
+                  compact: false,
+                  badge: isFav ? _favBadge() : null,
+                  trailing: const Icon(Icons.chevron_right),
                   onTap: id == null
                       ? null
                       : () => Navigator.of(context).push(

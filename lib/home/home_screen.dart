@@ -1,6 +1,5 @@
 // lib/home/home_screen.dart
 import 'dart:async';
-import 'dart:ui' show FontVariation;
 
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -14,15 +13,27 @@ import '../meal_plan/core/meal_plan_keys.dart';
 // ✅ Centralised review prompt
 import '../meal_plan/core/meal_plan_review_service.dart';
 
-// ✅ NEW: use the centralised meal plan repo + controller to auto-populate
+// ✅ use the centralised meal plan repo + controller to auto-populate
 import '../meal_plan/core/meal_plan_repository.dart';
 import '../meal_plan/core/meal_plan_controller.dart';
 
-// ✅ NEW: home recipe rail for WPRM collections
+// ✅ home recipe rail for WPRM collections
 import '../recipes/home_collection_rail.dart';
 
-// ✅ NEW: shared meal plan UI + parsing
+// ✅ shared meal plan UI (REUSE)
 import '../meal_plan/widgets/today_meal_plan_section.dart';
+
+// ✅ Search experience
+import '../recipes/recipes_bootstrap_gate.dart';
+import '../recipes/recipe_list_page.dart';
+
+// ✅ reusable top search section
+import '../shared/home_search_section.dart';
+
+import '../theme/app_theme.dart';
+
+// ✅ IMPORTANT: so HomeScreen can push MealPlanScreen without named routes
+import '../meal_plan/meal_plan_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -48,7 +59,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadRecipesAndBootstrap();
-    _listenToFavorites(); // ✅
+    _listenToFavorites();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
@@ -176,7 +187,13 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // ---------- FIRESTORE STREAM ----------
+  // ---------- FIRESTORE STREAMS ----------
+
+  DocumentReference<Map<String, dynamic>>? _userDoc() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return null;
+    return FirebaseFirestore.instance.collection('users').doc(user.uid);
+  }
 
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _weekStream() {
     final user = FirebaseAuth.instance.currentUser;
@@ -190,69 +207,203 @@ class _HomeScreenState extends State<HomeScreen> {
         .snapshots();
   }
 
+  /// users/{uid}.adults[0].name → "Cat Dean" → "Cat"
+  String? _extractFirstName(Map<String, dynamic> data) {
+    final adults = data['adults'];
+    if (adults is! List || adults.isEmpty) return null;
+
+    final firstAdult = adults.first;
+    if (firstAdult is! Map) return null;
+
+    final name = (firstAdult['name'] ?? '').toString().trim();
+    if (name.isEmpty) return null;
+
+    final parts =
+        name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    return parts.isNotEmpty ? parts.first : null;
+  }
+
+  // ---------- NAV ----------
+
+  void _openSearch(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const RecipesBootstrapGate(
+          child: RecipeListPage(),
+        ),
+      ),
+    );
+  }
+
+  void _toast(BuildContext context, String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg)),
+    );
+  }
+
+  void _openTodayPlan(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MealPlanScreen(
+          weekId: _weekId(),
+          focusDayKey: _todayKey(), // ✅ opens focused on today
+        ),
+      ),
+    );
+  }
+
+  void _openWeekPlan(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MealPlanScreen(
+          weekId: _weekId(), // ✅ normal week screen
+        ),
+      ),
+    );
+  }
+
   // ---------- UI ----------
 
   @override
   Widget build(BuildContext context) {
-    final stream = _weekStream();
+    final userDoc = _userDoc();
+    final weekStream = _weekStream();
 
     if (_recipesLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
 
-    if (stream == null) {
-      return const Center(child: Text('Log in to see your meal plan'));
+    if (userDoc == null || weekStream == null) {
+      return const Scaffold(
+        body: Center(child: Text('Log in to see your home feed')),
+      );
     }
+
+    // ✅ Page background (also behind carousels)
+    const railBg = Color(0xFFECF3F4);
+
+    // ✅ Rounded top corners for the inner meal-plan panel
+    const topRadius = BorderRadius.only(
+      topLeft: Radius.circular(20),
+      topRight: Radius.circular(20),
+    );
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: stream,
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
+      stream: userDoc.snapshots(),
+      builder: (context, userSnap) {
+        final userData = userSnap.data?.data() ?? <String, dynamic>{};
+        final firstName = _extractFirstName(userData);
 
-        final data = snap.data?.data() ?? <String, dynamic>{};
-        final days = data['days'];
-        final todayKey = _todayKey();
+        return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: weekStream,
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
 
-        final Map<String, dynamic> todayRaw =
-            (days is Map && days[todayKey] is Map)
-                ? Map<String, dynamic>.from(days[todayKey] as Map)
-                : <String, dynamic>{};
+            final data = snap.data?.data() ?? <String, dynamic>{};
+            final days = data['days'];
+            final todayKey = _todayKey();
 
-        return ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            // ✅ Shared Today Meal Plan section (hero + bands + cards + button bar)
-            TodayMealPlanSection(
-              todayRaw: todayRaw,
-              recipes: _recipes,
-              favoriteIds: _favoriteIds,
-              onOpenMealPlan: () => Navigator.of(context).pushNamed('/meal-plan'),
-            ),
+            final Map<String, dynamic> todayRaw =
+                (days is Map && days[todayKey] is Map)
+                    ? Map<String, dynamic>.from(days[todayKey] as Map)
+                    : <String, dynamic>{};
 
-            // ✅ WPRM Collection rails
-            Container(
-              color: const Color(0xFFECF3F4),
-              padding: const EdgeInsets.only(top: 8, bottom: 12),
-              child: HomeCollectionRail(
-                title: '15 Minute Meals',
-                collectionSlug: '15-minute-meals',
-                recipes: _recipes,
-                favoriteIds: _favoriteIds,
+            // ✅ Outer wrapper background (green band)
+            final mealPlanPanelBg = AppColors.brandDark;
+
+            return Scaffold(
+              backgroundColor: railBg,
+              body: ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  HomeSearchSection(
+                    firstName: firstName,
+                    showGreeting: true,
+                    onSearchTap: () => _openSearch(context),
+                    quickActions: [
+                      QuickActionItem(
+                        label: 'Latest',
+                        asset: 'assets/images/icons/latest.svg',
+                        onTap: () => _toast(context, 'Latest (TODO)'),
+                      ),
+                      QuickActionItem(
+                        label: 'Popular',
+                        asset: 'assets/images/icons/popular.svg',
+                        onTap: () => _toast(context, 'Popular (TODO)'),
+                      ),
+                      QuickActionItem(
+                        label: 'Mains',
+                        asset: 'assets/images/icons/mains.svg',
+                        onTap: () => _toast(context, 'Mains (TODO)'),
+                      ),
+                      QuickActionItem(
+                        label: 'Snacks',
+                        asset: 'assets/images/icons/snacks.svg',
+                        onTap: () => _toast(context, 'Snacks (TODO)'),
+                      ),
+                    ],
+                  ),
+
+                  // ✅ 1) MEAL PLAN (green wrapper + clipped light-grey panel inside)
+                  Container(
+                    color: mealPlanPanelBg,
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Material(
+                      color: railBg,
+                      shape: const RoundedRectangleBorder(
+                        borderRadius: topRadius,
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: TodayMealPlanSection(
+                        todayRaw: todayRaw,
+                        recipes: _recipes,
+                        favoriteIds: _favoriteIds,
+                        heroTopText: "HERE'S SOME IDEAS",
+                        heroBottomText: "FOR TODAY",
+                        homeAccordion: true,
+
+                        // ✅ simple pushes, no named routes
+                        onOpenToday: () => _openTodayPlan(context),
+                        onOpenWeek: () => _openWeekPlan(context),
+                      ),
+                    ),
+                  ),
+
+                  // ✅ 2) CAROUSELS = LIGHT GREY WRAPPER (NOT GREEN)
+                  Container(
+                    color: railBg,
+                    padding: const EdgeInsets.only(top: 10, bottom: 16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        HomeCollectionRail(
+                          title: '15 MINUTE MEALS',
+                          collectionSlug: '15-minute-meals',
+                          recipes: _recipes,
+                          favoriteIds: _favoriteIds,
+                        ),
+                        const SizedBox(height: 12),
+                        HomeCollectionRail(
+                          title: 'FIRST FOODS',
+                          collectionSlug: 'first-foods',
+                          recipes: _recipes,
+                          favoriteIds: _favoriteIds,
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+                ],
               ),
-            ),
-            Container(
-              color: const Color(0xFFECF3F4),
-              padding: const EdgeInsets.only(top: 8, bottom: 12),
-              child: HomeCollectionRail(
-                title: 'First Foods',
-                collectionSlug: 'first-foods',
-                recipes: _recipes,
-                favoriteIds: _favoriteIds,
-              ),
-            ),
-          ],
+            );
+          },
         );
       },
     );

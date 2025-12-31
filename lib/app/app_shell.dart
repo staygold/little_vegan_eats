@@ -1,5 +1,8 @@
 // lib/shell/app_shell.dart
 import 'dart:ui' show FontVariation;
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -22,6 +25,8 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   late int _index;
 
+  static const int _profileIndex = 3;
+
   final List<Widget> _pages = const [
     HomeScreen(),
     RecipeHubScreen(),
@@ -30,17 +35,81 @@ class _AppShellState extends State<AppShell> {
   ];
 
   // 🎨 Colours
-  static const Color inactiveColor = Color(0xFF044246);
+  static const Color inactiveColor = Color(0xFF005A4F);
   static const Color activeColor = Color(0xFF32998D);
 
-  // 📐 Sizing
+  // 📐 Sizing (visual bar height, safe-area will be added automatically)
   static const double barHeight = 92;
   static const double iconSize = 24;
+
+  // ✅ Cache first name so it never flashes back to "…" during stream rebuilds
+  String? _cachedFirstName;
 
   @override
   void initState() {
     super.initState();
     _index = widget.initialIndex.clamp(0, _pages.length - 1);
+  }
+
+  void _goProfile() {
+    if (_index == _profileIndex) return;
+    setState(() => _index = _profileIndex);
+  }
+
+  DocumentReference<Map<String, dynamic>>? _userDoc() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return null;
+    return FirebaseFirestore.instance.collection('users').doc(user.uid);
+  }
+
+  /// users/{uid}.adults[0].name → "Cat Dean" → "Cat"
+  String? _extractFirstName(Map<String, dynamic> data) {
+    final adults = data['adults'];
+    if (adults is! List || adults.isEmpty) return null;
+
+    final firstAdult = adults.first;
+    if (firstAdult is! Map) return null;
+
+    final name = (firstAdult['name'] ?? '').toString().trim();
+    if (name.isEmpty) return null;
+
+    final parts = name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    return parts.isNotEmpty ? parts.first : null;
+  }
+
+  Widget _buildHeader() {
+    final doc = _userDoc();
+
+    if (doc == null) {
+      return TopHeaderBar(
+        firstName: _cachedFirstName, // could be null
+        onProfileTap: _goProfile,
+      );
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: doc.snapshots(),
+      builder: (context, snap) {
+        // ✅ Always prefer cached value to avoid flashing
+        String? firstNameToShow = _cachedFirstName;
+
+        if (snap.hasData) {
+          final data = snap.data?.data() ?? <String, dynamic>{};
+          final extracted = _extractFirstName(data);
+
+          // only update cache when we have a real, non-empty value
+          if (extracted != null && extracted.trim().isNotEmpty) {
+            _cachedFirstName = extracted.trim();
+            firstNameToShow = _cachedFirstName;
+          }
+        }
+
+        return TopHeaderBar(
+          firstName: firstNameToShow, // never forced to "…"
+          onProfileTap: _goProfile,
+        );
+      },
+    );
   }
 
   Widget _navIcon(String asset, bool active) {
@@ -71,79 +140,94 @@ class _AppShellState extends State<AppShell> {
     );
 
     return Scaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            const TopHeaderBar(),
-            Expanded(
+      body: Column(
+        children: [
+          // ✅ Header extends behind the iOS status bar
+          _buildHeader(),
+
+          // ✅ IMPORTANT:
+          // We do NOT want bottom SafeArea padding here, because it creates the “green bar” gap
+          // above the bottom nav. The bottom nav will handle the safe area instead.
+          Expanded(
+            child: SafeArea(
+              top: false,
+              bottom: false, // ✅ FIX: remove the gap above BottomNavigationBar
               child: IndexedStack(
                 index: _index,
                 children: _pages,
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
+
       bottomNavigationBar: Theme(
         data: theme,
-        child: Container(
-          height: barHeight,
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            boxShadow: [
-              BoxShadow(
-                offset: Offset(0, 0),
-                blurRadius: 20,
-                spreadRadius: 0,
-                color: Color.fromRGBO(4, 66, 70, 0.20),
-              ),
-            ],
-          ),
-          child: BottomNavigationBar(
-            currentIndex: _index,
-            onTap: (i) => setState(() => _index = i),
-            type: BottomNavigationBarType.fixed,
-            backgroundColor: Colors.white,
-            elevation: 0,
-            selectedItemColor: activeColor,
-            unselectedItemColor: inactiveColor,
-            selectedFontSize: 12,
-            unselectedFontSize: 12,
-
-            // ✅ Force variable wght for labels (stops “thin” issue)
-            selectedLabelStyle: const TextStyle(
-              fontFamily: 'Montserrat',
-              fontWeight: FontWeight.w700,
-              fontVariations: [FontVariation('wght', 700)],
+        child: SafeArea(
+          top: false,
+          // ✅ Bottom safe area belongs to the nav (not the page body)
+          child: Container(
+            height: barHeight,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              boxShadow: [
+                BoxShadow(
+                  offset: Offset(0, 0),
+                  blurRadius: 20,
+                  spreadRadius: 0,
+                  color: Color.fromRGBO(4, 66, 70, 0.20),
+                ),
+              ],
             ),
-            unselectedLabelStyle: const TextStyle(
-              fontFamily: 'Montserrat',
-              fontWeight: FontWeight.w700,
-              fontVariations: [FontVariation('wght', 700)],
-            ),
+            child: BottomNavigationBar(
+              currentIndex: _index,
+              onTap: (i) {
+                if (i == _index) return;
+                setState(() => _index = i);
+              },
+              type: BottomNavigationBarType.fixed,
+              backgroundColor: Colors.white,
+              elevation: 0,
+              selectedItemColor: activeColor,
+              unselectedItemColor: inactiveColor,
+              selectedFontSize: 12,
+              unselectedFontSize: 12,
 
-            items: [
-              BottomNavigationBarItem(
-                icon: _navIcon('assets/images/icons/home.svg', false),
-                activeIcon: _navIcon('assets/images/icons/home.svg', true),
-                label: 'Home',
+              // ✅ Variable font weight lock
+              selectedLabelStyle: const TextStyle(
+                fontFamily: 'Montserrat',
+                fontWeight: FontWeight.w700,
+                fontVariations: [FontVariation('wght', 700)],
               ),
-              BottomNavigationBarItem(
-                icon: _navIcon('assets/images/icons/recipes.svg', false),
-                activeIcon: _navIcon('assets/images/icons/recipes.svg', true),
-                label: 'Recipes',
+              unselectedLabelStyle: const TextStyle(
+                fontFamily: 'Montserrat',
+                fontWeight: FontWeight.w700,
+                fontVariations: [FontVariation('wght', 700)],
               ),
-              BottomNavigationBarItem(
-                icon: _navIcon('assets/images/icons/plans.svg', false),
-                activeIcon: _navIcon('assets/images/icons/plans.svg', true),
-                label: 'Plans',
-              ),
-              BottomNavigationBarItem(
-                icon: _navIcon('assets/images/icons/family.svg', false),
-                activeIcon: _navIcon('assets/images/icons/family.svg', true),
-                label: 'Family',
-              ),
-            ],
+
+              items: [
+                BottomNavigationBarItem(
+                  icon: _navIcon('assets/images/icons/home.svg', false),
+                  activeIcon: _navIcon('assets/images/icons/home.svg', true),
+                  label: 'Home',
+                ),
+                BottomNavigationBarItem(
+                  icon: _navIcon('assets/images/icons/recipes.svg', false),
+                  activeIcon: _navIcon('assets/images/icons/recipes.svg', true),
+                  label: 'Recipes',
+                ),
+                BottomNavigationBarItem(
+                  icon: _navIcon('assets/images/icons/plans.svg', false),
+                  activeIcon: _navIcon('assets/images/icons/plans.svg', true),
+                  label: 'Plans',
+                ),
+                BottomNavigationBarItem(
+                  icon: _navIcon('assets/images/icons/family.svg', false),
+                  activeIcon: _navIcon('assets/images/icons/family.svg', true),
+                  label: 'Family',
+                ),
+              ],
+            ),
           ),
         ),
       ),
