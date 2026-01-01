@@ -496,9 +496,10 @@ class TodayMealPlanSection extends StatelessWidget {
 
     final titleStyle =
         (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
-      color: titleTint,
-      fontWeight: FontWeight.w900,
-      fontVariations: const [FontVariation('wght', 900)],
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w700,
+      fontVariations: const [FontVariation('wght', 700)],
+      fontSize: 18,
       height: 1.1,
     );
 
@@ -607,6 +608,7 @@ class TodayMealPlanSection extends StatelessWidget {
         (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
       fontWeight: FontWeight.w800,
+      fontSize: 14,
       fontVariations: const [FontVariation('wght', 800)],
       letterSpacing: 0,
     );
@@ -966,8 +968,7 @@ class TodayMealPlanSection extends StatelessWidget {
     final theme = Theme.of(context);
 
     final btnTextStyle =
-        (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
-      color: _onDark,
+        (theme.textTheme.labelLarge ?? const TextStyle()
     );
 
     return Container(

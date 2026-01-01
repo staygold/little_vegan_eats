@@ -236,9 +236,10 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
   TextStyle _cardTextStyle(BuildContext context) {
     final theme = Theme.of(context);
     return (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-      color: AppColors.textPrimary.withOpacity(0.85),
-      fontWeight: FontWeight.w600,
-      height: 1.25,
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w700,
+      fontSize: 16,
+      height: 1.4,
     );
   }
 
@@ -328,7 +329,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
     final screenW = MediaQuery.of(context).size.width;
     final favCardW = (screenW * 0.42).clamp(150.0, 190.0);
     const favRailH = 190.0;
-    const favTitleBlockH = 60.0;
+    const favTitleBlockH = 68.0;
 
     final dpr = MediaQuery.of(context).devicePixelRatio;
     final requestW = (favCardW * dpr * 2.0).round();
@@ -648,8 +649,9 @@ class _CourseCard extends StatelessWidget {
     final titleStyle =
         (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
-      fontWeight: FontWeight.w900,
-      fontVariations: const [FontVariation('wght', 900)],
+      fontWeight: FontWeight.w800,
+      fontSize: 16,
+      fontVariations: const [FontVariation('wght', 800)],
       letterSpacing: 0,
     );
 

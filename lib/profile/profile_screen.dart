@@ -348,7 +348,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         style: subStyle,
                       ),
                       if (subtitleLine2 != null) ...[
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 12),
                         DefaultTextStyle(
                           style: subStyle.copyWith(
                             color: AppColors.brandDark.withOpacity(0.85),

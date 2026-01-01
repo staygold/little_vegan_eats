@@ -270,9 +270,10 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
 
     final cardTextStyle =
         (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-      color: AppColors.textPrimary.withOpacity(0.85),
-      fontWeight: FontWeight.w600,
-      height: 1.25,
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w700,
+      fontSize: 16,
+      height: 1.4,
     );
 
     // ✅ Make cards less wide (more square / 4:3 feel)
@@ -283,7 +284,7 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
     const railH = 190.0;
 
     // Title block height fixed
-    const titleBlockH = 60.0;
+    const titleBlockH = 68.0;
 
     // Image sizing: crisp
     final dpr = MediaQuery.of(context).devicePixelRatio;

@@ -40,7 +40,7 @@ class SubHeaderBar extends StatelessWidget {
             ),
           ),
 
-          const SizedBox(width: 12), // gap between icon + title (as before)
+          const SizedBox(width: 16), // gap between icon + title (as before)
 
           Expanded(
             child: Text(

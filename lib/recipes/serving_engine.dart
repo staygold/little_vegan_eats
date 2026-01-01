@@ -1,3 +1,4 @@
+// lib/recipes/serving_engine.dart
 import 'dart:math';
 
 enum ServingMode {
@@ -7,7 +8,10 @@ enum ServingMode {
 
 class ServingAdvice {
   final String headline;
+
+  /// ✅ This should now be ONLY the “Your family needs …” line
   final String detailLine;
+
   final String? extra;
 
   /// The raw multiplier needed (can be fractional like 1.18)
@@ -116,16 +120,13 @@ ServingAdvice _sharedAdvice({
 
   final multiplier = adultEquivalentNeeded / base;
 
-  final familyLine = _familyLine(adults: adults, kids: kids);
-  final needLine =
-      'Your family needs ~${_fmt1(adultEquivalentNeeded)} adult servings. Base recipe serves ${_fmt0(base)} adults.';
-  final detailLine = '$familyLine • $needLine';
+  // ✅ UI requested: ONLY the “Your family needs…” line (no family breakdown, no base recipe sentence)
+  final detailLine = 'Your family needs ~${_fmt1(adultEquivalentNeeded)} portions';
 
   // Half-batch rule (shared dishes only):
   // show if you need <= 65% of base (i.e. base is clearly too big)
   final canHalf = multiplier <= 0.65;
 
-  // If base is enough (or more than enough), we still want to allow half if appropriate.
   if (multiplier <= 1.0) {
     return ServingAdvice(
       headline: 'Perfect for your family',
@@ -176,10 +177,8 @@ ServingAdvice _countableAdvice({
 
   final multiplier = itemsNeeded / makes;
 
-  final familyLine = _familyLine(adults: adults, kids: kids);
-  final needLine =
-      'Your family needs ~${_fmt0(itemsNeeded.toDouble())} items. This recipe makes ${_fmt0(makes.toDouble())}.';
-  final detailLine = '$familyLine • $needLine';
+  // ✅ UI requested: ONLY the “Your family needs…” line
+  final detailLine = 'Your family needs ~${_fmt0(itemsNeeded.toDouble())} items';
 
   if (multiplier <= 1.0) {
     return ServingAdvice(

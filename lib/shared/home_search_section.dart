@@ -58,21 +58,21 @@ class HomeSearchSection extends StatelessWidget {
             Text(
               'Hey, $greetingName!',
               style: const TextStyle(
-                fontSize: 21,
+                fontSize: 20,
                 fontWeight: FontWeight.w400,
                 color: Colors.white70,
               ),
             ),
-            const SizedBox(height: 0),
+            const SizedBox(height: 4),
           ] else if (showGreeting) ...[
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
           ],
 
           // Heading
           const Text(
             'What do you feel like eating?',
             style: TextStyle(
-              fontSize: 24,
+              fontSize: 26,
               fontWeight: FontWeight.w800,
               color: Colors.white,
               height: 1.2,
