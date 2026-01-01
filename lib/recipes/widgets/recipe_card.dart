@@ -44,7 +44,10 @@ class RecipeCard extends StatelessWidget {
               SizedBox(
                 width: imgW,
                 height: double.infinity,
-                child: _ImageWithBadge(url: imageUrl, badge: badge),
+                child: _ImageWithBadge(
+                  url: imageUrl,
+                  badge: badge,
+                ),
               ),
               Expanded(
                 child: Padding(
@@ -86,7 +89,10 @@ class RecipeCard extends StatelessWidget {
 }
 
 class _ImageWithBadge extends StatelessWidget {
-  const _ImageWithBadge({this.url, this.badge});
+  const _ImageWithBadge({
+    this.url,
+    this.badge,
+  });
 
   final String? url;
   final Widget? badge;
@@ -100,16 +106,26 @@ class _ImageWithBadge extends StatelessWidget {
       children: [
         if (u == null || u.isEmpty)
           Container(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: const Icon(Icons.restaurant_menu, size: 22),
+            color: Theme.of(context)
+                .colorScheme
+                .surfaceContainerHighest,
+            child: const Icon(
+              Icons.restaurant_menu,
+              size: 22,
+            ),
           )
         else
           Image.network(
             u,
             fit: BoxFit.cover,
             errorBuilder: (_, __, ___) => Container(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              child: const Icon(Icons.restaurant_menu, size: 22),
+              color: Theme.of(context)
+                  .colorScheme
+                  .surfaceContainerHighest,
+              child: const Icon(
+                Icons.restaurant_menu,
+                size: 22,
+              ),
             ),
           ),
         if (badge != null)
@@ -123,9 +139,13 @@ class _ImageWithBadge extends StatelessWidget {
   }
 }
 
-/// Small standard “pill” you can reuse for status (safe/swap/blocked) if you want.
+/// Small standard “pill” you can reuse for status (safe / swap / blocked)
 class RecipeStatusPill extends StatelessWidget {
-  const RecipeStatusPill({super.key, required this.text, this.icon});
+  const RecipeStatusPill({
+    super.key,
+    required this.text,
+    this.icon,
+  });
 
   final String text;
   final IconData? icon;
@@ -142,7 +162,11 @@ class RecipeStatusPill extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (icon != null) ...[
-            Icon(icon, size: 16, color: AppColors.textPrimary),
+            Icon(
+              icon,
+              size: 16,
+              color: AppColors.textPrimary,
+            ),
             const SizedBox(width: 4),
           ],
           Text(

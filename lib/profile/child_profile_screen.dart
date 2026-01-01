@@ -69,7 +69,10 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     }
     if (!has) allergies.clear();
 
-    return '$name|$dob|$has|${allergies.join(",")}';
+    // ✅ include childKey so hydration is stable across migrations
+    final ck = (child['childKey'] ?? '').toString().trim();
+
+    return '$name|$dob|$has|${allergies.join(",")}|$ck';
   }
 
   void _applyToForm(Map<String, dynamic> child) {
@@ -105,7 +108,16 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       ..sort();
   }
 
-  Future<void> _save(List children) async {
+  /// ✅ Stable childKey for firstFoods + any per-child data
+  /// - If creating: generate now
+  /// - If editing and missing: generate and persist on save
+  String _ensureChildKeyFromExisting(Map<String, dynamic> child) {
+    final existing = (child['childKey'] ?? '').toString().trim();
+    if (existing.isNotEmpty) return existing;
+    return FirebaseFirestore.instance.collection('_').doc().id;
+  }
+
+  Future<void> _save(List children, Map<String, dynamic> currentChild) async {
     final doc = _userDoc();
     if (doc == null) return;
 
@@ -119,6 +131,7 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       return;
     }
 
+    // ---- allergy change detection (same as before) ----
     final prevHas = _loadedSnapshot?['hasAllergies'] == true;
     final prevRaw = _loadedSnapshot?['allergies'];
     final prevAllergies = <String>[];
@@ -138,7 +151,14 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
         prevHas != _hasAllergies ||
             prevAllergies.join(',') != newAllergies.join(',');
 
+    // ✅ stable key (important)
+    final childKey = _isCreate
+        ? FirebaseFirestore.instance.collection('_').doc().id
+        : _ensureChildKeyFromExisting(currentChild);
+
     final updated = {
+      // ✅ persist childKey
+      'childKey': childKey,
       'name': name,
       'dob': dob,
       'hasAllergies': _hasAllergies,
@@ -189,7 +209,7 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     }
   }
 
-  Future<void> _delete(List children) async {
+  Future<void> _delete(List children, Map<String, dynamic> currentChild) async {
     final doc = _userDoc();
     if (doc == null) return;
 
@@ -220,6 +240,16 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     );
 
     if (confirm != true) return;
+
+    // ✅ delete firstFoods doc for this child (by childKey)
+    final childKey = (currentChild['childKey'] ?? '').toString().trim();
+    if (childKey.isNotEmpty) {
+      try {
+        await doc.collection('firstFoods').doc(childKey).delete();
+      } catch (_) {
+        // ignore (doc might not exist)
+      }
+    }
 
     children.removeAt(idx);
 
@@ -256,147 +286,158 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       body: doc == null
           ? const Center(child: Text('Not logged in'))
           : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: doc.snapshots(),
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text('Firestore error: ${snap.error}'),
-            );
-          }
-
-          final data = snap.data?.data() ?? {};
-          final children = (data['children'] as List?) ?? [];
-
-          Map<String, dynamic> child;
-          if (_isCreate) {
-            child = {
-              'name': '',
-              'dob': '',
-              'hasAllergies': false,
-              'allergies': <String>[],
-            };
-          } else {
-            final idx = widget.childIndex!;
-            if (idx < 0 || idx >= children.length) {
-              return const Center(child: Text('Child not found'));
-            }
-            final raw = children[idx];
-            if (raw is! Map) {
-              return const Center(child: Text('Invalid record'));
-            }
-            child = Map<String, dynamic>.from(raw);
-          }
-
-          final fp = _fingerprintOf(child);
-          if (fp != _lastHydratedFingerprint) {
-            _lastHydratedFingerprint = fp;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              setState(() => _applyToForm(child));
-            });
-          }
-
-          final childId = _isCreate ? null : 'child_${widget.childIndex}';
-          final childName = (_nameCtrl.text.trim().isEmpty)
-              ? (child['name'] ?? 'Child').toString()
-              : _nameCtrl.text.trim();
-
-          return ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              TextField(
-                controller: _nameCtrl,
-                decoration: const InputDecoration(labelText: 'Name'),
-                textInputAction: TextInputAction.next,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _dobCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'DOB',
-                  hintText: 'e.g. 2021-06-14 or 14/06/2021',
-                ),
-                textInputAction: TextInputAction.done,
-              ),
-              const SizedBox(height: 18),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Has allergies'),
-                value: _hasAllergies,
-                onChanged: _saving
-                    ? null
-                    : (v) {
-                  setState(() {
-                    _hasAllergies = v;
-                    if (!v) _selectedAllergies.clear();
-                  });
-                },
-              ),
-              if (_hasAllergies) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Allergies',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: 8),
-                ..._allergyOptions.map((a) {
-                  final selected = _selectedAllergies.contains(a);
-                  return CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(AllergyKeys.label(a)),
-                    value: selected,
-                    onChanged: _saving
-                        ? null
-                        : (v) {
-                      setState(() {
-                        if (v == true) {
-                          if (!selected) _selectedAllergies.add(a);
-                        } else {
-                          _selectedAllergies.remove(a);
-                        }
-                        _selectedAllergies.sort();
-                      });
-                    },
+              stream: doc.snapshots(),
+              builder: (context, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snap.hasError) {
+                  return Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text('Firestore error: ${snap.error}'),
                   );
-                }),
-              ],
+                }
 
-              const SizedBox(height: 24),
-              SizedBox(
-                height: 48,
-                child: ElevatedButton(
-                  onPressed: _saving ? null : () => _save(children),
-                  child: Text(_saving ? 'SAVING…' : (_isCreate ? 'ADD' : 'SAVE')),
-                ),
-              ),
+                final data = snap.data?.data() ?? {};
+                final children = (data['children'] as List?) ?? [];
 
-              // ✅ moved under "Save"
-              if (childId != null) ...[
-                const SizedBox(height: 12),
-                FirstFoodsOverviewTile(
-                  childId: childId,
-                  childName: childName,
-                ),
-              ],
+                Map<String, dynamic> child;
+                if (_isCreate) {
+                  child = {
+                    // ⚠️ do NOT generate childKey here, only on Save
+                    'name': '',
+                    'dob': '',
+                    'hasAllergies': false,
+                    'allergies': <String>[],
+                  };
+                } else {
+                  final idx = widget.childIndex!;
+                  if (idx < 0 || idx >= children.length) {
+                    return const Center(child: Text('Child not found'));
+                  }
+                  final raw = children[idx];
+                  if (raw is! Map) {
+                    return const Center(child: Text('Invalid record'));
+                  }
+                  child = Map<String, dynamic>.from(raw);
+                }
 
-              if (!_isCreate) ...[
-                const SizedBox(height: 12),
-                SizedBox(
-                  height: 48,
-                  child: OutlinedButton(
-                    onPressed: _saving ? null : () => _delete(children),
-                    child: const Text('DELETE CHILD'),
-                  ),
-                ),
-              ],
-            ],
-          );
-        },
-      ),
+                final fp = _fingerprintOf(child);
+                if (fp != _lastHydratedFingerprint) {
+                  _lastHydratedFingerprint = fp;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    setState(() => _applyToForm(child));
+                  });
+                }
+
+                // ✅ stable id for First Foods (only if exists)
+                final childKey = (child['childKey'] ?? '').toString().trim();
+
+                final childName = (_nameCtrl.text.trim().isEmpty)
+                    ? (child['name'] ?? 'Child').toString()
+                    : _nameCtrl.text.trim();
+
+                return ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    TextField(
+                      controller: _nameCtrl,
+                      decoration: const InputDecoration(labelText: 'Name'),
+                      textInputAction: TextInputAction.next,
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _dobCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'DOB',
+                        hintText: 'e.g. 2021-06-14 or 14/06/2021',
+                      ),
+                      textInputAction: TextInputAction.done,
+                    ),
+                    const SizedBox(height: 18),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Has allergies'),
+                      value: _hasAllergies,
+                      onChanged: _saving
+                          ? null
+                          : (v) {
+                              setState(() {
+                                _hasAllergies = v;
+                                if (!v) _selectedAllergies.clear();
+                              });
+                            },
+                    ),
+                    if (_hasAllergies) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Allergies',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      ..._allergyOptions.map((a) {
+                        final selected = _selectedAllergies.contains(a);
+                        return CheckboxListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(AllergyKeys.label(a)),
+                          value: selected,
+                          onChanged: _saving
+                              ? null
+                              : (v) {
+                                  setState(() {
+                                    if (v == true) {
+                                      if (!selected) _selectedAllergies.add(a);
+                                    } else {
+                                      _selectedAllergies.remove(a);
+                                    }
+                                    _selectedAllergies.sort();
+                                  });
+                                },
+                        );
+                      }),
+                    ],
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      height: 48,
+                      child: ElevatedButton(
+                        onPressed: _saving ? null : () => _save(children, child),
+                        child: Text(
+                          _saving ? 'SAVING…' : (_isCreate ? 'ADD' : 'SAVE'),
+                        ),
+                      ),
+                    ),
+
+                    // ✅ moved under "Save"
+                    // ✅ use childKey (stable) instead of child_{index}
+                    if (!_isCreate) ...[
+                      const SizedBox(height: 12),
+                      if (childKey.isNotEmpty)
+                        FirstFoodsOverviewTile(
+                          childId: childKey,
+                          childName: childName,
+                        )
+                      else
+                        const Text(
+                          'Save once to set up First Foods tracking.',
+                        ),
+                    ],
+
+                    if (!_isCreate) ...[
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        height: 48,
+                        child: OutlinedButton(
+                          onPressed:
+                              _saving ? null : () => _delete(children, child),
+                          child: const Text('DELETE CHILD'),
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
+            ),
     );
   }
 }

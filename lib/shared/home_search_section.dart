@@ -1,6 +1,8 @@
 // lib/shared/home_search_section.dart
+import 'dart:ui' show FontVariation;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import '../theme/app_theme.dart';
 
 class QuickActionItem {
   final String label;
@@ -53,28 +55,29 @@ class HomeSearchSection extends StatelessWidget {
         children: [
           // Optional greeting (Home only)
           if (showGreeting && greetingName != null) ...[
-  Text(
-    'Hey, $greetingName!',
-    style: const TextStyle(
-      fontSize: 19,
-      fontWeight: FontWeight.w400, // regular
-      color: Colors.white70, // 80% white
-    ),
-  ),
-  const SizedBox(height: 2), // ✅ exact gap
-] else if (showGreeting) ...[
-  const SizedBox(height: 6),
-],
+            Text(
+              'Hey, $greetingName!',
+              style: const TextStyle(
+                fontSize: 21,
+                fontWeight: FontWeight.w400,
+                color: Colors.white70,
+              ),
+            ),
+            const SizedBox(height: 0),
+          ] else if (showGreeting) ...[
+            const SizedBox(height: 6),
+          ],
+
           // Heading
           const Text(
-  'What do you feel like eating?',
-  style: TextStyle(
-    fontSize: 24,
-    fontWeight: FontWeight.w800, // extra bold
-    color: Colors.white, // 100% white
-    height: 1.2,
-  ),
-),
+            'What do you feel like eating?',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              height: 1.2,
+            ),
+          ),
 
           const SizedBox(height: 16),
 
@@ -94,19 +97,31 @@ class HomeSearchSection extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
+                    // ✅ SEARCH ICON ON THE LEFT
+                    const Icon(
+                      Icons.search,
+                      size: 30,
+                      color: iconGrey,
+                    ),
+
+                    const SizedBox(width: 12),
+
                     Expanded(
                       child: Text(
                         'Search recipes or by ingredients',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              color: pillText,
-                              fontWeight: FontWeight.w700,
-                            ),
+                        style: const TextStyle(
+                          fontFamily: 'Montserrat',
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          fontVariations: [FontVariation('wght', 600)],
+                          height: 1.0,
+                          letterSpacing: 0,
+                          color: AppColors.brandDark,
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    const Icon(Icons.search, size: 30, color: iconGrey),
                   ],
                 ),
               ),

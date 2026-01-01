@@ -29,6 +29,10 @@ class TodayMealPlanSection extends StatelessWidget {
     /// ✅ Home-only UI (accordion style like the mock)
     this.homeAccordion = false,
 
+    /// ✅ NEW: render the Home accordion UI, but keep ALL sections expanded.
+    /// (Perfect for PlansHub where you want the Home styling but always open.)
+    this.homeAlwaysExpanded = false,
+
     // ✅ Editable mode (optional)
     this.onInspireSlot,
     this.onChooseSlot,
@@ -70,6 +74,9 @@ class TodayMealPlanSection extends StatelessWidget {
   /// Home-only accordion layout
   final bool homeAccordion;
 
+  /// Home accordion but all sections expanded
+  final bool homeAlwaysExpanded;
+
   // ✅ Optional callbacks to enable editing controls
   final Future<void> Function(String slot)? onInspireSlot;
   final Future<void> Function(String slot)? onChooseSlot;
@@ -98,7 +105,6 @@ class TodayMealPlanSection extends StatelessWidget {
   int _clampWght(int v) => v.clamp(100, 900);
 
   FontWeight _fontWeightFromWght(int w) {
-    // 100..900 -> w100..w900
     final step = (w / 100).round().clamp(1, 9);
     switch (step) {
       case 1:
@@ -177,8 +183,6 @@ class TodayMealPlanSection extends StatelessWidget {
     return favoriteIds.contains(recipeId);
   }
 
-  /// Normalise slot keys so the widget works across Firestore formats.
-  /// snack_1 -> snack1, snack_2 -> snack2
   String _normaliseSlotKey(String key) {
     final k = key.trim().toLowerCase();
     if (k == 'snack_1' ||
@@ -296,16 +300,20 @@ class TodayMealPlanSection extends StatelessWidget {
     required bool expanded,
     required VoidCallback onToggle,
     required List<Widget> expandedChildren,
+    required bool showChevron,
   }) {
     final theme = Theme.of(context);
 
     final base = (theme.textTheme.titleLarge ?? const TextStyle());
 
-    // ✅ Adjustable size + weight for BREAKFAST/LUNCH/DINNER/SNACKS headers
     final wght = _clampWght(homeSectionTitleWeight ?? 800);
+
+    // ✅ USE the param (you weren’t using it before)
+    final fontSize = homeSectionTitleSize ?? 21;
+
     final titleStyle = base.copyWith(
       color: Colors.white,
-      fontSize: 21,
+      fontSize: fontSize,
       fontWeight: _fontWeightFromWght(wght),
       fontVariations: [FontVariation('wght', wght.toDouble())],
       letterSpacing: 1.25,
@@ -315,15 +323,15 @@ class TodayMealPlanSection extends StatelessWidget {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeOut,
-      // ✅ 4px spacing between bars
-      margin: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 4),
+      margin: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 8),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(12),
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: onToggle,
+        // ✅ If we’re always expanded, tapping shouldn’t collapse
+        onTap: showChevron ? onToggle : null,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
@@ -339,14 +347,16 @@ class TodayMealPlanSection extends StatelessWidget {
                       color: Colors.white.withOpacity(0.25),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Icon(
-                    expanded
-                        ? Icons.keyboard_arrow_up_rounded
-                        : Icons.keyboard_arrow_down_rounded,
-                    color: Colors.white,
-                    size: 28,
-                  ),
+                  if (showChevron) ...[
+                    const SizedBox(width: 10),
+                    Icon(
+                      expanded
+                          ? Icons.keyboard_arrow_up_rounded
+                          : Icons.keyboard_arrow_down_rounded,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ],
                 ],
               ),
               if (expanded) ...[
@@ -374,7 +384,7 @@ class TodayMealPlanSection extends StatelessWidget {
         height: 86,
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
           children: [
@@ -498,12 +508,12 @@ class TodayMealPlanSection extends StatelessWidget {
           : () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
               ),
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(8),
       child: Container(
         height: 86,
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
         ),
         clipBehavior: Clip.antiAlias,
         child: Row(
@@ -598,7 +608,7 @@ class TodayMealPlanSection extends StatelessWidget {
       color: AppColors.brandDark,
       fontWeight: FontWeight.w800,
       fontVariations: const [FontVariation('wght', 800)],
-      letterSpacing: 0.8,
+      letterSpacing: 0,
     );
 
     final btnStyle = OutlinedButton.styleFrom(
@@ -659,12 +669,17 @@ class TodayMealPlanSection extends StatelessWidget {
       lunchBg: _lunchBg,
       dinnerBg: _dinnerBg,
       snacksBg: _snacksBg,
+
+      // ✅ New behaviour switch
+      alwaysExpanded: homeAlwaysExpanded,
+
       buildItem: ({
         required String title,
         required Color bg,
         required bool expanded,
         required VoidCallback onToggle,
         required List<Widget> children,
+        required bool showChevron,
       }) {
         return _homeAccordionItem(
           context: context,
@@ -673,6 +688,7 @@ class TodayMealPlanSection extends StatelessWidget {
           expanded: expanded,
           onToggle: onToggle,
           expandedChildren: children,
+          showChevron: showChevron,
         );
       },
       buildBreakfast: (_) => [
@@ -721,6 +737,8 @@ class TodayMealPlanSection extends StatelessWidget {
   // -----------------------------
   // ORIGINAL (non-home) UI
   // -----------------------------
+  // (unchanged below)
+
   Widget _buildBand({
     required BuildContext context,
     required String title,
@@ -853,7 +871,7 @@ class TodayMealPlanSection extends StatelessWidget {
     final fav = _isFavorited(rid);
 
     return Card(
-      shape: const RoundedRectangleBorder(borderRadius: AppRadii.r12),
+      shape: const RoundedRectangleBorder(borderRadius: AppRadii.r8),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: rid == null
@@ -1162,6 +1180,7 @@ class _HomeAccordionScaffold extends StatefulWidget {
     required this.buildDinner,
     required this.buildSnacks,
     required this.footer,
+    required this.alwaysExpanded,
   });
 
   final Color panelBg;
@@ -1172,12 +1191,15 @@ class _HomeAccordionScaffold extends StatefulWidget {
   final Color dinnerBg;
   final Color snacksBg;
 
+  final bool alwaysExpanded;
+
   final Widget Function({
     required String title,
     required Color bg,
     required bool expanded,
     required VoidCallback onToggle,
     required List<Widget> children,
+    required bool showChevron,
   }) buildItem;
 
   final List<Widget> Function(bool expanded) buildBreakfast;
@@ -1198,13 +1220,16 @@ class _HomeAccordionScaffoldState extends State<_HomeAccordionScaffold> {
   @override
   void initState() {
     super.initState();
-    _open = _slotForNow();
 
-    _timer = Timer.periodic(const Duration(minutes: 10), (_) {
-      final next = _slotForNow();
-      if (!mounted) return;
-      if (next != _open) setState(() => _open = next);
-    });
+    if (!widget.alwaysExpanded) {
+      _open = _slotForNow();
+
+      _timer = Timer.periodic(const Duration(minutes: 10), (_) {
+        final next = _slotForNow();
+        if (!mounted) return;
+        if (next != _open) setState(() => _open = next);
+      });
+    }
   }
 
   @override
@@ -1222,13 +1247,20 @@ class _HomeAccordionScaffoldState extends State<_HomeAccordionScaffold> {
   }
 
   void _toggle(String slot) {
+    if (widget.alwaysExpanded) return;
     setState(() => _open = (_open == slot) ? '' : slot);
+  }
+
+  bool _isOpen(String slot) {
+    if (widget.alwaysExpanded) return true;
+    return _open == slot;
   }
 
   @override
   Widget build(BuildContext context) {
+    final showChevron = !widget.alwaysExpanded;
+
     return Container(
-      // ✅ light grey background inside the clipped panel (the outer green clip happens in HomeScreen)
       color: widget.panelBg,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1237,30 +1269,34 @@ class _HomeAccordionScaffoldState extends State<_HomeAccordionScaffold> {
           widget.buildItem(
             title: 'BREAKFAST',
             bg: widget.breakfastBg,
-            expanded: _open == 'breakfast',
+            expanded: _isOpen('breakfast'),
             onToggle: () => _toggle('breakfast'),
-            children: widget.buildBreakfast(_open == 'breakfast'),
+            children: widget.buildBreakfast(_isOpen('breakfast')),
+            showChevron: showChevron,
           ),
           widget.buildItem(
             title: 'LUNCH',
             bg: widget.lunchBg,
-            expanded: _open == 'lunch',
+            expanded: _isOpen('lunch'),
             onToggle: () => _toggle('lunch'),
-            children: widget.buildLunch(_open == 'lunch'),
+            children: widget.buildLunch(_isOpen('lunch')),
+            showChevron: showChevron,
           ),
           widget.buildItem(
             title: 'DINNER',
             bg: widget.dinnerBg,
-            expanded: _open == 'dinner',
+            expanded: _isOpen('dinner'),
             onToggle: () => _toggle('dinner'),
-            children: widget.buildDinner(_open == 'dinner'),
+            children: widget.buildDinner(_isOpen('dinner')),
+            showChevron: showChevron,
           ),
           widget.buildItem(
             title: 'SNACKS',
             bg: widget.snacksBg,
-            expanded: _open == 'snacks',
+            expanded: _isOpen('snacks'),
             onToggle: () => _toggle('snacks'),
-            children: widget.buildSnacks(_open == 'snacks'),
+            children: widget.buildSnacks(_isOpen('snacks')),
+            showChevron: showChevron,
           ),
           widget.footer,
         ],

@@ -136,7 +136,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   leading: (imageUrl == null || imageUrl.trim().isEmpty)
                       ? const Icon(Icons.restaurant)
                       : ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(12),
                           child: Image.network(
                             imageUrl,
                             width: 52,

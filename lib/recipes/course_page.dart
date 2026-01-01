@@ -7,6 +7,10 @@ import 'package:flutter/material.dart';
 import 'recipe_detail_screen.dart';
 import 'recipe_repository.dart';
 
+// ✅ reuse shared UI
+import '../app/sub_header_bar.dart';
+import '../shared/search_pill.dart';
+
 class CoursePage extends StatefulWidget {
   const CoursePage({
     super.key,
@@ -21,10 +25,7 @@ class CoursePage extends StatefulWidget {
   final String title;
   final String subtitle;
 
-  /// Optional: can be passed in by a parent that already loaded recipes.
   final List<Map<String, dynamic>>? recipes;
-
-  /// Optional: can be passed in by a parent that already loaded favourites.
   final Set<int>? favoriteIds;
 
   @override
@@ -37,7 +38,11 @@ class _CoursePageState extends State<CoursePage> {
 
   List<Map<String, dynamic>> _recipes = const [];
 
-  // Favorites (if not provided)
+  // 🔍 search
+  final _searchCtrl = TextEditingController();
+  final _searchFocus = FocusNode();
+
+  // Favorites
   StreamSubscription<User?>? _authSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
   final Set<int> _favoriteIds = <int>{};
@@ -53,6 +58,8 @@ class _CoursePageState extends State<CoursePage> {
   void dispose() {
     _authSub?.cancel();
     _favSub?.cancel();
+    _searchCtrl.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -63,10 +70,9 @@ class _CoursePageState extends State<CoursePage> {
     });
 
     try {
-      // 1) Recipes
-      final provided = widget.recipes;
-      if (provided != null) {
-        _recipes = provided;
+      // Recipes
+      if (widget.recipes != null) {
+        _recipes = widget.recipes!;
       } else {
         _recipes = await RecipeRepository.ensureRecipesLoaded(
           backgroundRefresh: true,
@@ -74,12 +80,11 @@ class _CoursePageState extends State<CoursePage> {
         );
       }
 
-      // 2) Favorites
-      final favProvided = widget.favoriteIds;
-      if (favProvided != null) {
+      // Favorites
+      if (widget.favoriteIds != null) {
         _favoriteIds
           ..clear()
-          ..addAll(favProvided);
+          ..addAll(widget.favoriteIds!);
         _loadingFavs = false;
       } else {
         _wireFavorites();
@@ -100,19 +105,14 @@ class _CoursePageState extends State<CoursePage> {
     _authSub?.cancel();
     _favSub?.cancel();
 
-    setState(() {
-      _loadingFavs = true;
-      _favoriteIds.clear();
-    });
-
     _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
       _favSub?.cancel();
 
       if (user == null) {
         if (!mounted) return;
         setState(() {
-          _loadingFavs = false;
           _favoriteIds.clear();
+          _loadingFavs = false;
         });
         return;
       }
@@ -122,32 +122,22 @@ class _CoursePageState extends State<CoursePage> {
           .doc(user.uid)
           .collection('favorites');
 
-      _favSub = col.snapshots().listen(
-        (snap) {
-          final next = <int>{};
-          for (final d in snap.docs) {
-            final data = d.data();
-            final raw = data['recipeId'];
-            final id = (raw is int) ? raw : int.tryParse('$raw') ?? -1;
-            if (id > 0) next.add(id);
-          }
+      _favSub = col.snapshots().listen((snap) {
+        final next = <int>{};
+        for (final d in snap.docs) {
+          final raw = d.data()['recipeId'];
+          final id = (raw is int) ? raw : int.tryParse('$raw') ?? -1;
+          if (id > 0) next.add(id);
+        }
 
-          if (!mounted) return;
-          setState(() {
-            _favoriteIds
-              ..clear()
-              ..addAll(next);
-            _loadingFavs = false;
-          });
-        },
-        onError: (_) {
-          if (!mounted) return;
-          setState(() {
-            _loadingFavs = false;
-            _favoriteIds.clear();
-          });
-        },
-      );
+        if (!mounted) return;
+        setState(() {
+          _favoriteIds
+            ..clear()
+            ..addAll(next);
+          _loadingFavs = false;
+        });
+      });
     });
   }
 
@@ -155,76 +145,44 @@ class _CoursePageState extends State<CoursePage> {
     if (v is int) return v;
     if (v is num) return v.toInt();
     if (v is String) return int.tryParse(v.trim());
-    return int.tryParse('${v ?? ''}');
+    return null;
   }
 
   String _titleOf(Map<String, dynamic> r) {
     final t = r['title'];
     if (t is Map && t['rendered'] is String) {
-      final s = (t['rendered'] as String).trim();
-      if (s.isNotEmpty) {
-        return s.replaceAll('&#038;', '&').replaceAll('&amp;', '&');
-      }
+      return t['rendered']
+          .toString()
+          .replaceAll('&#038;', '&')
+          .replaceAll('&amp;', '&')
+          .trim();
     }
     return 'Untitled';
   }
 
   String? _thumbOf(Map<String, dynamic> r) {
     final recipe = r['recipe'];
-    if (recipe is Map<String, dynamic>) {
-      final url = recipe['image_url'];
-      if (url is String && url.trim().isNotEmpty) return url.trim();
+    if (recipe is Map && recipe['image_url'] is String) {
+      final url = recipe['image_url'].toString().trim();
+      if (url.isNotEmpty) return url;
     }
     return null;
   }
 
-  /// Robust-ish course matching:
-  /// - First, tries taxonomy id arrays (wprm_course / wprm_courses) if present and slug map exists in recipe data.
-  /// - Then falls back to checking string-y fields inside recipe map.
   bool _matchesCourse(Map<String, dynamic> r, String slug) {
-    final s = slug.trim().toLowerCase();
-    if (s.isEmpty) return false;
-
-    // Common taxonomy id arrays
-    final a = r['wprm_course'];
-    final b = r['wprm_courses'];
-
-    // Sometimes cached recipe data contains a "taxonomies" or "recipe" structure with slugs/names.
-    // We'll check a few common places for string course slugs.
-    final recipe = r['recipe'];
-    if (recipe is Map) {
-      final rm = Map<String, dynamic>.from(recipe.cast<String, dynamic>());
-
-      dynamic maybeCourses = rm['course'] ?? rm['courses'] ?? rm['wprm_course'] ?? rm['wprm_courses'];
-      if (maybeCourses is String && maybeCourses.toLowerCase().contains(s)) return true;
-
-      if (maybeCourses is List) {
-        for (final x in maybeCourses) {
-          final xs = x.toString().toLowerCase();
-          if (xs == s || xs.contains(s)) return true;
-        }
-      }
-    }
-
-    // If the WP v2 taxonomy ids exist and the recipe cache includes term objects somewhere,
-    // you can enhance this later by mapping slug -> termId. For now, we use string fallback.
-    if (a is List || b is List) {
-      // We don't have reliable termId->slug mapping here without another request,
-      // so we do not force-filter by ids only (would risk empty list).
-      // Returning false here could hide everything; so we rely on string fallback above.
-    }
-
-    // Last resort: search whole record for slug token (cheap but effective)
-    final hay = r.toString().toLowerCase();
-    return hay.contains('"$s"') || hay.contains(s);
+    final s = slug.toLowerCase();
+    return r.toString().toLowerCase().contains(s);
   }
 
   List<Map<String, dynamic>> _filtered() {
-    final out = <Map<String, dynamic>>[];
-    for (final r in _recipes) {
-      if (_matchesCourse(r, widget.courseSlug)) out.add(r);
-    }
-    return out;
+    final base = _recipes.where((r) => _matchesCourse(r, widget.courseSlug));
+    final q = _searchCtrl.text.trim().toLowerCase();
+
+    if (q.isEmpty) return base.toList();
+
+    return base
+        .where((r) => _titleOf(r).toLowerCase().contains(q))
+        .toList();
   }
 
   @override
@@ -232,15 +190,13 @@ class _CoursePageState extends State<CoursePage> {
     final theme = Theme.of(context);
 
     if (_loading) {
-      return Scaffold(
-        appBar: AppBar(title: Text(widget.title)),
-        body: const Center(child: CircularProgressIndicator()),
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
       );
     }
 
     if (_error != null) {
       return Scaffold(
-        appBar: AppBar(title: Text(widget.title)),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -249,10 +205,7 @@ class _CoursePageState extends State<CoursePage> {
               children: [
                 Text(_error!, textAlign: TextAlign.center),
                 const SizedBox(height: 12),
-                ElevatedButton(
-                  onPressed: _init,
-                  child: const Text('Retry'),
-                ),
+                ElevatedButton(onPressed: _init, child: const Text('Retry')),
               ],
             ),
           ),
@@ -264,114 +217,146 @@ class _CoursePageState extends State<CoursePage> {
 
     return Scaffold(
       backgroundColor: const Color(0xFFECF3F4),
-      appBar: AppBar(title: Text(widget.title)),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
+      body: Column(
         children: [
-          Text(widget.subtitle, style: theme.textTheme.bodyMedium),
-          const SizedBox(height: 14),
+          // ✅ Sub header
+          SubHeaderBar(title: widget.title),
 
-          if (_loadingFavs)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Row(
-                children: const [
-                  SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+          // ✅ Search pill
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: SearchPill(
+              controller: _searchCtrl,
+              focusNode: _searchFocus,
+              hintText: 'Search recipes',
+              onChanged: (_) => setState(() {}),
+              onSubmitted: (_) {},
+              onClear: () => setState(() {}),
+            ),
+          ),
+
+          // ✅ Content
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              children: [
+                Text(widget.subtitle, style: theme.textTheme.bodyMedium),
+                const SizedBox(height: 14),
+
+                if (_loadingFavs)
+                  Row(
+                    children: const [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 10),
+                      Text('Loading favourites…'),
+                    ],
                   ),
-                  SizedBox(width: 10),
-                  Text('Loading favourites…'),
-                ],
-              ),
-            ),
 
-          if (list.isEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 30),
-              child: Center(
-                child: Text(
-                  'No recipes found for "${widget.title}" yet.',
-                  style: theme.textTheme.bodyMedium,
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ),
-
-          ...list.map((r) {
-            final id = _toInt(r['id']);
-            final title = _titleOf(r);
-            final thumb = _thumbOf(r);
-            final isFav = id != null && _favoriteIds.contains(id);
-
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Material(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                clipBehavior: Clip.antiAlias,
-                child: InkWell(
-                  onTap: id == null
-                      ? null
-                      : () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => RecipeDetailScreen(id: id),
-                            ),
-                          ),
-                  child: SizedBox(
-                    height: 92,
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 120,
-                          height: double.infinity,
-                          child: thumb == null
-                              ? const Center(child: Icon(Icons.restaurant_menu))
-                              : Image.network(
-                                  thumb,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => const Center(
-                                    child: Icon(Icons.restaurant_menu),
-                                  ),
-                                ),
-                        ),
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    title,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: theme.textTheme.titleSmall?.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ),
-                                if (isFav)
-                                  const Padding(
-                                    padding: EdgeInsets.only(left: 8, top: 2),
-                                    child: Icon(
-                                      Icons.star_rounded,
-                                      size: 18,
-                                      color: Colors.amber,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
+                if (list.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 30),
+                    child: Center(
+                      child: Text(
+                        'No recipes found for "${widget.title}" yet.',
+                        textAlign: TextAlign.center,
+                      ),
                     ),
                   ),
-                ),
-              ),
-            );
-          }),
+
+                ...list.map((r) {
+                  final id = _toInt(r['id']);
+                  final title = _titleOf(r);
+                  final thumb = _thumbOf(r);
+                  final isFav =
+                      id != null && _favoriteIds.contains(id);
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Material(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: id == null
+                            ? null
+                            : () => Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        RecipeDetailScreen(id: id),
+                                  ),
+                                ),
+                        child: SizedBox(
+                          height: 92,
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 120,
+                                height: double.infinity,
+                                child: thumb == null
+                                    ? const Center(
+                                        child:
+                                            Icon(Icons.restaurant_menu),
+                                      )
+                                    : Image.network(
+                                        thumb,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) =>
+                                            const Center(
+                                          child: Icon(
+                                              Icons.restaurant_menu),
+                                        ),
+                                      ),
+                              ),
+                              Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                      14, 12, 14, 12),
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          title,
+                                          maxLines: 2,
+                                          overflow:
+                                              TextOverflow.ellipsis,
+                                          style: theme.textTheme
+                                              .titleSmall
+                                              ?.copyWith(
+                                                fontWeight:
+                                                    FontWeight.w700,
+                                              ),
+                                        ),
+                                      ),
+                                      if (isFav)
+                                        const Padding(
+                                          padding: EdgeInsets.only(
+                                              left: 8, top: 2),
+                                          child: Icon(
+                                            Icons.star_rounded,
+                                            size: 18,
+                                            color: Colors.amber,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
         ],
       ),
     );

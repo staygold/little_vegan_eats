@@ -275,14 +275,14 @@ class MealSlotThumb extends StatelessWidget {
         height: size,
         decoration: BoxDecoration(
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(8),
         ),
         child: const Icon(Icons.image, size: 22),
       );
     }
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(8),
       child: Image.network(
         u,
         width: size,

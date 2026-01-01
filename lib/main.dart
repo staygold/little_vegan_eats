@@ -10,8 +10,8 @@ import 'app/app_shell.dart';
 import 'meal_plan/meal_plan_screen.dart';
 import 'recipes/recipes_bootstrap_gate.dart';
 
-// ✅ global no-scrollbar behaviour
-import 'app/no_scrollbar_behavior.dart';
+// ✅ GLOBAL: clamp scroll (no bounce / no pull-down reveal) + no glow (+ optional no scrollbar)
+import 'app/no_bounce_scroll_behavior.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,7 +19,7 @@ Future<void> main() async {
   // ✅ Status bar: let UI draw behind it, make icons white
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent, // iOS ignores colour; must be transparent
+      statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light, // Android icons
       statusBarBrightness: Brightness.dark, // iOS icons (dark bg => light icons)
     ),
@@ -114,7 +114,7 @@ class MyApp extends StatelessWidget {
         ),
       ),
 
-      // 📋 List tiles (also stop ListTile from inheriting weird “onSurfaceVariant”)
+      // 📋 List tiles
       listTileTheme: const ListTileThemeData(
         contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         textColor: brandDark,
@@ -187,8 +187,8 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(),
 
-      // ✅ GLOBAL: no scrollbar, no overscroll glow
-      scrollBehavior: NoScrollbarBehavior(),
+      // ✅ GLOBAL: no bounce / no pull-down reveal (macOS trackpad-safe) + no glow
+      scrollBehavior: const NoBounceScrollBehavior(),
 
       initialRoute: '/',
       routes: {

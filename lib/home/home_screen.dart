@@ -7,6 +7,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../recipes/recipe_repository.dart';
 
+import '../recipes/recipe_search_screen.dart';
+
+
 // ✅ SAME weekId logic as meal plan
 import '../meal_plan/core/meal_plan_keys.dart';
 
@@ -226,14 +229,15 @@ class _HomeScreenState extends State<HomeScreen> {
   // ---------- NAV ----------
 
   void _openSearch(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => const RecipesBootstrapGate(
-          child: RecipeListPage(),
-        ),
+  Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => RecipeSearchScreen(
+        recipes: _recipes,
+        favoriteIds: _favoriteIds,
       ),
-    );
-  }
+    ),
+  );
+}
 
   void _toast(BuildContext context, String msg) {
     ScaffoldMessenger.of(context).showSnackBar(

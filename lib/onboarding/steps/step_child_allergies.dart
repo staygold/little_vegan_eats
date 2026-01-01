@@ -154,7 +154,7 @@ class _StepChildAllergiesState extends State<StepChildAllergies> {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: Theme.of(context).dividerColor),
                 ),
                 child: Text(

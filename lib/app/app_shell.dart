@@ -175,7 +175,7 @@ class _AppShellState extends State<AppShell> {
                   offset: Offset(0, 0),
                   blurRadius: 20,
                   spreadRadius: 0,
-                  color: Color.fromRGBO(4, 66, 70, 0.20),
+                  color: Color.fromRGBO(0, 0, 0, 0.2),
                 ),
               ],
             ),

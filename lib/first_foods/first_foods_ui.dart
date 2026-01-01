@@ -629,3 +629,50 @@ const List<_Food> _firstFoods = [
   _Food('vanilla', 'Vanilla'),
   _Food('water', 'Water (sips)'),
 ];
+
+class FirstFoodsProgressText extends StatelessWidget {
+  final String childId;
+
+  /// If null, we’ll fall back to the seed list length at runtime.
+  final int? baseTotal;
+
+  const FirstFoodsProgressText({
+    super.key,
+    required this.childId,
+    this.baseTotal,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return const SizedBox.shrink();
+
+    final docRef = FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .collection('firstFoods')
+        .doc(childId);
+
+    // ✅ runtime fallback (no const default param issue)
+    final total = baseTotal ?? _firstFoods.length;
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: docRef.snapshots(),
+      builder: (context, snap) {
+        int triedCount = 0;
+        final data = snap.data?.data();
+        final items = (data?['items'] as List?) ?? [];
+
+        for (final it in items) {
+          if (it is! Map) continue;
+          final tries = it['tries'];
+          if (tries is List && tries.any((x) => x == true)) {
+            triedCount += 1;
+          }
+        }
+
+        return Text('$triedCount / $total foods tried');
+      },
+    );
+  }
+}

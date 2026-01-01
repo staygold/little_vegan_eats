@@ -37,36 +37,81 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
     ),
   );
 
-  bool _loading = true;
+  // ✅ In-memory cache so rails feel instant after first load
+  static final Map<String, int> _termIdCacheBySlug = {};
+  static final Map<String, Future<int>> _inflightBySlug = {};
+
+  // We no longer “block” UI on loading
   String? _error;
   int? _termId;
 
   @override
   void initState() {
     super.initState();
-    _loadCollectionTermId();
+
+    final cached = _termIdCacheBySlug[widget.collectionSlug];
+    if (cached != null) {
+      _termId = cached;
+
+      // ✅ Optional: silently refresh in background (no spinner)
+      _refreshTermIdSilently();
+    } else {
+      // ✅ No cached termId yet — load without blocking UI
+      _loadCollectionTermId();
+    }
+  }
+
+  Future<void> _refreshTermIdSilently() async {
+    try {
+      final id = await _fetchTermId(widget.collectionSlug);
+      if (!mounted) return;
+
+      // Only update if it actually changed
+      if (_termId != id) {
+        setState(() => _termId = id);
+      }
+    } catch (_) {
+      // silent refresh failures: ignore (don’t flash errors)
+    }
   }
 
   Future<void> _loadCollectionTermId() async {
     setState(() {
-      _loading = true;
       _error = null;
-      _termId = null;
+      // ✅ don’t set a “loading” state that blocks UI
     });
 
     try {
+      final id = await _fetchTermId(widget.collectionSlug);
+      if (!mounted) return;
+      setState(() => _termId = id);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+    }
+  }
+
+  Future<int> _fetchTermId(String slug) {
+    // ✅ Return cache instantly if we have it
+    final cached = _termIdCacheBySlug[slug];
+    if (cached != null) return Future.value(cached);
+
+    // ✅ De-dupe concurrent requests (multiple rails on one screen)
+    final inflight = _inflightBySlug[slug];
+    if (inflight != null) return inflight;
+
+    final fut = () async {
       final res = await _dio.get(
         'https://littleveganeats.co/wp-json/wp/v2/wprm_collections',
         queryParameters: {
-          'slug': widget.collectionSlug,
+          'slug': slug,
           'per_page': 1,
         },
       );
 
       final data = res.data;
       if (data is! List || data.isEmpty) {
-        throw Exception(
-            'Collection not found for slug "${widget.collectionSlug}"');
+        throw Exception('Collection not found for slug "$slug"');
       }
 
       final obj = data.first;
@@ -76,21 +121,21 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
       final id = _toInt(map['id']);
       if (id == null || id <= 0) throw Exception('Collection term id missing');
 
-      if (!mounted) return;
-      setState(() {
-        _termId = id;
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
-    }
+      // ✅ Save in cache
+      _termIdCacheBySlug[slug] = id;
+      return id;
+    }();
+
+    _inflightBySlug[slug] = fut;
+    fut.whenComplete(() {
+      // ✅ clean up inflight map
+      _inflightBySlug.remove(slug);
+    });
+
+    return fut;
   }
 
-  int? _toInt(dynamic v) {
+  static int? _toInt(dynamic v) {
     if (v is int) return v;
     if (v is num) return v.toInt();
     if (v is String) return int.tryParse(v.trim());
@@ -148,11 +193,72 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
     return list;
   }
 
+  Widget _skeletonRail({
+    required TextStyle sectionTitleStyle,
+    required double railH,
+    required double cardW,
+    required double titleBlockH,
+  }) {
+    // ✅ Instant placeholder (no spinner)
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 18, 4, 10),
+          child: Row(
+            children: [
+              Expanded(child: Text(widget.title, style: sectionTitleStyle)),
+              if (_error != null)
+                TextButton(
+                  onPressed: _loadCollectionTermId,
+                  child: const Text('Retry'),
+                ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: railH,
+          child: ListView.separated(
+            padding: const EdgeInsets.only(left: 16, right: 12),
+            scrollDirection: Axis.horizontal,
+            physics: const BouncingScrollPhysics(),
+            itemCount: 5,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (_, __) {
+              return SizedBox(
+                width: cardW,
+                height: railH,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          color: Colors.black.withOpacity(0.06),
+                        ),
+                      ),
+                      SizedBox(
+                        height: titleBlockH,
+                        child: Container(
+                          color: Colors.black.withOpacity(0.04),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 6),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // ✅ Match "HERE'S SOME IDEAS FOR TODAY" style
     final sectionTitleStyle =
         (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
@@ -162,64 +268,12 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
       height: 1.0,
     );
 
-    // ✅ Match the lorem line style used under recipe title in accordion
     final cardTextStyle =
         (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
       color: AppColors.textPrimary.withOpacity(0.85),
       fontWeight: FontWeight.w600,
       height: 1.25,
     );
-
-    if (_loading) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
-        child: Row(
-          children: [
-            Expanded(child: Text(widget.title, style: sectionTitleStyle)),
-            const SizedBox(width: 10),
-            const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (_error != null) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text('${widget.title} (couldn’t load)',
-                  style: sectionTitleStyle),
-            ),
-            TextButton(
-              onPressed: _loadCollectionTermId,
-              child: const Text('Retry'),
-            ),
-          ],
-        ),
-      );
-    }
-
-    final all = _filteredRecipes();
-    final rail = all.take(5).toList();
-
-    if (rail.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
-        child: Row(
-          children: [
-            Expanded(child: Text(widget.title, style: sectionTitleStyle)),
-            const SizedBox(width: 10),
-            Text('No recipes yet', style: theme.textTheme.bodySmall),
-          ],
-        ),
-      );
-    }
 
     // ✅ Make cards less wide (more square / 4:3 feel)
     final screenW = MediaQuery.of(context).size.width;
@@ -238,6 +292,32 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
 
     final cacheW = requestW;
     final cacheH = requestH;
+
+    // ✅ If we don’t have the termId yet, render skeleton instantly
+    if (_termId == null) {
+      return _skeletonRail(
+        sectionTitleStyle: sectionTitleStyle,
+        railH: railH,
+        cardW: cardW,
+        titleBlockH: titleBlockH,
+      );
+    }
+
+    final all = _filteredRecipes();
+    final rail = all.take(5).toList();
+
+    if (rail.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
+        child: Row(
+          children: [
+            Expanded(child: Text(widget.title, style: sectionTitleStyle)),
+            const SizedBox(width: 10),
+            Text('No recipes yet', style: theme.textTheme.bodySmall),
+          ],
+        ),
+      );
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -264,14 +344,15 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                   );
                 },
                 child: Text(
-  'VIEW ALL',
-  style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
-    color: AppColors.brandDark,
-    fontWeight: FontWeight.w700,
-    fontVariations: const [FontVariation('wght', 700)],
-    letterSpacing: 0.2,
-  ),
-),
+                  'VIEW ALL',
+                  style: (theme.textTheme.titleMedium ?? const TextStyle())
+                      .copyWith(
+                    color: AppColors.brandDark,
+                    fontWeight: FontWeight.w700,
+                    fontVariations: const [FontVariation('wght', 700)],
+                    letterSpacing: 0.2,
+                  ),
+                ),
               ),
             ],
           ),
@@ -302,7 +383,6 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                 height: railH,
                 child: Material(
                   color: Colors.white,
-                  // ✅ 12px radius
                   borderRadius: BorderRadius.circular(12),
                   clipBehavior: Clip.antiAlias,
                   child: InkWell(
@@ -330,6 +410,7 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                                   cacheWidth: cacheW,
                                   cacheHeight: cacheH,
                                   gaplessPlayback: true,
+                                  // ✅ prevents “pop” if image re-renders
                                   errorBuilder: (_, __, ___) => const Center(
                                     child: Icon(Icons.restaurant_menu),
                                   ),
@@ -347,7 +428,6 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                           ),
                         ),
 
-                        // ✅ Fixed title block
                         SizedBox(
                           height: titleBlockH,
                           child: Padding(
@@ -358,7 +438,6 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                                 title,
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
-                                // ✅ match lorem style
                                 style: cardTextStyle,
                               ),
                             ),
