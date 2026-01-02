@@ -5,8 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../theme/app_theme.dart';
 
-// ✅ Updated Enum: singlePerson -> specificPeople
-enum SuitabilityMode { wholeFamily, allChildren, specificPeople }
+enum SuitabilityMode { wholeFamily, allChildren, singlePerson }
 enum PersonType { adult, child }
 
 class ProfilePerson {
@@ -70,16 +69,20 @@ class RecipeFilterSelection {
 class AllergiesSelection {
   final bool enabled;
   final SuitabilityMode mode;
-  final Set<String> personIds; // ✅ Changed to Set for multi-select
+  final String? personId;
   final bool includeSwaps;
 
   const AllergiesSelection({
     this.enabled = true,
     this.mode = SuitabilityMode.wholeFamily,
-    this.personIds = const {},
+    this.personId,
     this.includeSwaps = false,
   });
 
+  /// Badge count reflects only what's applied:
+  /// 0 if disabled
+  /// 1 if enabled
+  /// +1 if swaps enabled
   int get activeCount {
     if (!enabled) return 0;
     int n = 1;
@@ -90,43 +93,53 @@ class AllergiesSelection {
   AllergiesSelection copyWith({
     bool? enabled,
     SuitabilityMode? mode,
-    Set<String>? personIds,
+    String? personId,
     bool? includeSwaps,
   }) {
     return AllergiesSelection(
       enabled: enabled ?? this.enabled,
       mode: mode ?? this.mode,
-      personIds: personIds ?? this.personIds,
+      personId: personId ?? this.personId,
       includeSwaps: includeSwaps ?? this.includeSwaps,
     );
   }
 }
 
+///
+/// ✅ Single place to customise Filters UI styling.
+/// Edit these constants and your whole filters experience updates.
+///
 class _FStyle {
   static const String font = 'Montserrat';
-  static const Color brand = AppColors.brandDark;
+
+  // Core colours (change these first)
+  static const Color brand = AppColors.brandDark; // main accent
   static const Color sheetBg = Colors.white;
   static const Color pillBg = Colors.white;
-  static const Color border = Color(0x14000000);
-  static const Color muted = Color(0x8C000000);
+  static const Color border = Color(0x14000000); // subtle border
+  static const Color muted = Color(0x8C000000); // 55% black-ish
   static const Color chipBg = AppColors.brandDark;
   static const Color chipText = Colors.white;
 
+  // Radii
   static const double pillRadius = 14;
   static const double chipRadius = 999;
   static const double sheetRadius = 20;
   static const double fieldRadius = 14;
   static const double ctaRadius = 14;
 
+  // Sizes
   static const double pillHeight = 44;
   static const double chipHeight = 34;
   static const double ctaHeight = 48;
 
+  // Spacing
   static const EdgeInsets pillPadding = EdgeInsets.symmetric(horizontal: 14);
   static const EdgeInsets sheetPadding = EdgeInsets.fromLTRB(16, 0, 16, 16);
   static const EdgeInsets fieldPadding = EdgeInsets.symmetric(horizontal: 14, vertical: 4);
   static const EdgeInsets chipPadding = EdgeInsets.symmetric(horizontal: 12);
 
+  // Typography
   static const TextStyle pillLabel = TextStyle(
     fontFamily: font,
     fontSize: 14,
@@ -210,6 +223,7 @@ class _FStyle {
     color: Colors.black,
   );
 
+  // Reusable decorations
   static BoxDecoration pillDecoration() => BoxDecoration(
     borderRadius: BorderRadius.circular(pillRadius),
     border: Border.all(color: border),
@@ -263,20 +277,25 @@ class RecipeFilterBar extends StatelessWidget {
 
   final RecipeFilterSelection filters;
   final AllergiesSelection allergies;
+
   final List<String> courseOptions;
   final List<String> cuisineOptions;
   final List<String> suitableForOptions;
   final List<String> nutritionOptions;
   final List<String> collectionOptions;
+
   final ValueChanged<RecipeFilterSelection> onFiltersApplied;
   final ValueChanged<AllergiesSelection> onAllergiesApplied;
+
   final List<ProfilePerson> adults;
   final List<ProfilePerson> children;
+
   final bool lockCourse;
   final bool lockCollection;
   final bool lockCuisine;
   final bool lockSuitableFor;
   final bool lockNutrition;
+
   final bool householdLoading;
   final String? householdError;
   final VoidCallback? onRetryHousehold;
@@ -288,45 +307,63 @@ class RecipeFilterBar extends StatelessWidget {
     if (a.mode == SuitabilityMode.wholeFamily) return 'Whole family';
     if (a.mode == SuitabilityMode.allChildren) return 'All children';
 
-    // Build label for specific people
-    final names = _allPeople
-        .where((p) => a.personIds.contains(p.id))
-        .map((p) => p.name)
-        .toList();
-    
-    if (names.isEmpty) return 'Nobody selected';
-    if (names.length == 1) return names.first;
-    if (names.length == 2) return '${names[0]} & ${names[1]}';
-    return '${names.length} people';
+    final p = _allPeople.where((x) => x.id == a.personId).toList();
+    if (p.isNotEmpty) return p.first.name;
+    return 'Whole family';
   }
 
   @override
   Widget build(BuildContext context) {
     final filterCount = filters.activeCount;
     final allergyCount = allergies.activeCount;
+
     final chips = <_ChipSpec>[];
 
     if (filters.course != 'All') {
-      chips.add(_ChipSpec(label: filters.course, onClear: () => onFiltersApplied(filters.copyWith(course: 'All'))));
+      chips.add(_ChipSpec(
+        label: filters.course,
+        onClear: () => onFiltersApplied(filters.copyWith(course: 'All')),
+      ));
     }
     if (filters.cuisine != 'All') {
-      chips.add(_ChipSpec(label: filters.cuisine, onClear: () => onFiltersApplied(filters.copyWith(cuisine: 'All'))));
+      chips.add(_ChipSpec(
+        label: filters.cuisine,
+        onClear: () => onFiltersApplied(filters.copyWith(cuisine: 'All')),
+      ));
     }
     if (filters.suitableFor != 'All') {
-      chips.add(_ChipSpec(label: filters.suitableFor, onClear: () => onFiltersApplied(filters.copyWith(suitableFor: 'All'))));
+      chips.add(_ChipSpec(
+        label: filters.suitableFor,
+        onClear: () => onFiltersApplied(filters.copyWith(suitableFor: 'All')),
+      ));
     }
     if (filters.nutritionTag != 'All') {
-      chips.add(_ChipSpec(label: filters.nutritionTag, onClear: () => onFiltersApplied(filters.copyWith(nutritionTag: 'All'))));
+      chips.add(_ChipSpec(
+        label: filters.nutritionTag,
+        onClear: () => onFiltersApplied(filters.copyWith(nutritionTag: 'All')),
+      ));
     }
     if (filters.collection != 'All') {
-      chips.add(_ChipSpec(label: filters.collection, onClear: () => onFiltersApplied(filters.copyWith(collection: 'All'))));
+      chips.add(_ChipSpec(
+        label: filters.collection,
+        onClear: () => onFiltersApplied(filters.copyWith(collection: 'All')),
+      ));
     }
 
+    // Allergies chips (only when enabled)
     if (allergies.enabled) {
       chips.add(_ChipSpec(
         label: _allergiesChipLabel(allergies),
-        onClear: () => onAllergiesApplied(allergies.copyWith(enabled: false)),
+        onClear: () => onAllergiesApplied(
+          allergies.copyWith(
+            enabled: false,
+            mode: SuitabilityMode.wholeFamily,
+            personId: null,
+            includeSwaps: false,
+          ),
+        ),
       ));
+
       if (allergies.includeSwaps) {
         chips.add(_ChipSpec(
           label: 'Swaps on',
@@ -349,15 +386,26 @@ class RecipeFilterBar extends StatelessWidget {
                     context: context,
                     isScrollControlled: true,
                     backgroundColor: _FStyle.sheetBg,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(_FStyle.sheetRadius))),
-                    builder: (_) => _SheetScrollShell(child: _FiltersSheet(
-                      initial: filters,
-                      courseOptions: courseOptions, cuisineOptions: cuisineOptions,
-                      suitableForOptions: suitableForOptions, nutritionOptions: nutritionOptions,
-                      collectionOptions: collectionOptions, lockCourse: lockCourse,
-                      lockCollection: lockCollection, lockCuisine: lockCuisine,
-                      lockSuitableFor: lockSuitableFor, lockNutrition: lockNutrition,
-                    )),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(_FStyle.sheetRadius),
+                      ),
+                    ),
+                    builder: (_) => _SheetScrollShell(
+                      child: _FiltersSheet(
+                        initial: filters,
+                        courseOptions: courseOptions,
+                        cuisineOptions: cuisineOptions,
+                        suitableForOptions: suitableForOptions,
+                        nutritionOptions: nutritionOptions,
+                        collectionOptions: collectionOptions,
+                        lockCourse: lockCourse,
+                        lockCollection: lockCollection,
+                        lockCuisine: lockCuisine,
+                        lockSuitableFor: lockSuitableFor,
+                        lockNutrition: lockNutrition,
+                      ),
+                    ),
                   );
                   if (next != null) onFiltersApplied(next);
                 },
@@ -373,12 +421,21 @@ class RecipeFilterBar extends StatelessWidget {
                     context: context,
                     isScrollControlled: true,
                     backgroundColor: _FStyle.sheetBg,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(_FStyle.sheetRadius))),
-                    builder: (_) => _SheetScrollShell(child: _AllergiesSheet(
-                      initial: allergies, adults: adults, children: children,
-                      householdLoading: householdLoading, householdError: householdError,
-                      onRetryHousehold: onRetryHousehold,
-                    )),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(_FStyle.sheetRadius),
+                      ),
+                    ),
+                    builder: (_) => _SheetScrollShell(
+                      child: _AllergiesSheet(
+                        initial: allergies,
+                        adults: adults,
+                        children: children,
+                        householdLoading: householdLoading,
+                        householdError: householdError,
+                        onRetryHousehold: onRetryHousehold,
+                      ),
+                    ),
                   );
                   if (next != null) onAllergiesApplied(next);
                 },
@@ -391,26 +448,24 @@ class RecipeFilterBar extends StatelessWidget {
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.only(bottom: 2),
-            child: Row(children: [
-              const SizedBox(width: 2),
-              for (final c in chips) ...[
-                _FilterChip(label: c.label, onClear: c.onClear),
-                const SizedBox(width: 8),
-              ]
-            ]),
+            child: Row(
+              children: [
+                const SizedBox(width: 2),
+                for (final c in chips) ...[
+                  _FilterChip(label: c.label, onClear: c.onClear),
+                  const SizedBox(width: 8),
+                ],
+              ],
+            ),
           ),
-        ] else ...[
-          const SizedBox(height: 10),
-          Text('No filters applied', style: _FStyle.emptyState),
+         ] else ...[
+          // ✅ nothing when no chips
+          const SizedBox(height: 0),
         ],
       ],
     );
   }
 }
-
-// ... _ChipSpec, _PillButton, _FilterChip, _SheetHeader, _SheetScrollShell, _FiltersSheet ...
-// (Keep these standard widgets from previous version, they haven't changed logic)
-// Copying them here briefly so the file is complete:
 
 class _ChipSpec {
   const _ChipSpec({required this.label, required this.onClear});
@@ -419,30 +474,49 @@ class _ChipSpec {
 }
 
 class _PillButton extends StatelessWidget {
-  const _PillButton({required this.label, required this.count, required this.onTap});
+  const _PillButton({
+    required this.label,
+    required this.count,
+    required this.onTap,
+  });
+
   final String label;
   final int count;
   final VoidCallback onTap;
+
   @override
   Widget build(BuildContext context) {
+    final showCount = count > 0;
+
     return Material(
-      color: Colors.transparent, borderRadius: BorderRadius.circular(_FStyle.pillRadius),
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(_FStyle.pillRadius),
       child: InkWell(
-        borderRadius: BorderRadius.circular(_FStyle.pillRadius), onTap: onTap,
+        borderRadius: BorderRadius.circular(_FStyle.pillRadius),
+        onTap: onTap,
         child: Container(
-          height: _FStyle.pillHeight, padding: _FStyle.pillPadding, decoration: _FStyle.pillDecoration(),
-          child: Row(children: [
-            Expanded(child: Text(label, style: _FStyle.pillLabel)),
-            if (count > 0) ...[
-              Container(
-                width: 22, height: 22, alignment: Alignment.center,
-                decoration: BoxDecoration(color: _FStyle.brand, borderRadius: BorderRadius.circular(999)),
-                child: Text('$count', style: _FStyle.badge),
-              ),
-              const SizedBox(width: 8),
+          height: _FStyle.pillHeight,
+          padding: _FStyle.pillPadding,
+          decoration: _FStyle.pillDecoration(),
+          child: Row(
+            children: [
+              Expanded(child: Text(label, style: _FStyle.pillLabel)),
+              if (showCount) ...[
+                Container(
+                  width: 22,
+                  height: 22,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _FStyle.brand,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text('$count', style: _FStyle.badge),
+                ),
+                const SizedBox(width: 8),
+              ],
+              Icon(Icons.chevron_right, size: 20, color: _FStyle.brand.withOpacity(0.90)),
             ],
-            Icon(Icons.chevron_right, size: 20, color: _FStyle.brand.withOpacity(0.90)),
-          ]),
+          ),
         ),
       ),
     );
@@ -453,18 +527,28 @@ class _FilterChip extends StatelessWidget {
   const _FilterChip({required this.label, required this.onClear});
   final String label;
   final VoidCallback onClear;
+
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: _FStyle.chipHeight, padding: _FStyle.chipPadding, decoration: _FStyle.chipDecoration(),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Text(label, style: _FStyle.chip),
-        const SizedBox(width: 6),
-        GestureDetector(
-          behavior: HitTestBehavior.opaque, onTap: onClear,
-          child: const Padding(padding: EdgeInsets.all(6), child: Icon(Icons.close, color: Colors.white, size: 16)),
-        ),
-      ]),
+      height: _FStyle.chipHeight,
+      padding: _FStyle.chipPadding,
+      decoration: _FStyle.chipDecoration(),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(label, style: _FStyle.chip),
+          const SizedBox(width: 6),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onClear,
+            child: const Padding(
+              padding: EdgeInsets.all(6),
+              child: Icon(Icons.close, color: Colors.white, size: 16),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -473,14 +557,20 @@ class _SheetHeader extends StatelessWidget {
   const _SheetHeader({required this.title, required this.onClose});
   final String title;
   final VoidCallback onClose;
+
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 14, 10, 10),
-      child: Row(children: [
-        Expanded(child: Text(title.toUpperCase(), style: _FStyle.sheetTitle)),
-        IconButton(onPressed: onClose, icon: Icon(Icons.close, color: _FStyle.brand)),
-      ]),
+      child: Row(
+        children: [
+          Expanded(child: Text(title.toUpperCase(), style: _FStyle.sheetTitle)),
+          IconButton(
+            onPressed: onClose,
+            icon: Icon(Icons.close, color: _FStyle.brand),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -488,95 +578,54 @@ class _SheetHeader extends StatelessWidget {
 class _SheetScrollShell extends StatelessWidget {
   const _SheetScrollShell({required this.child});
   final Widget child;
+
   @override
   Widget build(BuildContext context) {
-    return SafeArea(child: SingleChildScrollView(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-      child: child,
-    ));
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.only(bottom: bottom),
+        child: child,
+      ),
+    );
   }
 }
 
 class _FiltersSheet extends StatefulWidget {
   const _FiltersSheet({
-    required this.initial, required this.courseOptions, required this.cuisineOptions,
-    required this.suitableForOptions, required this.nutritionOptions, required this.collectionOptions,
-    required this.lockCourse, required this.lockCollection, required this.lockCuisine,
-    required this.lockSuitableFor, required this.lockNutrition,
+    required this.initial,
+    required this.courseOptions,
+    required this.cuisineOptions,
+    required this.suitableForOptions,
+    required this.nutritionOptions,
+    required this.collectionOptions,
+    required this.lockCourse,
+    required this.lockCollection,
+    required this.lockCuisine,
+    required this.lockSuitableFor,
+    required this.lockNutrition,
   });
+
   final RecipeFilterSelection initial;
-  final List<String> courseOptions, cuisineOptions, suitableForOptions, nutritionOptions, collectionOptions;
-  final bool lockCourse, lockCollection, lockCuisine, lockSuitableFor, lockNutrition;
+  final List<String> courseOptions;
+  final List<String> cuisineOptions;
+  final List<String> suitableForOptions;
+  final List<String> nutritionOptions;
+  final List<String> collectionOptions;
+
+  final bool lockCourse;
+  final bool lockCollection;
+  final bool lockCuisine;
+  final bool lockSuitableFor;
+  final bool lockNutrition;
+
   @override
   State<_FiltersSheet> createState() => _FiltersSheetState();
 }
 
 class _FiltersSheetState extends State<_FiltersSheet> {
   late RecipeFilterSelection _draft;
-  @override
-  void initState() { super.initState(); _draft = widget.initial; }
-  
-  String _safeValue(String c, List<String> o) => (o.isEmpty ? 'All' : (o.contains(c) ? c : (o.contains('All') ? 'All' : o.first)));
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(mainAxisSize: MainAxisSize.min, children: [
-      _SheetHeader(title: 'Filters', onClose: () => Navigator.of(context).pop()),
-      Padding(padding: _FStyle.sheetPadding, child: Column(children: [
-        if (!widget.lockCourse) _SelectField(label: 'Course', value: _safeValue(_draft.course, widget.courseOptions), options: widget.courseOptions, onChanged: (v) => setState(() => _draft = _draft.copyWith(course: v))),
-        if (!widget.lockCuisine) ...[const SizedBox(height: 10), _SelectField(label: 'Cuisine', value: _safeValue(_draft.cuisine, widget.cuisineOptions), options: widget.cuisineOptions, onChanged: (v) => setState(() => _draft = _draft.copyWith(cuisine: v)))],
-        if (!widget.lockSuitableFor) ...[const SizedBox(height: 10), _SelectField(label: 'Age range', value: _safeValue(_draft.suitableFor, widget.suitableForOptions), options: widget.suitableForOptions, onChanged: (v) => setState(() => _draft = _draft.copyWith(suitableFor: v)))],
-        if (!widget.lockNutrition) ...[const SizedBox(height: 10), _SelectField(label: 'Nutrition', value: _safeValue(_draft.nutritionTag, widget.nutritionOptions), options: widget.nutritionOptions, onChanged: (v) => setState(() => _draft = _draft.copyWith(nutritionTag: v)))],
-        if (!widget.lockCollection) ...[const SizedBox(height: 10), _SelectField(label: 'Collection', value: _safeValue(_draft.collection, widget.collectionOptions), options: widget.collectionOptions, onChanged: (v) => setState(() => _draft = _draft.copyWith(collection: v)))],
-        const SizedBox(height: 14),
-        SizedBox(width: double.infinity, height: _FStyle.ctaHeight, child: ElevatedButton(style: _FStyle.ctaButtonStyle(), onPressed: () => Navigator.of(context).pop(_draft), child: Text('APPLY FILTERS', style: _FStyle.cta))),
-      ])),
-    ]);
-  }
-}
-
-class _SelectField extends StatelessWidget {
-  const _SelectField({required this.label, required this.value, required this.options, required this.onChanged});
-  final String label;
-  final String value;
-  final List<String> options;
-  final ValueChanged<String> onChanged;
-  @override
-  Widget build(BuildContext context) {
-    final items = options.map((o) => DropdownMenuItem(value: o, child: Text(o))).toList();
-    final safeValue = items.any((i) => i.value == value) ? value : null;
-    return Container(
-      padding: _FStyle.fieldPadding, decoration: _FStyle.fieldDecoration(),
-      child: Row(children: [
-        Expanded(child: Text(label.toUpperCase(), style: _FStyle.sectionLabel)),
-        const SizedBox(width: 12),
-        Expanded(flex: 2, child: DropdownButtonHideUnderline(child: DropdownButton<String>(isExpanded: true, value: safeValue, items: items, onChanged: (v) { if (v != null) onChanged(v); }))),
-      ]),
-    );
-  }
-}
-
-// -------------------------------------------------------------------------
-// ✅ NEW MULTI-SELECT ALLERGY SHEET
-// -------------------------------------------------------------------------
-
-class _AllergiesSheet extends StatefulWidget {
-  const _AllergiesSheet({
-    required this.initial, required this.adults, required this.children,
-    required this.householdLoading, required this.householdError, required this.onRetryHousehold,
-  });
-  final AllergiesSelection initial;
-  final List<ProfilePerson> adults, children;
-  final bool householdLoading;
-  final String? householdError;
-  final VoidCallback? onRetryHousehold;
-  @override
-  State<_AllergiesSheet> createState() => _AllergiesSheetState();
-}
-
-class _AllergiesSheetState extends State<_AllergiesSheet> {
-  late AllergiesSelection _draft;
-  List<ProfilePerson> get _allPeople => [...widget.adults, ...widget.children];
 
   @override
   void initState() {
@@ -584,25 +633,154 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
     _draft = widget.initial;
   }
 
-  void _togglePerson(String id) {
-    final newSet = Set<String>.from(_draft.personIds);
-    if (newSet.contains(id)) {
-      newSet.remove(id);
-    } else {
-      newSet.add(id);
-    }
-
-    setState(() {
-      _draft = _draft.copyWith(
-        mode: SuitabilityMode.specificPeople,
-        personIds: newSet,
-      );
-    });
+  String _safeValue(String current, List<String> options) {
+    if (options.isEmpty) return 'All';
+    if (options.contains(current)) return current;
+    return options.contains('All') ? 'All' : options.first;
   }
 
-  void _setMode(SuitabilityMode mode) {
+  @override
+  Widget build(BuildContext context) {
+    final course = _safeValue(_draft.course, widget.courseOptions);
+    final cuisine = _safeValue(_draft.cuisine, widget.cuisineOptions);
+    final suitableFor = _safeValue(_draft.suitableFor, widget.suitableForOptions);
+    final nutrition = _safeValue(_draft.nutritionTag, widget.nutritionOptions);
+    final collection = _safeValue(_draft.collection, widget.collectionOptions);
+
+    if (course != _draft.course ||
+        cuisine != _draft.cuisine ||
+        suitableFor != _draft.suitableFor ||
+        nutrition != _draft.nutritionTag ||
+        collection != _draft.collection) {
+      _draft = _draft.copyWith(
+        course: course,
+        cuisine: cuisine,
+        suitableFor: suitableFor,
+        nutritionTag: nutrition,
+        collection: collection,
+      );
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _SheetHeader(
+          title: 'Filters',
+          onClose: () => Navigator.of(context).pop(),
+        ),
+        Padding(
+          padding: _FStyle.sheetPadding,
+          child: Column(
+            children: [
+              if (!widget.lockCourse)
+                _SelectField(
+                  label: 'Course',
+                  value: _draft.course,
+                  options: widget.courseOptions,
+                  onChanged: (v) => setState(() => _draft = _draft.copyWith(course: v)),
+                ),
+              if (!widget.lockCuisine) ...[
+                const SizedBox(height: 10),
+                _SelectField(
+                  label: 'Cuisine',
+                  value: _draft.cuisine,
+                  options: widget.cuisineOptions,
+                  onChanged: (v) => setState(() => _draft = _draft.copyWith(cuisine: v)),
+                ),
+              ],
+              if (!widget.lockSuitableFor) ...[
+                const SizedBox(height: 10),
+                _SelectField(
+                  label: 'Age range',
+                  value: _draft.suitableFor,
+                  options: widget.suitableForOptions,
+                  onChanged: (v) => setState(() => _draft = _draft.copyWith(suitableFor: v)),
+                ),
+              ],
+              if (!widget.lockNutrition) ...[
+                const SizedBox(height: 10),
+                _SelectField(
+                  label: 'Nutrition',
+                  value: _draft.nutritionTag,
+                  options: widget.nutritionOptions,
+                  onChanged: (v) => setState(() => _draft = _draft.copyWith(nutritionTag: v)),
+                ),
+              ],
+              if (!widget.lockCollection) ...[
+                const SizedBox(height: 10),
+                _SelectField(
+                  label: 'Collection',
+                  value: _draft.collection,
+                  options: widget.collectionOptions,
+                  onChanged: (v) => setState(() => _draft = _draft.copyWith(collection: v)),
+                ),
+              ],
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                height: _FStyle.ctaHeight,
+                child: ElevatedButton(
+                  style: _FStyle.ctaButtonStyle(),
+                  onPressed: () => Navigator.of(context).pop(_draft),
+                  child: Text('APPLY FILTERS', style: _FStyle.cta),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _AllergiesSheet extends StatefulWidget {
+  const _AllergiesSheet({
+    required this.initial,
+    required this.adults,
+    required this.children,
+    required this.householdLoading,
+    required this.householdError,
+    required this.onRetryHousehold,
+  });
+
+  final AllergiesSelection initial;
+  final List<ProfilePerson> adults;
+  final List<ProfilePerson> children;
+
+  final bool householdLoading;
+  final String? householdError;
+  final VoidCallback? onRetryHousehold;
+
+  @override
+  State<_AllergiesSheet> createState() => _AllergiesSheetState();
+}
+
+class _AllergiesSheetState extends State<_AllergiesSheet> {
+  late AllergiesSelection _draft;
+
+  List<ProfilePerson> get _allPeople => [...widget.adults, ...widget.children];
+
+  @override
+  void initState() {
+    super.initState();
+    _draft = widget.initial;
+
+    if (_draft.mode == SuitabilityMode.singlePerson) {
+      final exists = _allPeople.any((p) => p.id == _draft.personId);
+      if (!exists) {
+        _draft = _draft.copyWith(
+          mode: SuitabilityMode.wholeFamily,
+          personId: null,
+          includeSwaps: false,
+        );
+      }
+    }
+  }
+
+  // Helper to set new mode
+  void _setMode(SuitabilityMode mode, [String? personId]) {
     setState(() {
-      _draft = _draft.copyWith(mode: mode, personIds: {});
+      _draft = _draft.copyWith(mode: mode, personId: personId);
     });
   }
 
@@ -612,62 +790,91 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
 
     return Column(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _SheetHeader(title: 'Allergies', onClose: () => Navigator.of(context).pop()),
+        _SheetHeader(
+          title: 'Allergies',
+          onClose: () => Navigator.of(context).pop(),
+        ),
         Padding(
           padding: _FStyle.sheetPadding,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // 1. Enable Toggle
-              Row(children: [
-                Expanded(child: Text('FILTER BY ALLERGIES', style: _FStyle.pillLabel.copyWith(fontSize: 13, fontWeight: FontWeight.w900))),
-                Switch(value: enabled, activeColor: _FStyle.brand, onChanged: (v) {
-                  setState(() {
-                    _draft = _draft.copyWith(enabled: v);
-                    if (!v) _draft = _draft.copyWith(mode: SuitabilityMode.wholeFamily, personIds: {}, includeSwaps: false);
-                  });
-                }),
-              ]),
+              // Main Toggle
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'FILTER BY ALLERGIES',
+                      style: _FStyle.pillLabel.copyWith(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w900,
+                        fontVariations: const [FontVariation('wght', 900)],
+                      ),
+                    ),
+                  ),
+                  Switch(
+                    value: enabled,
+                    activeColor: _FStyle.brand,
+                    onChanged: (v) {
+                      setState(() {
+                        _draft = _draft.copyWith(enabled: v);
+                        // Reset selection when disabled
+                        if (!v) {
+                          _draft = _draft.copyWith(
+                            mode: SuitabilityMode.wholeFamily,
+                            personId: null,
+                            includeSwaps: false,
+                          );
+                        }
+                      });
+                    },
+                  ),
+                ],
+              ),
 
-              // 2. Content
               if (widget.householdLoading) ...[
-                const SizedBox(height: 20), const CircularProgressIndicator(strokeWidth: 2), const SizedBox(height: 20),
+                const SizedBox(height: 20),
+                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                const SizedBox(height: 20),
               ] else if (widget.householdError != null) ...[
                 const SizedBox(height: 10),
                 Text(widget.householdError!, style: _FStyle.helper.copyWith(color: Colors.red)),
                 TextButton(onPressed: widget.onRetryHousehold, child: const Text('Retry')),
               ] else if (enabled) ...[
+                // THE SELECTOR LIST
                 const SizedBox(height: 12),
-                Align(alignment: Alignment.centerLeft, child: Text('SUITABLE FOR', style: _FStyle.sectionLabel.copyWith(color: _FStyle.muted, fontSize: 11))),
+                Text(
+                  'SUITABLE FOR',
+                  style: _FStyle.sectionLabel.copyWith(color: _FStyle.muted, fontSize: 11),
+                ),
                 const SizedBox(height: 8),
 
                 _PersonSelector(
                   label: 'Whole family',
-                  // Mode is whole family AND no specific people are selected
                   isSelected: _draft.mode == SuitabilityMode.wholeFamily,
-                  isRadio: true,
                   onTap: () => _setMode(SuitabilityMode.wholeFamily),
                 ),
                 const SizedBox(height: 8),
                 _PersonSelector(
                   label: 'All children',
                   isSelected: _draft.mode == SuitabilityMode.allChildren,
-                  isRadio: true,
                   onTap: () => _setMode(SuitabilityMode.allChildren),
                 ),
-
                 if (_allPeople.isNotEmpty) ...[
                   const SizedBox(height: 12),
-                  Align(alignment: Alignment.centerLeft, child: Text('INDIVIDUALS', style: _FStyle.sectionLabel.copyWith(color: _FStyle.muted, fontSize: 11))),
+                  Text(
+                    'INDIVIDUALS',
+                    style: _FStyle.sectionLabel.copyWith(color: _FStyle.muted, fontSize: 11),
+                  ),
                   const SizedBox(height: 8),
                   ..._allPeople.map((p) => Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: _PersonSelector(
                       label: p.name,
-                      // Selected if ID is in the set
-                      isSelected: _draft.mode == SuitabilityMode.specificPeople && _draft.personIds.contains(p.id),
-                      isRadio: false, // Checkbox style
-                      onTap: () => _togglePerson(p.id),
+                      isSelected: _draft.mode == SuitabilityMode.singlePerson && _draft.personId == p.id,
+                      onTap: () => _setMode(SuitabilityMode.singlePerson, p.id),
                     ),
                   )),
                 ],
@@ -677,14 +884,28 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                 const SizedBox(height: 12),
 
                 // Swaps Toggle
-                Row(children: [
-                  const Expanded(child: _AllergySwapCopy()),
-                  Switch(value: _draft.includeSwaps, activeColor: _FStyle.brand, onChanged: (v) => setState(() => _draft = _draft.copyWith(includeSwaps: v))),
-                ]),
+                Row(
+                  children: [
+                    const Expanded(child: _AllergySwapCopy()),
+                    Switch(
+                      value: _draft.includeSwaps,
+                      activeColor: _FStyle.brand,
+                      onChanged: (v) => setState(() => _draft = _draft.copyWith(includeSwaps: v)),
+                    ),
+                  ],
+                ),
               ],
 
               const SizedBox(height: 20),
-              SizedBox(width: double.infinity, height: _FStyle.ctaHeight, child: ElevatedButton(style: _FStyle.ctaButtonStyle(), onPressed: () => Navigator.of(context).pop(_draft), child: Text('APPLY ALLERGIES', style: _FStyle.cta))),
+              SizedBox(
+                width: double.infinity,
+                height: _FStyle.ctaHeight,
+                child: ElevatedButton(
+                  style: _FStyle.ctaButtonStyle(),
+                  onPressed: () => Navigator.of(context).pop(_draft),
+                  child: Text('APPLY ALLERGIES', style: _FStyle.cta),
+                ),
+              ),
             ],
           ),
         ),
@@ -698,12 +919,10 @@ class _PersonSelector extends StatelessWidget {
     required this.label,
     required this.isSelected,
     required this.onTap,
-    this.isRadio = false,
   });
 
   final String label;
   final bool isSelected;
-  final bool isRadio;
   final VoidCallback onTap;
 
   @override
@@ -721,16 +940,23 @@ class _PersonSelector extends StatelessWidget {
             width: isSelected ? 1.5 : 1,
           ),
         ),
-        child: Row(children: [
-          Expanded(child: Text(label, style: _FStyle.personName.copyWith(
-            color: isSelected ? _FStyle.brand : Colors.black,
-            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-          ))),
-          if (isSelected)
-            Icon(Icons.check_circle, color: _FStyle.brand, size: 22)
-          else
-            Icon(isRadio ? Icons.circle_outlined : Icons.check_box_outline_blank, color: Colors.black26, size: 22),
-        ]),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: _FStyle.personName.copyWith(
+                  color: isSelected ? _FStyle.brand : Colors.black,
+                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                ),
+              ),
+            ),
+            if (isSelected)
+              const Icon(Icons.check_circle, color: _FStyle.brand, size: 20)
+            else
+              const Icon(Icons.circle_outlined, color: Colors.black26, size: 20),
+          ],
+        ),
       ),
     );
   }
@@ -738,12 +964,69 @@ class _PersonSelector extends StatelessWidget {
 
 class _AllergySwapCopy extends StatelessWidget {
   const _AllergySwapCopy();
+
   @override
   Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('INCLUDE RECIPES THAT NEED SWAPS', style: _FStyle.pillLabel.copyWith(fontSize: 13)),
-      const SizedBox(height: 2),
-      Text('Shows recipes with a safe ingredient replacement', style: _FStyle.helper),
-    ]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('INCLUDE RECIPES THAT NEED SWAPS', style: _FStyle.pillLabel.copyWith(fontSize: 13)),
+        const SizedBox(height: 2),
+        Text('Shows recipes with a safe ingredient replacement', style: _FStyle.helper),
+      ],
+    );
+  }
+}
+
+class _SelectField extends StatelessWidget {
+  const _SelectField({
+    required this.label,
+    required this.value,
+    required this.options,
+    required this.onChanged,
+    this.dropdownItemsOverride,
+  });
+
+  final String label;
+  final String value;
+  final List<String> options;
+  final ValueChanged<String> onChanged;
+
+  final List<DropdownMenuItem<String>>? dropdownItemsOverride;
+
+  @override
+  Widget build(BuildContext context) {
+    final items = dropdownItemsOverride ??
+        options.map((o) => DropdownMenuItem(value: o, child: Text(o))).toList();
+
+    final matches = items.where((i) => i.value == value).length;
+    final safeValue = (matches == 1) ? value : null;
+
+    return Container(
+      padding: _FStyle.fieldPadding,
+      decoration: _FStyle.fieldDecoration(),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(label.toUpperCase(), style: _FStyle.sectionLabel),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            flex: 2,
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                isExpanded: true,
+                value: safeValue,
+                items: items,
+                onChanged: (v) {
+                  if (v == null) return;
+                  onChanged(v);
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
