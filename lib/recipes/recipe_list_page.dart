@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 
 import 'recipe_list_screen.dart';
 
+// ✅ reuse shared UI (same as Favourites / CoursePage)
+import '../app/sub_header_bar.dart';
+
 class RecipeListPage extends StatelessWidget {
   const RecipeListPage({
     super.key,
@@ -23,28 +26,23 @@ class RecipeListPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final title = (titleOverride != null && titleOverride!.trim().isNotEmpty)
         ? titleOverride!.trim()
-        : 'Recipes';
+        : 'ALL Recipes';
 
     return Scaffold(
       backgroundColor: const Color(0xFFECF3F4),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFFECF3F4),
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: Text(
-          title,
-          style: const TextStyle(
-            fontWeight: FontWeight.w700,
+      body: Column(
+        children: [
+          // ✅ Same sub header bar as Favourites / Course pages
+          SubHeaderBar(title: title),
+
+          // ✅ Content
+          Expanded(
+            child: RecipeListScreen(
+              initialCourseSlug: initialCourseSlug,
+              lockCourse: lockCourse,
+            ),
           ),
-        ),
-      ),
-      body: RecipeListScreen(
-        initialCourseSlug: initialCourseSlug,
-        lockCourse: lockCourse,
+        ],
       ),
     );
   }
