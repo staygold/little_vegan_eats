@@ -13,12 +13,9 @@ import 'recipe_repository.dart';
 import 'allergy_engine.dart';
 import '../recipes/allergy_keys.dart';
 
-// ✅ External models (as per your snippet)
-import '../meal_plan/core/allergy_profile.dart';
-
 import '../shared/search_pill.dart';
 import 'widgets/recipe_card.dart';
-import 'widgets/recipe_filters_ui.dart';
+import 'widgets/recipe_filters_ui.dart'; // ✅ Gets Multi-Select Models from here
 
 /// Minimal local unawaited helper
 void unawaited(Future<void> f) {}
@@ -26,18 +23,16 @@ void unawaited(Future<void> f) {}
 class _RecipeIndex {
   final int id;
   final String titleLower;
-
   final String ingredientsText;
-  final String ingredientsLower; // for search
-
+  final String ingredientsLower;
   final List<String> courses;
-  final List<String> collections;
+  final List<String> collections; // ✅ should be NAMES
   final List<String> cuisines;
   final List<String> suitable;
   final List<String> nutrition;
-  
-  // ✅ NEW: Required for correct Swap Logic
-  final List<String> allergyTags;
+
+  // ✅ Fields for New Swap Logic
+  final List<String> allergyTags; // names are fine
   final String swapText;
 
   _RecipeIndex({
@@ -56,9 +51,7 @@ class _RecipeIndex {
 }
 
 class _CStyle {
-  static const bool showSubtitle = false; 
-
-  static const EdgeInsets metaPadding = EdgeInsets.fromLTRB(16, 0, 16, 10);
+  static const bool showSubtitle = false;
 
   static TextStyle meta(BuildContext context) =>
       (Theme.of(context).textTheme.bodySmall ?? const TextStyle()).copyWith(
@@ -108,17 +101,17 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   RecipeFilterSelection _filters = const RecipeFilterSelection();
 
-  // ✅ Allergies ON by default
+  // ✅ Multi-Select Ready
   AllergiesSelection _allergies = const AllergiesSelection(
-    enabled: true, 
+    enabled: true,
     mode: SuitabilityMode.wholeFamily,
-    includeSwaps: true, // Show swaps by default
+    includeSwaps: true,
   );
 
   List<Map<String, dynamic>> _visible = [];
   final Map<int, ({String? tag, String? swapHint})> _tagById = {};
 
-  // Term maps
+  // Maps
   Map<String, String> _courseIdToName = {};
   Map<String, String> _courseSlugToName = {};
   Map<String, String> _collectionIdToName = {};
@@ -129,20 +122,15 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   Map<String, String> _suitableSlugToName = {};
   Map<String, String> _nutritionIdToName = {};
   Map<String, String> _nutritionSlugToName = {};
-  
-  // ✅ Added Allergy Name Map
-  Map<String, String> _allergenIdToName = {}; 
+  Map<String, String> _allergenIdToName = {};
 
   bool _loadingTerms = false;
   bool _didApplyInitialCourse = false;
   bool _didApplyInitialCollection = false;
-
   bool _recipesLoaded = false;
   bool _termsLoaded = false;
-
   DateTime? _cacheUpdatedAt;
   bool _loadedFromCache = false;
-
   final Map<int, _RecipeIndex> _indexById = {};
   bool _indexReady = false;
 
@@ -156,7 +144,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userSub;
   bool _loadingHousehold = true;
   String? _householdError;
-
   final List<ProfilePerson> _adults = [];
   final List<ProfilePerson> _children = [];
 
@@ -215,7 +202,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     return buf.toString().trim();
   }
 
-  // ✅ CORRECT SWAP LOGIC: Check custom fields
+  // ✅ New Swap Logic Helper
   String _swapTextOf(Map<String, dynamic> r) {
     if (r['recipe'] is Map) {
       final recipeData = r['recipe'] as Map;
@@ -228,8 +215,10 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     }
     if (r['ingredient_swaps'] != null) return r['ingredient_swaps'].toString();
     if (r['meta'] is Map) {
-       final meta = r['meta'] as Map;
-       if (meta['ingredient_swaps'] != null) return meta['ingredient_swaps'].toString();
+      final meta = r['meta'] as Map;
+      if (meta['ingredient_swaps'] != null) {
+        return meta['ingredient_swaps'].toString();
+      }
     }
     return '';
   }
@@ -255,9 +244,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
           _cacheUpdatedAt = updatedAt;
           _loadedFromCache = true;
 
-          if (!_allergies.enabled &&
-              _query.trim().isEmpty &&
-              _filtersAreDefault) {
+          if (!_allergies.enabled && _query.trim().isEmpty && _filtersAreDefault) {
             _visible = List<Map<String, dynamic>>.from(cached);
             _tagById.clear();
           }
@@ -265,18 +252,12 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
         _rebuildIndexAndOptions(force: true);
 
-        if (_allergies.enabled ||
-            _query.trim().isNotEmpty ||
-            !_filtersAreDefault) {
+        if (_allergies.enabled || _query.trim().isNotEmpty || !_filtersAreDefault) {
           _recomputeVisible();
         }
       }
     } catch (_) {}
   }
-
-  // ------------------------
-  // Term Parsing
-  // ------------------------
 
   List<String> _termsOfField(
     Map<String, dynamic> r,
@@ -296,24 +277,83 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     return mapped.where((s) => s.trim().isNotEmpty).toSet().toList()..sort();
   }
 
-  List<String> _coursesOf(Map<String, dynamic> r) => _termsOfField(r, 'wprm_course', _courseIdToName);
-  List<String> _collectionsOf(Map<String, dynamic> r) => _termsOfField(r, 'wprm_collections', _collectionIdToName);
-  List<String> _cuisinesOf(Map<String, dynamic> r) => _termsOfField(r, 'wprm_cuisine', _cuisineIdToName);
-  List<String> _suitableForOf(Map<String, dynamic> r) => _termsOfField(r, 'wprm_suitable_for', _suitableIdToName);
-  List<String> _nutritionTagsOf(Map<String, dynamic> r) => _termsOfField(r, 'wprm_nutrition_tag', _nutritionIdToName);
-  
-  // ✅ NEW: Extract Allergy Tags
-  List<String> _allergyTagsOf(Map<String, dynamic> r) => _termsOfField(r, 'wprm_allergies', _allergenIdToName);
+  // ✅ Collections helper: prefer nested recipe.tags.collections NAMES (like CoursePage fix)
+  List<String> _collectionNamesFromRecipeTags(Map<String, dynamic> r) {
+    try {
+      final recipe = r['recipe'];
+      if (recipe is Map) {
+        final tags = recipe['tags'];
+        if (tags is Map) {
+          final cols = tags['collections'] ?? tags['collection'];
+          if (cols is List) {
+            final out = <String>[];
+            for (final c in cols) {
+              if (c is Map) {
+                final name = (c['name'] ?? '').toString().trim();
+                if (name.isNotEmpty) out.add(name);
+              } else if (c is String) {
+                final s = c.trim();
+                if (s.isNotEmpty) out.add(s);
+              }
+            }
+            if (out.isNotEmpty) return out.toSet().toList()..sort();
+          }
+        }
+      }
+    } catch (_) {}
+    return const [];
+  }
 
-  // ------------------------
-  // Initial slugs
-  // ------------------------
+  List<String> _coursesOf(Map<String, dynamic> r) =>
+      _termsOfField(r, 'wprm_course', _courseIdToName);
+
+  // ✅ FIX: collections should be names; fall back to mapping IDs if tags missing
+  List<String> _collectionsOf(Map<String, dynamic> r) {
+    final fromTags = _collectionNamesFromRecipeTags(r);
+    if (fromTags.isNotEmpty) return fromTags;
+    return _termsOfField(r, 'wprm_collections', _collectionIdToName);
+  }
+
+  List<String> _cuisinesOf(Map<String, dynamic> r) =>
+      _termsOfField(r, 'wprm_cuisine', _cuisineIdToName);
+
+  List<String> _suitableForOf(Map<String, dynamic> r) =>
+      _termsOfField(r, 'wprm_suitable_for', _suitableIdToName);
+
+  List<String> _nutritionTagsOf(Map<String, dynamic> r) =>
+      _termsOfField(r, 'wprm_nutrition_tag', _nutritionIdToName);
+
+  // ✅ Allergy tags are better from recipe.tags.allergies (names) but this mapping is OK if your term endpoint exists.
+  List<String> _allergyTagsOf(Map<String, dynamic> r) {
+    // prefer nested names if present
+    try {
+      final recipe = r['recipe'];
+      if (recipe is Map && recipe['tags'] is Map) {
+        final tags = recipe['tags'] as Map;
+        final a = tags['allergies'];
+        if (a is List) {
+          final out = <String>[];
+          for (final item in a) {
+            if (item is Map) {
+              final name = (item['name'] ?? '').toString().trim();
+              if (name.isNotEmpty) out.add(name);
+            }
+          }
+          if (out.isNotEmpty) return out.toSet().toList()..sort();
+        }
+      }
+    } catch (_) {}
+
+    // fallback: map ids from top-level wprm_allergies
+    return _termsOfField(r, 'wprm_allergies', _allergenIdToName);
+  }
 
   void _applyInitialCourseIfNeeded() {
     if (_didApplyInitialCourse) return;
     final slug = widget.initialCourseSlug?.trim();
     if (slug == null || slug.isEmpty) {
-      _didApplyInitialCourse = true; return;
+      _didApplyInitialCourse = true;
+      return;
     }
     final name = _courseSlugToName[slug];
     if (name == null || name.trim().isEmpty) return;
@@ -327,10 +367,11 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     if (_didApplyInitialCollection) return;
     final slug = widget.initialCollectionSlug?.trim();
     if (slug == null || slug.isEmpty) {
-      _didApplyInitialCollection = true; return;
+      _didApplyInitialCollection = true;
+      return;
     }
     final name = _collectionSlugToName[slug];
-    if (name == null || name.trim().isEmpty) return;
+    if (name == null || name.trim().isNotEmpty != true) return;
     if (_collectionOptionsCached.contains(name)) {
       _filters = _filters.copyWith(collection: name);
       _didApplyInitialCollection = true;
@@ -360,10 +401,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     }
   }
 
-  // ------------------------
-  // Lifecycle
-  // ------------------------
-
   @override
   void initState() {
     super.initState();
@@ -385,24 +422,31 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     super.dispose();
   }
 
-  // ------------------------
-  // Favorites
-  // ------------------------
-
   void _listenToFavorites() {
     _authFavSub?.cancel();
     _favSub?.cancel();
-    setState(() { _loadingFavs = true; _favoriteIds.clear(); });
+    setState(() {
+      _loadingFavs = true;
+      _favoriteIds.clear();
+    });
 
     _authFavSub = FirebaseAuth.instance.authStateChanges().listen((user) {
       _favSub?.cancel();
       if (user == null) {
         if (!mounted) return;
-        setState(() { _loadingFavs = false; _favoriteIds.clear(); });
+        setState(() {
+          _loadingFavs = false;
+          _favoriteIds.clear();
+        });
         return;
       }
-      final col = FirebaseFirestore.instance.collection('users').doc(user.uid).collection('favorites');
-      _favSub = col.snapshots().listen((snap) {
+      final col = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('favorites');
+
+      _favSub = col.snapshots().listen(
+        (snap) {
           final next = <int>{};
           for (final d in snap.docs) {
             final raw = d.data()['recipeId'];
@@ -410,38 +454,53 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
             if (id > 0) next.add(id);
           }
           if (!mounted) return;
-          setState(() { _favoriteIds..clear()..addAll(next); _loadingFavs = false; });
+          setState(() {
+            _favoriteIds..clear()..addAll(next);
+            _loadingFavs = false;
+          });
         },
-        onError: (_) { if (!mounted) return; setState(() { _loadingFavs = false; }); },
+        onError: (_) {
+          if (!mounted) return;
+          setState(() {
+            _loadingFavs = false;
+          });
+        },
       );
     });
   }
 
   bool _isFavorited(int? recipeId) => recipeId != null && _favoriteIds.contains(recipeId);
 
-  // ------------------------
-  // Household
-  // ------------------------
-
   void _listenToHousehold() {
     final doc = _userDoc();
     if (doc == null) {
-      setState(() { _loadingHousehold = false; _householdError = null; _adults.clear(); _children.clear(); });
+      setState(() {
+        _loadingHousehold = false;
+        _householdError = null;
+        _adults.clear();
+        _children.clear();
+      });
       return;
     }
-    setState(() { _loadingHousehold = true; _householdError = null; });
+    setState(() {
+      _loadingHousehold = true;
+      _householdError = null;
+    });
 
     _userSub?.cancel();
-    _userSub = doc.snapshots().listen((snap) {
+    _userSub = doc.snapshots().listen(
+      (snap) {
         final data = snap.data() ?? {};
         final rawAdults = (data['adults'] as List?) ?? [];
         final rawChildren = (data['children'] as List?) ?? [];
+
         final adults = <ProfilePerson>[];
         final children = <ProfilePerson>[];
 
         void parse(List raw, List<ProfilePerson> target, PersonType type, String prefix) {
           for (var i = 0; i < raw.length; i++) {
-            final p = raw[i]; if (p is! Map) continue;
+            final p = raw[i];
+            if (p is! Map) continue;
             final name = (p['name'] ?? '').toString().trim();
             if (name.isEmpty) continue;
             final hasAllergies = (p['hasAllergies'] == true);
@@ -453,8 +512,11 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
               }
             }
             target.add(ProfilePerson(
-              id: '${prefix}_$i', type: type, name: name,
-              hasAllergies: hasAllergies, allergies: hasAllergies ? (parsed.toSet().toList()..sort()) : [],
+              id: '${prefix}_$i',
+              type: type,
+              name: name,
+              hasAllergies: hasAllergies,
+              allergies: hasAllergies ? (parsed.toSet().toList()..sort()) : [],
             ));
           }
         }
@@ -469,14 +531,18 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
           _loadingHousehold = false;
           _householdError = null;
 
-          if (_allergies.mode == SuitabilityMode.singlePerson) {
-            final exists = _allPeople.any((p) => p.id == _allergies.personId);
-            if (!exists) {
+          if (_allergies.mode == SuitabilityMode.specificPeople) {
+            final ids = _allergies.personIds
+                .where((id) => _allPeople.any((p) => p.id == id))
+                .toSet();
+            if (ids.isEmpty) {
               _allergies = _allergies.copyWith(
                 mode: SuitabilityMode.wholeFamily,
-                personId: null,
+                personIds: {},
                 includeSwaps: false,
               );
+            } else {
+              _allergies = _allergies.copyWith(personIds: ids);
             }
           }
         });
@@ -485,7 +551,13 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
           _recomputeVisible();
         }
       },
-      onError: (e) { if (mounted) setState(() { _loadingHousehold = false; _householdError = e.toString(); }); },
+      onError: (e) {
+        if (!mounted) return;
+        setState(() {
+          _loadingHousehold = false;
+          _householdError = e.toString();
+        });
+      },
     );
   }
 
@@ -500,36 +572,44 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   List<ProfilePerson> _activeProfilesForAllergies() {
     if (!_allergies.enabled) return _allPeople;
     switch (_allergies.mode) {
-      case SuitabilityMode.wholeFamily: return _allPeople;
-      case SuitabilityMode.allChildren: return _children;
-      case SuitabilityMode.singlePerson: 
-        return _allPeople.where((x) => x.id == _allergies.personId).toList();
+      case SuitabilityMode.wholeFamily:
+        return _allPeople;
+      case SuitabilityMode.allChildren:
+        return _children;
+      case SuitabilityMode.specificPeople:
+        return _allPeople.where((x) => _allergies.personIds.contains(x.id)).toList();
     }
   }
-
-  // ------------------------
-  // Load terms
-  // ------------------------
 
   Future<void> _loadTerms() async {
     if (_loadingTerms) return;
     setState(() => _loadingTerms = true);
 
     try {
-      final courseById = <String, String>{}; final courseBySlug = <String, String>{};
-      final colById = <String, String>{}; final colBySlug = <String, String>{};
-      final cuisineById = <String, String>{}; final cuisineBySlug = <String, String>{};
-      final suitableById = <String, String>{}; final suitableBySlug = <String, String>{};
-      final nutritionById = <String, String>{}; final nutritionBySlug = <String, String>{};
-      
-      // ✅ Added Allergen Map
-      final allergenById = <String, String>{}; 
+      final courseById = <String, String>{};
+      final courseBySlug = <String, String>{};
+      final colById = <String, String>{};
+      final colBySlug = <String, String>{};
+      final cuisineById = <String, String>{};
+      final cuisineBySlug = <String, String>{};
+      final suitableById = <String, String>{};
+      final suitableBySlug = <String, String>{};
+      final nutritionById = <String, String>{};
+      final nutritionBySlug = <String, String>{};
+      final allergenById = <String, String>{};
 
-      Future<void> loadTax({required String endpoint, required Map<String, String> byId, Map<String, String>? bySlug}) async {
+      Future<void> loadTax({
+        required String endpoint,
+        required Map<String, String> byId,
+        Map<String, String>? bySlug,
+      }) async {
         int page = 1;
         const int perPage = 100;
         while (true) {
-          final res = await _dio.get('https://littleveganeats.co/wp-json/wp/v2/$endpoint', queryParameters: {'per_page': perPage, 'page': page});
+          final res = await _dio.get(
+            'https://littleveganeats.co/wp-json/wp/v2/$endpoint',
+            queryParameters: {'per_page': perPage, 'page': page},
+          );
           final data = res.data;
           if (data is! List) break;
           for (final t in data.cast<Map<String, dynamic>>()) {
@@ -550,20 +630,24 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         loadTax(endpoint: 'wprm_cuisine', byId: cuisineById, bySlug: cuisineBySlug),
         loadTax(endpoint: 'wprm_suitable_for', byId: suitableById, bySlug: suitableBySlug),
         loadTax(endpoint: 'wprm_nutrition_tag', byId: nutritionById, bySlug: nutritionBySlug),
-        // ✅ Load Allergies
         loadTax(endpoint: 'wprm_allergies', byId: allergenById),
       ]);
 
       if (!mounted) return;
 
       setState(() {
-        _courseIdToName = courseById; _courseSlugToName = courseBySlug;
-        _collectionIdToName = colById; _collectionSlugToName = colBySlug;
-        _cuisineIdToName = cuisineById; _cuisineSlugToName = cuisineBySlug;
-        _suitableIdToName = suitableById; _suitableSlugToName = suitableBySlug;
-        _nutritionIdToName = nutritionById; _nutritionSlugToName = nutritionBySlug;
-        _allergenIdToName = allergenById; 
-        
+        _courseIdToName = courseById;
+        _courseSlugToName = courseBySlug;
+        _collectionIdToName = colById;
+        _collectionSlugToName = colBySlug;
+        _cuisineIdToName = cuisineById;
+        _cuisineSlugToName = cuisineBySlug;
+        _suitableIdToName = suitableById;
+        _suitableSlugToName = suitableBySlug;
+        _nutritionIdToName = nutritionById;
+        _nutritionSlugToName = nutritionBySlug;
+        _allergenIdToName = allergenById;
+
         _termsLoaded = true;
       });
 
@@ -578,88 +662,96 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     }
   }
 
-  // ------------------------
-  // Recipes
-  // ------------------------
-
   Future<void> _loadRecipes({bool forceRefresh = false}) async {
     setState(() => _error = null);
     try {
-      final recipes = await RecipeRepository.ensureRecipesLoaded(backgroundRefresh: true, forceRefresh: forceRefresh);
+      final recipes = await RecipeRepository.ensureRecipesLoaded(
+        backgroundRefresh: true,
+        forceRefresh: forceRefresh,
+      );
       final updatedAt = await RecipeCache.lastUpdated();
       if (!mounted) return;
-      setState(() { _items = recipes; _cacheUpdatedAt = updatedAt; _loadedFromCache = true; _recipesLoaded = true; });
+      setState(() {
+        _items = recipes;
+        _cacheUpdatedAt = updatedAt;
+        _loadedFromCache = true;
+        _recipesLoaded = true;
+      });
       _rebuildIndexAndOptions();
       _maybeFinishBoot();
       unawaited(Future.delayed(const Duration(seconds: 2), _upgradeItemsFromCacheIfNewer));
     } catch (e) {
-      if (mounted) setState(() { _error = e.toString(); _recipesLoaded = true; _loading = false; });
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _recipesLoaded = true;
+        _loading = false;
+      });
     }
   }
 
-  // ------------------------
-  // Index + Options
-  // ------------------------
-
   void _rebuildIndexAndOptions({bool force = false}) {
-    if (_items.isEmpty) { _indexById.clear(); _indexReady = true; return; }
+    if (_items.isEmpty) {
+      _indexById.clear();
+      _indexReady = true;
+      return;
+    }
     if (!force && _indexReady && _indexById.length == _items.length) return;
 
     final cSet = <String>{}, colSet = <String>{}, cuiSet = <String>{}, sSet = <String>{}, nSet = <String>{};
     _indexById.clear();
 
     for (final r in _items) {
-      final id = r['id']; if (id is! int) continue;
-      
+      final id = r['id'];
+      if (id is! int) continue;
+
       final idx = _RecipeIndex(
         id: id,
         titleLower: _titleOf(r).toLowerCase(),
         ingredientsText: _ingredientsTextOf(r),
         ingredientsLower: _ingredientsTextOf(r).toLowerCase(),
         courses: _coursesOf(r),
-        collections: _collectionsOf(r),
+        collections: _collectionsOf(r), // ✅ now names
         cuisines: _cuisinesOf(r),
         suitable: _suitableForOf(r),
         nutrition: _nutritionTagsOf(r),
-        // ✅ Populating new logic fields
         allergyTags: _allergyTagsOf(r),
         swapText: _swapTextOf(r),
       );
 
-      cSet.addAll(idx.courses); colSet.addAll(idx.collections); cuiSet.addAll(idx.cuisines);
-      sSet.addAll(idx.suitable); nSet.addAll(idx.nutrition);
+      cSet.addAll(idx.courses);
+      colSet.addAll(idx.collections);
+      cuiSet.addAll(idx.cuisines);
+      sSet.addAll(idx.suitable);
+      nSet.addAll(idx.nutrition);
+
       _indexById[id] = idx;
     }
 
-    if (mounted) {
-      setState(() {
-        _courseOptionsCached = ['All', ...(cSet.toList()..sort())];
-        _collectionOptionsCached = ['All', ...(colSet.toList()..sort())];
-        _cuisineOptionsCached = ['All', ...(cuiSet.toList()..sort())];
-        _suitableOptionsCached = ['All', ...(sSet.toList()..sort())];
-        _nutritionOptionsCached = ['All', ...(nSet.toList()..sort())];
-        _indexReady = true;
-        _filters = _filters.copyWith(
-          course: _clampToOptions(_filters.course, _courseOptionsCached),
-          cuisine: _clampToOptions(_filters.cuisine, _cuisineOptionsCached),
-          suitableFor: _clampToOptions(_filters.suitableFor, _suitableOptionsCached),
-          nutritionTag: _clampToOptions(_filters.nutritionTag, _nutritionOptionsCached),
-          collection: _clampToOptions(_filters.collection, _collectionOptionsCached),
-        );
-      });
-    }
+    if (!mounted) return;
+    setState(() {
+      _courseOptionsCached = ['All', ...(cSet.toList()..sort())];
+      _collectionOptionsCached = ['All', ...(colSet.toList()..sort())];
+      _cuisineOptionsCached = ['All', ...(cuiSet.toList()..sort())];
+      _suitableOptionsCached = ['All', ...(sSet.toList()..sort())];
+      _nutritionOptionsCached = ['All', ...(nSet.toList()..sort())];
+      _indexReady = true;
+
+      _filters = _filters.copyWith(
+        course: _clampToOptions(_filters.course, _courseOptionsCached),
+        cuisine: _clampToOptions(_filters.cuisine, _cuisineOptionsCached),
+        suitableFor: _clampToOptions(_filters.suitableFor, _suitableOptionsCached),
+        nutritionTag: _clampToOptions(_filters.nutritionTag, _nutritionOptionsCached),
+        collection: _clampToOptions(_filters.collection, _collectionOptionsCached),
+      );
+    });
   }
 
   String _clampToOptions(String c, List<String> o) => o.contains(c) ? c : 'All';
 
-  // ------------------------
-  // Allergy evaluation
-  // ------------------------
-
   bool _isAllowedForPerson({required ProfilePerson p, required _RecipeIndex ix}) {
     if (!p.hasAllergies || p.allergies.isEmpty) return true;
 
-    // ✅ CORRECT LOGIC: Uses evaluate(), passing tags and swapText
     final res = AllergyEngine.evaluate(
       recipeAllergyTags: ix.allergyTags,
       swapFieldText: ix.swapText,
@@ -675,7 +767,8 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     required _RecipeIndex ix,
     required List<ProfilePerson> activeProfiles,
   }) {
-    final anyActive = activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
+    final anyActive =
+        activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
     if (!anyActive) return (tag: null, swapHint: null);
 
     bool anySwap = false;
@@ -684,7 +777,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     for (final p in activeProfiles) {
       if (!p.hasAllergies || p.allergies.isEmpty) continue;
 
-      // ✅ CORRECT LOGIC: Uses evaluate()
       final res = AllergyEngine.evaluate(
         recipeAllergyTags: ix.allergyTags,
         swapFieldText: ix.swapText,
@@ -701,11 +793,19 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     if (anyNotSuitable) return (tag: '⛔ Not suitable', swapHint: null);
 
     if (anySwap) {
-      return (tag: '⚠️ Swap required', swapHint: null);
+      final label = activeProfiles.length > 1
+          ? '⚠️ Swap required (one or more)'
+          : '⚠️ Swap required';
+      return (tag: label, swapHint: null);
     }
 
-    if (_allergies.mode == SuitabilityMode.singlePerson && activeProfiles.isNotEmpty) {
-      return (tag: '✅ Safe for ${activeProfiles.first.name}', swapHint: null);
+    if (_allergies.mode == SuitabilityMode.specificPeople) {
+      if (activeProfiles.length == 1) {
+        return (tag: '✅ Safe for ${activeProfiles.first.name}', swapHint: null);
+      }
+      if (activeProfiles.length > 1) {
+        return (tag: '✅ Safe for ${activeProfiles.length} selected', swapHint: null);
+      }
     }
     if (_allergies.mode == SuitabilityMode.allChildren) {
       return (tag: '✅ Safe for all children', swapHint: null);
@@ -713,28 +813,32 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     return (tag: '✅ Safe for whole family', swapHint: null);
   }
 
-  // ------------------------
-  // Visibility
-  // ------------------------
-
   void _recomputeVisible() {
     if (!_indexReady) return;
     final q = _query.trim().toLowerCase();
 
     if (!_allergies.enabled && q.isEmpty && _filtersAreDefault) {
-      if (mounted) setState(() { _visible = List.from(_items); _tagById.clear(); });
+      if (mounted) {
+        setState(() {
+          _visible = List<Map<String, dynamic>>.from(_items);
+          _tagById.clear();
+        });
+      }
       return;
     }
 
     final activeProfiles = _allergies.enabled ? _activeProfilesForAllergies() : _allPeople;
-    final hasAnyAllergies = _allergies.enabled && activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
+    final hasAnyAllergies = _allergies.enabled &&
+        activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
 
     final next = <Map<String, dynamic>>[];
     final nextTags = <int, ({String? tag, String? swapHint})>{};
 
     for (final r in _items) {
-      final id = r['id']; if (id is! int) continue;
-      final ix = _indexById[id]; if (ix == null) continue;
+      final id = r['id'];
+      if (id is! int) continue;
+      final ix = _indexById[id];
+      if (ix == null) continue;
 
       if (_filters.course != 'All' && !ix.courses.contains(_filters.course)) continue;
       if (_filters.cuisine != 'All' && !ix.cuisines.contains(_filters.cuisine)) continue;
@@ -742,27 +846,40 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       if (_filters.nutritionTag != 'All' && !ix.nutrition.contains(_filters.nutritionTag)) continue;
       if (_filters.collection != 'All' && !ix.collections.contains(_filters.collection)) continue;
 
-      if (q.isNotEmpty && !ix.titleLower.contains(q) && !ix.ingredientsLower.contains(q)) continue;
+      if (q.isNotEmpty &&
+          !ix.titleLower.contains(q) &&
+          !ix.ingredientsLower.contains(q)) continue;
 
       if (hasAnyAllergies) {
         bool allowed = true;
         for (final p in activeProfiles) {
-          if (!_isAllowedForPerson(p: p, ix: ix)) { allowed = false; break; }
+          if (!_isAllowedForPerson(p: p, ix: ix)) {
+            allowed = false;
+            break;
+          }
         }
         if (!allowed) continue;
-        
+
         nextTags[id] = _tagForRecipe(ix: ix, activeProfiles: activeProfiles);
       }
+
       next.add(r);
     }
 
-    if (mounted) setState(() { _visible = next; _tagById..clear()..addAll(nextTags); });
+    if (!mounted) return;
+    setState(() {
+      _visible = next;
+      _tagById..clear()..addAll(nextTags);
+    });
   }
 
   Widget _favBadge() {
     return Container(
       padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(color: Colors.white.withOpacity(0.90), borderRadius: BorderRadius.circular(999)),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.90),
+        borderRadius: BorderRadius.circular(999),
+      ),
       child: const Icon(Icons.star_rounded, size: 18, color: Colors.amber),
     );
   }
@@ -770,75 +887,154 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   @override
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
+
     if (_items.isEmpty && _error != null) {
-      return Center(child: Padding(padding: const EdgeInsets.all(16), child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Text(_error!, textAlign: TextAlign.center), const SizedBox(height: 12),
-        ElevatedButton(onPressed: () => _loadRecipes(forceRefresh: true), child: const Text('Retry')),
-      ])));
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(_error!, textAlign: TextAlign.center),
+              const SizedBox(height: 12),
+              ElevatedButton(
+                onPressed: () => _loadRecipes(forceRefresh: true),
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
     }
 
     final activeProfiles = _allergies.enabled ? _activeProfilesForAllergies() : _allPeople;
     final hasAnyAllergies = activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
 
-    return Column(children: [
-      Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 8), child: Column(children: [
-        SearchPill(
-          controller: _searchCtrl, focusNode: _searchFocus, hintText: 'Search recipes or by ingredients',
-          onChanged: (v) { _searchDebounce?.cancel(); _searchDebounce = Timer(const Duration(milliseconds: 200), () { if(mounted) { setState(() => _query = v); _recomputeVisible(); } }); },
-          onSubmitted: (_) { _searchDebounce?.cancel(); _recomputeVisible(); },
-          onClear: () { _searchDebounce?.cancel(); _searchCtrl.clear(); setState(() => _query = ''); _recomputeVisible(); },
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Column(
+            children: [
+              SearchPill(
+                controller: _searchCtrl,
+                focusNode: _searchFocus,
+                hintText: 'Search recipes or by ingredients',
+                onChanged: (v) {
+                  _searchDebounce?.cancel();
+                  _searchDebounce = Timer(const Duration(milliseconds: 200), () {
+                    if (!mounted) return;
+                    setState(() => _query = v);
+                    _recomputeVisible();
+                  });
+                },
+                onSubmitted: (_) {
+                  _searchDebounce?.cancel();
+                  _recomputeVisible();
+                },
+                onClear: () {
+                  _searchDebounce?.cancel();
+                  _searchCtrl.clear();
+                  setState(() => _query = '');
+                  _recomputeVisible();
+                },
+              ),
+              const SizedBox(height: 10),
+              RecipeFilterBar(
+                filters: _filters,
+                allergies: _allergies,
+                courseOptions: _courseOptionsCached,
+                cuisineOptions: _cuisineOptionsCached,
+                suitableForOptions: _suitableOptionsCached,
+                nutritionOptions: _nutritionOptionsCached,
+                collectionOptions: _collectionOptionsCached,
+                adults: _adults,
+                children: _children,
+                lockCourse: widget.lockCourse ?? false,
+                lockCollection: widget.lockCollection ?? false,
+                householdLoading: _loadingHousehold,
+                householdError: _householdError,
+                onRetryHousehold: _listenToHousehold,
+                onFiltersApplied: (next) {
+                  setState(() => _filters = next);
+                  Future.microtask(_recomputeVisible);
+                },
+                onAllergiesApplied: (next) {
+                  setState(() => _allergies = next);
+                  Future.microtask(_recomputeVisible);
+                },
+              ),
+              const SizedBox(height: 8),
+              if (_allergies.enabled) ...[
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    hasAnyAllergies
+                        ? 'Allergies considered: ${_activeAllergiesLabelFor(activeProfiles)}'
+                        : 'No allergies saved.',
+                    style: _CStyle.meta(context),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
-        const SizedBox(height: 10),
-        RecipeFilterBar(
-          filters: _filters, allergies: _allergies,
-          courseOptions: _courseOptionsCached, cuisineOptions: _cuisineOptionsCached,
-          suitableForOptions: _suitableOptionsCached, nutritionOptions: _nutritionOptionsCached,
-          collectionOptions: _collectionOptionsCached, adults: _adults, children: _children,
-          lockCourse: widget.lockCourse ?? false, lockCollection: widget.lockCollection ?? false,
-          householdLoading: _loadingHousehold, householdError: _householdError,
-          onRetryHousehold: _listenToHousehold,
-          onFiltersApplied: (next) { setState(() => _filters = next); Future.microtask(() => _recomputeVisible()); },
-          onAllergiesApplied: (next) { setState(() => _allergies = next); Future.microtask(() => _recomputeVisible()); },
-        ),
-        const SizedBox(height: 8),
-        if (_allergies.enabled) ...[
-          const SizedBox(height: 4),
-          Align(alignment: Alignment.centerLeft, child: Text(
-            hasAnyAllergies ? 'Allergies considered: ${_activeAllergiesLabelFor(activeProfiles)}' : 'No allergies saved.',
-            style: _CStyle.meta(context),
-          )),
-        ],
-      ])),
-      Expanded(child: RefreshIndicator(
-        onRefresh: () async {
-          await RecipeRepository.ensureRecipesLoaded(backgroundRefresh: false, forceRefresh: true);
-          final updated = await RecipeCache.load();
-          if (mounted) { setState(() { _items = updated; _visible = List.from(updated); _tagById.clear(); }); _rebuildIndexAndOptions(force: true); if (_allergies.enabled || _query.isNotEmpty || !_filtersAreDefault) _recomputeVisible(); }
-        },
-        child: ListView.separated(
-          controller: _scroll, padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-          itemCount: _visible.length, separatorBuilder: (_, __) => const SizedBox(height: 8),
-          itemBuilder: (context, index) {
-            final r = _visible[index];
-            final id = r['id'] as int?;
-            final title = _titleOf(r);
-            final thumb = _thumbOf(r);
-            final tagData = (_allergies.enabled && id != null) ? _tagById[id] : null;
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: () async {
+              await RecipeRepository.ensureRecipesLoaded(
+                backgroundRefresh: false,
+                forceRefresh: true,
+              );
+              final updated = await RecipeCache.load();
+              if (!mounted) return;
+              setState(() {
+                _items = updated;
+                _visible = List<Map<String, dynamic>>.from(updated);
+                _tagById.clear();
+              });
+              _rebuildIndexAndOptions(force: true);
+              if (_allergies.enabled || _query.isNotEmpty || !_filtersAreDefault) {
+                _recomputeVisible();
+              }
+            },
+            child: ListView.separated(
+              controller: _scroll,
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              itemCount: _visible.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (context, index) {
+                final r = _visible[index];
+                final id = r['id'] as int?;
+                final title = _titleOf(r);
+                final thumb = _thumbOf(r);
+                final tagData = (_allergies.enabled && id != null) ? _tagById[id] : null;
 
-            final subtitleParts = [
-              if (_allergies.enabled && tagData?.tag != null) tagData!.tag!,
-              if (_allergies.enabled && tagData?.swapHint != null) tagData!.swapHint!,
-            ];
-            final subtitle = subtitleParts.where((s) => s.trim().isNotEmpty).join(' • ');
+                final subtitleParts = <String>[
+                  if (_allergies.enabled && tagData?.tag != null) tagData!.tag!,
+                  if (_allergies.enabled && tagData?.swapHint != null) tagData!.swapHint!,
+                ];
+                final subtitle = subtitleParts.where((s) => s.trim().isNotEmpty).join(' • ');
 
-            return RecipeCard(
-              title: title, subtitle: subtitle.isEmpty ? null : subtitle, imageUrl: thumb, compact: false,
-              badge: _isFavorited(id) ? _favBadge() : null, trailing: const Icon(Icons.chevron_right),
-              onTap: id == null ? null : () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: id))),
-            );
-          },
+                return RecipeCard(
+                  title: title,
+                  subtitle: subtitle.isEmpty ? null : subtitle,
+                  imageUrl: thumb,
+                  compact: false,
+                  badge: _isFavorited(id) ? _favBadge() : null,
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: id == null
+                      ? null
+                      : () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: id)),
+                          ),
+                );
+              },
+            ),
+          ),
         ),
-      )),
-    ]);
+      ],
+    );
   }
 }

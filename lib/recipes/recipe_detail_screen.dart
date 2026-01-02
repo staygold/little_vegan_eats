@@ -130,8 +130,8 @@ class _RText {
   static const TextStyle ingName = TextStyle(
     fontFamily: font,
     fontSize: 16,
-    fontWeight: FontWeight.w700,
-    fontVariations: [FontVariation('wght', 700)],
+    fontWeight: FontWeight.w600,
+    fontVariations: [FontVariation('wght', 600)],
     height: 1.4,
     color: AppColors.brandDark,
   );
@@ -260,6 +260,10 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   int _profileAdults = 2;
   int _profileKids = 1;
   double _scale = 1.0;
+
+  // ✅ WPRM unit system toggle:
+  // 1 = original amounts/units, 2 = converted["2"] amounts/units when present
+  int _unitSystem = 1;
 
   StreamSubscription<User?>? _authSub;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _profileSub;
@@ -435,6 +439,101 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   }
 
   // ===========================================================================
+  // 🟢 WPRM UNIT CONVERSION HELPERS (System 2)
+  // ===========================================================================
+
+  bool _rowHasConverted2(Map row) {
+    final converted = row['converted'];
+    if (converted is Map) {
+      final c2 = converted['2'] ?? converted[2];
+      if (c2 is Map) {
+        final amt = c2['amount']?.toString().trim() ?? '';
+        final unit = c2['unit']?.toString().trim() ?? '';
+        // if either exists, consider it usable
+        return amt.isNotEmpty || unit.isNotEmpty;
+      }
+    }
+    return false;
+  }
+
+  bool _hasConvertedSystem2(List ingredientsFlat) {
+    for (final row in ingredientsFlat) {
+      if (row is Map && row['type'] != 'group') {
+        if (_rowHasConverted2(row)) return true;
+      }
+    }
+    return false;
+  }
+
+  Map<String, dynamic>? _converted2(Map row) {
+    final converted = row['converted'];
+    if (converted is Map) {
+      final c2 = converted['2'] ?? converted[2];
+      if (c2 is Map) return Map<String, dynamic>.from(c2.cast<String, dynamic>());
+    }
+    return null;
+  }
+
+  // Parses: "2", "2.5", "2/3", "1 1/2", "½"
+  double? _parseAmountToDouble(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return null;
+
+    const unicode = {
+      '½': 0.5,
+      '⅓': 1 / 3,
+      '⅔': 2 / 3,
+      '¼': 0.25,
+      '¾': 0.75,
+      '⅛': 0.125,
+      '⅜': 0.375,
+      '⅝': 0.625,
+      '⅞': 0.875,
+    };
+    if (unicode.containsKey(s)) return unicode[s];
+
+    // mixed number: "1 1/2"
+    final mixed = RegExp(r'^(\d+)\s+(\d+)\s*/\s*(\d+)$').firstMatch(s);
+    if (mixed != null) {
+      final whole = double.parse(mixed.group(1)!);
+      final a = double.parse(mixed.group(2)!);
+      final b = double.parse(mixed.group(3)!);
+      if (b == 0) return null;
+      return whole + (a / b);
+    }
+
+    // fraction: "2/3"
+    final frac = RegExp(r'^(\d+)\s*/\s*(\d+)$').firstMatch(s);
+    if (frac != null) {
+      final a = double.parse(frac.group(1)!);
+      final b = double.parse(frac.group(2)!);
+      if (b == 0) return null;
+      return a / b;
+    }
+
+    return double.tryParse(s);
+  }
+
+  // Prefer converted if system 2 selected AND row has it; otherwise fallback to original
+  String _amountForRow(Map row) {
+    if (_unitSystem == 2 && _rowHasConverted2(row)) {
+      final c2 = _converted2(row);
+      final raw = (c2?['amount'] ?? '').toString();
+      return _scaledAmount(raw, _scale);
+    }
+    return _scaledAmount((row['amount'] ?? '').toString(), _scale);
+  }
+
+  String _unitForRow(Map row) {
+    if (_unitSystem == 2 && _rowHasConverted2(row)) {
+      final c2 = _converted2(row);
+      final u = (c2?['unit'] ?? '').toString().trim();
+      return u;
+    }
+    return (row['unit'] ?? '').toString().trim();
+  }
+
+  // ===========================================================================
   // 🟢 WIDGETS
   // ===========================================================================
 
@@ -449,6 +548,111 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       child: child,
     );
   }
+
+  // ✅ Segmented control pill (only shown when conversion exists)
+   // ✅ Segmented control pill (only shown when conversion exists)
+  Widget _unitSystemToggle({
+    required bool show,
+    String leftLabel = 'METRIC',
+    String rightLabel = 'US',
+  }) {
+    if (!show) return const SizedBox.shrink();
+
+    const trackBg = Colors.white;
+    const pillBg = Color(0xFFD9E6E5);
+    final border = Colors.black.withOpacity(0.06);
+
+    const height = 40.0;
+    const pad = 4.0;
+    final radius = BorderRadius.circular(999);
+
+    Widget segButton({
+      required int value,
+      required String label,
+    }) {
+      final selected = _unitSystem == value;
+
+      return Expanded(
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            // ✅ remove the grey flash
+            splashFactory: NoSplash.splashFactory,
+            splashColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            focusColor: Colors.transparent,
+            overlayColor: WidgetStateProperty.all(Colors.transparent),
+
+            borderRadius: radius,
+            onTap: () => setState(() => _unitSystem = value),
+            child: SizedBox(
+              height: height,
+              child: Center(
+                child: Text(
+                  label,
+                  style: _RText.bodySoft.copyWith(
+                    fontSize: 16,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                    fontVariations: [FontVariation('wght', selected ? 700 : 600)],
+                    color: AppColors.brandDark,
+                    height: 1.0,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 10, bottom: 12),
+      padding: const EdgeInsets.all(pad),
+      decoration: BoxDecoration(
+        color: trackBg,
+        borderRadius: radius,
+        border: Border.all(color: border),
+      ),
+      child: SizedBox(
+        height: height,
+        child: LayoutBuilder(
+          builder: (context, c) {
+            final half = (c.maxWidth - (pad * 2)) / 2;
+
+            return Stack(
+              children: [
+                // ✅ sliding pill background
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  top: 0,
+                  bottom: 0,
+                  left: (_unitSystem == 1) ? 0 : half,
+                  width: half,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: pillBg,
+                      borderRadius: radius,
+                    ),
+                  ),
+                ),
+
+                // buttons on top
+                Row(
+                  children: [
+                    segButton(value: 1, label: leftLabel),
+                    segButton(value: 2, label: rightLabel),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
 
   Widget _swapsCard(Map<String, dynamic>? recipe) {
     final rawText = _getField(recipe, 'ingredient_swaps');
@@ -524,7 +728,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         const SizedBox(height: 40),
         Text('SERVING SUGGESTIONS', style: _RText.section),
         const SizedBox(height: 12),
-        _card(child: Text(text, style: _RText.body.copyWith(height: 1.25))),
+        _card(child: Text(text, style: _RText.body.copyWith(height: 1.4))),
       ],
     );
   }
@@ -547,7 +751,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         const SizedBox(height: 40),
         Text('STORAGE DETAILS', style: _RText.section),
         const SizedBox(height: 12),
-        _card(child: Text(text, style: _RText.body.copyWith(height: 1.25))),
+        _card(child: Text(text, style: _RText.body.copyWith(height: 1.4))),
       ],
     );
   }
@@ -590,7 +794,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
-  // ✅ NEW: nicer labels for 0.5 batch
   String _multiplierLabel(double v) {
     if ((v - 0.5).abs() < 0.0001) return 'Half batch';
     return '${_fmtMultiplier(v)} batch';
@@ -629,7 +832,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (servingsText != null && servingsText.isNotEmpty) ...[
-            Text('This recipe makes $servingsText', style: _RText.servingTop),
+            Text('This recipe makes $servingsText adult portions', style: _RText.servingTop),
             const SizedBox(height: 12),
           ],
           Container(
@@ -656,9 +859,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               ],
             ),
           ),
-
-          
-
           const SizedBox(height: 20),
           Divider(color: Colors.black.withOpacity(0.08), height: 1),
           const SizedBox(height: 20),
@@ -686,13 +886,11 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               ),
             ],
           ),
-
           if (showHiddenSection) ...[
             const SizedBox(height: 20),
             Divider(color: Colors.black.withOpacity(0.08), height: 1),
             const SizedBox(height: 20),
           ],
-
           if (showRecommended) ...[
             Row(
               crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -807,22 +1005,45 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       children: [
         Text('ESTIMATED NUTRITION', style: _RText.section),
         const SizedBox(height: 12),
-        Text('Based on one serving', style: _RText.chip),
-        const SizedBox(height: 12),
+        
         _card(
           padding: const EdgeInsets.all(18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
-                children: [
-                  const Expanded(child: SizedBox()),
-                  SizedBox(width: 86, child: Text('Adult', textAlign: TextAlign.right, style: _RText.chip)),
-                  const SizedBox(width: 12),
-                  SizedBox(width: 86, child: Text('Child', textAlign: TextAlign.right, style: _RText.chip)),
-                ],
-              ),
-              const SizedBox(height: 8),
+  crossAxisAlignment: CrossAxisAlignment.end,
+  children: [
+    // ✅ LEFT: serving note
+    Expanded(
+      child: Text(
+        'Based on one serving',
+        style: _RText.chip,
+      ),
+    ),
+
+    // ✅ RIGHT: column headers
+    SizedBox(
+      width: 86,
+      child: Text(
+        'Adult',
+        textAlign: TextAlign.right,
+        style: _RText.chip,
+      ),
+    ),
+    const SizedBox(width: 12),
+    SizedBox(
+      width: 86,
+      child: Text(
+        'Child',
+        textAlign: TextAlign.right,
+        style: _RText.chip,
+      ),
+    ),
+  ],
+),
+
+              const SizedBox(height: 12),
               Divider(height: 1, thickness: 1, color: Colors.black.withOpacity(0.06)),
               const SizedBox(height: 8),
               for (int i = 0; i < rows.length; i++)
@@ -897,18 +1118,33 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
+  // ✅ Updated to scale fractions too (e.g. "2/3")
   String _scaledAmount(String rawAmount, double mult) {
     final a = rawAmount.trim();
     if (a.isEmpty || mult == 1.0) return a;
-    final mX =
-        RegExp(r'^\s*([0-9]+(?:\.\d+)?)(\s*x\s*)$', caseSensitive: false).firstMatch(a);
+
+    // Keep "2 x" pattern intact
+    final mX = RegExp(r'^\s*([0-9]+(?:\.\d+)?)(\s*x\s*)$', caseSensitive: false).firstMatch(a);
     if (mX != null) return '${_fmtSmart(double.parse(mX.group(1)!) * mult)} x';
+
+    // If it starts with a parseable amount (incl fractions), scale just that prefix
+    final mPrefix = RegExp(r'^\s*([0-9]+(?:\.[0-9]+)?(?:\s+[0-9]+\s*/\s*[0-9]+|(?:\s*/\s*[0-9]+)?)|[½⅓⅔¼¾⅛⅜⅝⅞])')
+        .firstMatch(a);
+    if (mPrefix != null) {
+      final prefix = mPrefix.group(1)!.trim();
+      final parsed = _parseAmountToDouble(prefix);
+      if (parsed != null) {
+        final scaled = _fmtSmart(parsed * mult);
+        return a.replaceFirst(mPrefix.group(1)!, scaled).trim();
+      }
+    }
+
+    // Fallback: try old numeric prefix scaling
     final mNum = RegExp(r'^\s*([0-9]+(?:\.\d+)?)').firstMatch(a);
     if (mNum != null) {
-      return a
-          .replaceFirst(mNum.group(1)!, _fmtSmart(double.parse(mNum.group(1)!) * mult))
-          .trim();
+      return a.replaceFirst(mNum.group(1)!, _fmtSmart(double.parse(mNum.group(1)!) * mult)).trim();
     }
+
     return a;
   }
 
@@ -939,12 +1175,13 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       Icon(isFav ? Icons.star : Icons.star_border, size: 36, color: Colors.white);
 
   Widget _ingredientRow(Map row) {
-    final amount = _scaledAmount((row['amount'] ?? '').toString(), _scale);
-    final unit = (row['unit'] ?? '').toString().trim();
+    final amount = _amountForRow(row);
+    final unit = _unitForRow(row);
     final name = (row['name'] ?? '').toString().trim();
     final notes = stripHtml((row['notes'] ?? '').toString()).trim();
     final amountUnit = [amount, unit].where((s) => s.isNotEmpty).join(' ');
     if (amountUnit.isEmpty && name.isEmpty) return const SizedBox.shrink();
+
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: 8),
@@ -1016,17 +1253,28 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   Widget build(BuildContext context) {
     final recipe =
         (_data?['recipe'] is Map) ? Map<String, dynamic>.from(_data!['recipe'] as Map) : null;
-    final title = (_data?['title']?['rendered'] as String?) ??
-        (recipe?['name'] as String?) ??
-        'Recipe';
+
+    final title = (_data?['title']?['rendered'] as String?) ?? (recipe?['name'] as String?) ?? 'Recipe';
+
     final imageUrl = (recipe?['image_url_full'] ??
             recipe?['image_url'] ??
             recipe?['image'] ??
             recipe?['thumbnail_url'])
         ?.toString();
+
     final heroUrl = upscaleJetpackImage(imageUrl, w: 1600, h: 900);
+
     final ingredientsFlat =
         (recipe?['ingredients_flat'] is List) ? (recipe!['ingredients_flat'] as List) : const [];
+
+    // ✅ only show toggle if conversions exist on this recipe
+    final canConvert = _hasConvertedSystem2(ingredientsFlat);
+    if (!canConvert && _unitSystem != 1) {
+      // if you navigate between recipes and the previous one had conversions,
+      // force back to original when this one doesn't.
+      _unitSystem = 1;
+    }
+
     final cleanSteps = (recipe?['instructions_flat'] as List? ?? [])
         .whereType<Map>()
         .map((s) => stripHtml((s['text'] ?? '').toString()))
@@ -1034,12 +1282,14 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         .toList();
 
     const pageBg = Color(0xFFECF3F4);
+
     if (_loading) {
       return const Scaffold(
         backgroundColor: pageBg,
         body: Center(child: CircularProgressIndicator()),
       );
     }
+
     if (_error != null) {
       return Scaffold(
         backgroundColor: pageBg,
@@ -1162,8 +1412,18 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                             const SizedBox(height: 20),
                             _servingPanelCard(context, recipe),
                             const SizedBox(height: 40),
+
+                            // INGREDIENTS
                             Text('INGREDIENTS', style: _RText.section),
-                            const SizedBox(height: 12),
+
+                            // ✅ Unit conversion segmented control (only when available)
+                            _unitSystemToggle(
+                              show: canConvert,
+                              leftLabel: 'METRIC',
+                              rightLabel: 'US',
+                            ),
+
+                            const SizedBox(height: 2),
                             for (final row in ingredientsFlat)
                               if (row is Map && row['type'] == 'group')
                                 Padding(
@@ -1175,7 +1435,9 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                 )
                               else if (row is Map)
                                 _ingredientRow(row),
+
                             _swapsCard(recipe),
+
                             const SizedBox(height: 40),
                             Text('INSTRUCTIONS', style: _RText.section),
                             const SizedBox(height: 12),

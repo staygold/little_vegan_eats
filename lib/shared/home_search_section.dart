@@ -38,7 +38,6 @@ class HomeSearchSection extends StatelessWidget {
   Widget build(BuildContext context) {
     const bg = Color(0xFF005A4F);
     const pillBg = Colors.white;
-    const pillText = Color(0xFF044246);
     const iconGrey = Color.fromRGBO(4, 66, 70, 0.45);
     const quickBg = Color.fromRGBO(255, 255, 255, 0.10);
 
@@ -82,47 +81,51 @@ class HomeSearchSection extends StatelessWidget {
           const SizedBox(height: 16),
 
           // Search "bar" (button, not editable)
+          // ✅ Robust tap handling (works reliably inside scrollables)
           Semantics(
             button: true,
             label: 'Search recipes or by ingredients',
-            child: InkWell(
-              borderRadius: BorderRadius.circular(999),
-              onTap: onSearchTap,
-              child: Container(
-                height: 72,
-                padding: const EdgeInsets.symmetric(horizontal: 22),
-                decoration: BoxDecoration(
-                  color: pillBg,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Row(
-                  children: [
-                    // ✅ SEARCH ICON ON THE LEFT
-                    const Icon(
-                      Icons.search,
-                      size: 30,
-                      color: iconGrey,
-                    ),
-
-                    const SizedBox(width: 12),
-
-                    Expanded(
-                      child: Text(
-                        'Search recipes or by ingredients',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontFamily: 'Montserrat',
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                          fontVariations: [FontVariation('wght', 600)],
-                          height: 1.0,
-                          letterSpacing: 0,
-                          color: AppColors.brandDark,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onSearchTap,
+                borderRadius: BorderRadius.circular(999),
+                // ✅ Forces InkWell to compete properly in gesture arena
+                // (prevents "tap dies" when inside a scroll view)
+                splashFactory: InkSparkle.splashFactory,
+                child: Ink(
+                  height: 72,
+                  padding: const EdgeInsets.symmetric(horizontal: 22),
+                  decoration: BoxDecoration(
+                    color: pillBg,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Row(
+                    children: const [
+                      Icon(
+                        Icons.search,
+                        size: 30,
+                        color: iconGrey,
+                      ),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Search recipes or by ingredients',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontFamily: 'Montserrat',
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                            fontVariations: [FontVariation('wght', 600)],
+                            height: 1.0,
+                            letterSpacing: 0,
+                            color: AppColors.brandDark,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -159,40 +162,43 @@ class _QuickActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: item.onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-        child: Column(
-          children: [
-            Container(
-              width: 60,
-              height: 60,
-              decoration: BoxDecoration(
-                color: bg,
-                shape: BoxShape.circle,
-              ),
-              alignment: Alignment.center,
-              child: SvgPicture.asset(
-                item.asset,
-                width: 34,
-                height: 34,
-                colorFilter: const ColorFilter.mode(
-                  Colors.white,
-                  BlendMode.srcIn,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: item.onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          child: Column(
+            children: [
+              Container(
+                width: 60,
+                height: 60,
+                decoration: BoxDecoration(
+                  color: bg,
+                  shape: BoxShape.circle,
+                ),
+                alignment: Alignment.center,
+                child: SvgPicture.asset(
+                  item.asset,
+                  width: 34,
+                  height: 34,
+                  colorFilter: const ColorFilter.mode(
+                    Colors.white,
+                    BlendMode.srcIn,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              item.label,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                  ),
-            ),
-          ],
+              const SizedBox(height: 10),
+              Text(
+                item.label,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -1,11 +1,14 @@
 // lib/recipes/widgets/recipe_filters_ui.dart
+import 'dart:io';
 import 'dart:ui';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../../theme/app_theme.dart';
 
-enum SuitabilityMode { wholeFamily, allChildren, singlePerson }
+// ✅ UPDATED: Supports "specificPeople" (plural)
+enum SuitabilityMode { wholeFamily, allChildren, specificPeople }
 enum PersonType { adult, child }
 
 class ProfilePerson {
@@ -69,20 +72,19 @@ class RecipeFilterSelection {
 class AllergiesSelection {
   final bool enabled;
   final SuitabilityMode mode;
-  final String? personId;
+
+  /// ✅ multi-select people (only when mode == specificPeople)
+  final Set<String> personIds;
+
   final bool includeSwaps;
 
   const AllergiesSelection({
     this.enabled = true,
     this.mode = SuitabilityMode.wholeFamily,
-    this.personId,
+    this.personIds = const {},
     this.includeSwaps = false,
   });
 
-  /// Badge count reflects only what's applied:
-  /// 0 if disabled
-  /// 1 if enabled
-  /// +1 if swaps enabled
   int get activeCount {
     if (!enabled) return 0;
     int n = 1;
@@ -93,13 +95,13 @@ class AllergiesSelection {
   AllergiesSelection copyWith({
     bool? enabled,
     SuitabilityMode? mode,
-    String? personId,
+    Set<String>? personIds,
     bool? includeSwaps,
   }) {
     return AllergiesSelection(
       enabled: enabled ?? this.enabled,
       mode: mode ?? this.mode,
-      personId: personId ?? this.personId,
+      personIds: personIds ?? this.personIds,
       includeSwaps: includeSwaps ?? this.includeSwaps,
     );
   }
@@ -107,17 +109,16 @@ class AllergiesSelection {
 
 ///
 /// ✅ Single place to customise Filters UI styling.
-/// Edit these constants and your whole filters experience updates.
 ///
 class _FStyle {
   static const String font = 'Montserrat';
 
-  // Core colours (change these first)
-  static const Color brand = AppColors.brandDark; // main accent
+  // Core colours
+  static const Color brand = AppColors.brandDark;
   static const Color sheetBg = Colors.white;
   static const Color pillBg = Colors.white;
-  static const Color border = Color(0x14000000); // subtle border
-  static const Color muted = Color(0x8C000000); // 55% black-ish
+  static const Color border = Color(0x14000000);
+  static const Color muted = Color(0x8C000000);
   static const Color chipBg = AppColors.brandDark;
   static const Color chipText = Colors.white;
 
@@ -136,7 +137,7 @@ class _FStyle {
   // Spacing
   static const EdgeInsets pillPadding = EdgeInsets.symmetric(horizontal: 14);
   static const EdgeInsets sheetPadding = EdgeInsets.fromLTRB(16, 0, 16, 16);
-  static const EdgeInsets fieldPadding = EdgeInsets.symmetric(horizontal: 14, vertical: 4);
+  static const EdgeInsets fieldContentPadding = EdgeInsets.symmetric(horizontal: 16, vertical: 14);
   static const EdgeInsets chipPadding = EdgeInsets.symmetric(horizontal: 12);
 
   // Typography
@@ -177,14 +178,28 @@ class _FStyle {
     color: AppColors.brandDark,
   );
 
-  static const TextStyle sectionLabel = TextStyle(
+  static const TextStyle fieldLabel = TextStyle(
     fontFamily: font,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: FontWeight.w900,
     fontVariations: [FontVariation('wght', 900)],
-    letterSpacing: 0.4,
+    letterSpacing: 0.2,
     height: 1.0,
     color: AppColors.brandDark,
+  );
+
+  static TextStyle fieldFloatingLabel(BuildContext context) => fieldLabel.copyWith(
+        fontSize: 12,
+        color: brand.withOpacity(0.90),
+      );
+
+  static const TextStyle fieldValue = TextStyle(
+    fontFamily: font,
+    fontSize: 20,
+    fontWeight: FontWeight.w800,
+    fontVariations: [FontVariation('wght', 800)],
+    height: 1.05,
+    color: Colors.black,
   );
 
   static const TextStyle helper = TextStyle(
@@ -206,15 +221,6 @@ class _FStyle {
     color: Colors.white,
   );
 
-  static const TextStyle emptyState = TextStyle(
-    fontFamily: font,
-    fontSize: 13,
-    fontWeight: FontWeight.w600,
-    fontVariations: [FontVariation('wght', 600)],
-    height: 1.2,
-    color: muted,
-  );
-
   static const TextStyle personName = TextStyle(
     fontFamily: font,
     fontSize: 14,
@@ -225,30 +231,49 @@ class _FStyle {
 
   // Reusable decorations
   static BoxDecoration pillDecoration() => BoxDecoration(
-    borderRadius: BorderRadius.circular(pillRadius),
-    border: Border.all(color: border),
-    color: pillBg,
-  );
+        borderRadius: BorderRadius.circular(pillRadius),
+        border: Border.all(color: border),
+        color: pillBg,
+      );
 
   static BoxDecoration chipDecoration() => BoxDecoration(
-    color: chipBg,
-    borderRadius: BorderRadius.circular(chipRadius),
-  );
+        color: chipBg,
+        borderRadius: BorderRadius.circular(chipRadius),
+      );
 
-  static BoxDecoration fieldDecoration() => BoxDecoration(
-    borderRadius: BorderRadius.circular(fieldRadius),
-    border: Border.all(color: Colors.black.withOpacity(0.10)),
-    color: Colors.transparent,
-  );
+  static InputDecoration fieldInputDecoration(BuildContext context, String label, {bool enabled = true}) {
+    return InputDecoration(
+      labelText: label,
+      floatingLabelBehavior: FloatingLabelBehavior.auto,
+      contentPadding: fieldContentPadding,
+      labelStyle: fieldLabel.copyWith(
+        color: enabled ? fieldLabel.color : Colors.black45,
+      ),
+      floatingLabelStyle: fieldFloatingLabel(context),
+      enabled: enabled,
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(fieldRadius),
+        borderSide: BorderSide(color: Colors.black.withOpacity(0.10)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(fieldRadius),
+        borderSide: BorderSide(color: brand.withOpacity(0.55), width: 1.2),
+      ),
+      disabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(fieldRadius),
+        borderSide: BorderSide(color: Colors.black.withOpacity(0.06)),
+      ),
+    );
+  }
 
   static ButtonStyle ctaButtonStyle() => ElevatedButton.styleFrom(
-    backgroundColor: brand,
-    foregroundColor: Colors.white,
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(ctaRadius),
-    ),
-    elevation: 0,
-  );
+        backgroundColor: brand,
+        foregroundColor: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(ctaRadius),
+        ),
+        elevation: 0,
+      );
 }
 
 class RecipeFilterBar extends StatelessWidget {
@@ -307,8 +332,14 @@ class RecipeFilterBar extends StatelessWidget {
     if (a.mode == SuitabilityMode.wholeFamily) return 'Whole family';
     if (a.mode == SuitabilityMode.allChildren) return 'All children';
 
-    final p = _allPeople.where((x) => x.id == a.personId).toList();
-    if (p.isNotEmpty) return p.first.name;
+    if (a.personIds.isNotEmpty) {
+      final names = _allPeople.where((p) => a.personIds.contains(p.id)).map((p) => p.name).toList();
+      if (names.isNotEmpty) {
+        if (names.length == 1) return names.first;
+        if (names.length == 2) return '${names[0]} & ${names[1]}';
+        return '${names.length} people';
+      }
+    }
     return 'Whole family';
   }
 
@@ -350,7 +381,6 @@ class RecipeFilterBar extends StatelessWidget {
       ));
     }
 
-    // Allergies chips (only when enabled)
     if (allergies.enabled) {
       chips.add(_ChipSpec(
         label: _allergiesChipLabel(allergies),
@@ -358,7 +388,7 @@ class RecipeFilterBar extends StatelessWidget {
           allergies.copyWith(
             enabled: false,
             mode: SuitabilityMode.wholeFamily,
-            personId: null,
+            personIds: const {},
             includeSwaps: false,
           ),
         ),
@@ -458,8 +488,7 @@ class RecipeFilterBar extends StatelessWidget {
               ],
             ),
           ),
-         ] else ...[
-          // ✅ nothing when no chips
+        ] else ...[
           const SizedBox(height: 0),
         ],
       ],
@@ -489,7 +518,8 @@ class _PillButton extends StatelessWidget {
     final showCount = count > 0;
 
     return Material(
-      color: Colors.transparent,
+      // ✅ keep your visuals exactly the same, but ensure InkWell has a Material color to draw on
+      color: _FStyle.pillBg,
       borderRadius: BorderRadius.circular(_FStyle.pillRadius),
       child: InkWell(
         borderRadius: BorderRadius.circular(_FStyle.pillRadius),
@@ -497,7 +527,11 @@ class _PillButton extends StatelessWidget {
         child: Container(
           height: _FStyle.pillHeight,
           padding: _FStyle.pillPadding,
-          decoration: _FStyle.pillDecoration(),
+          // ✅ border only here, fill comes from Material above
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(_FStyle.pillRadius),
+            border: Border.all(color: _FStyle.border),
+          ),
           child: Row(
             children: [
               Expanded(child: Text(label, style: _FStyle.pillLabel)),
@@ -539,6 +573,7 @@ class _FilterChip extends StatelessWidget {
         children: [
           Text(label, style: _FStyle.chip),
           const SizedBox(width: 6),
+          // ✅ GestureDetector DOES support behavior in your Flutter version (InkWell doesn't).
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: onClear,
@@ -673,44 +708,44 @@ class _FiltersSheetState extends State<_FiltersSheet> {
           child: Column(
             children: [
               if (!widget.lockCourse)
-                _SelectField(
+                _FloatingNativeSelectField(
                   label: 'Course',
-                  value: _draft.course,
+                  value: course,
                   options: widget.courseOptions,
                   onChanged: (v) => setState(() => _draft = _draft.copyWith(course: v)),
                 ),
               if (!widget.lockCuisine) ...[
                 const SizedBox(height: 10),
-                _SelectField(
+                _FloatingNativeSelectField(
                   label: 'Cuisine',
-                  value: _draft.cuisine,
+                  value: cuisine,
                   options: widget.cuisineOptions,
                   onChanged: (v) => setState(() => _draft = _draft.copyWith(cuisine: v)),
                 ),
               ],
               if (!widget.lockSuitableFor) ...[
                 const SizedBox(height: 10),
-                _SelectField(
+                _FloatingNativeSelectField(
                   label: 'Age range',
-                  value: _draft.suitableFor,
+                  value: suitableFor,
                   options: widget.suitableForOptions,
                   onChanged: (v) => setState(() => _draft = _draft.copyWith(suitableFor: v)),
                 ),
               ],
               if (!widget.lockNutrition) ...[
                 const SizedBox(height: 10),
-                _SelectField(
+                _FloatingNativeSelectField(
                   label: 'Nutrition',
-                  value: _draft.nutritionTag,
+                  value: nutrition,
                   options: widget.nutritionOptions,
                   onChanged: (v) => setState(() => _draft = _draft.copyWith(nutritionTag: v)),
                 ),
               ],
               if (!widget.lockCollection) ...[
                 const SizedBox(height: 10),
-                _SelectField(
+                _FloatingNativeSelectField(
                   label: 'Collection',
-                  value: _draft.collection,
+                  value: collection,
                   options: widget.collectionOptions,
                   onChanged: (v) => setState(() => _draft = _draft.copyWith(collection: v)),
                 ),
@@ -765,22 +800,46 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
     super.initState();
     _draft = widget.initial;
 
-    if (_draft.mode == SuitabilityMode.singlePerson) {
-      final exists = _allPeople.any((p) => p.id == _draft.personId);
-      if (!exists) {
-        _draft = _draft.copyWith(
-          mode: SuitabilityMode.wholeFamily,
-          personId: null,
-          includeSwaps: false,
-        );
+    if (_draft.mode == SuitabilityMode.specificPeople) {
+      final valid = _draft.personIds.where((id) => _allPeople.any((p) => p.id == id)).toSet();
+      if (valid.length != _draft.personIds.length) {
+        _draft = _draft.copyWith(personIds: valid);
+      }
+      if (valid.isEmpty) {
+        _draft = _draft.copyWith(mode: SuitabilityMode.wholeFamily);
       }
     }
   }
 
-  // Helper to set new mode
-  void _setMode(SuitabilityMode mode, [String? personId]) {
+  void _setMode(SuitabilityMode mode) {
     setState(() {
-      _draft = _draft.copyWith(mode: mode, personId: personId);
+      _draft = _draft.copyWith(mode: mode);
+      if (mode != SuitabilityMode.specificPeople) {
+        _draft = _draft.copyWith(personIds: const {});
+      }
+    });
+  }
+
+  void _togglePerson(String id) {
+    final current = Set<String>.from(_draft.personIds);
+    if (current.contains(id)) {
+      current.remove(id);
+    } else {
+      current.add(id);
+    }
+
+    setState(() {
+      if (current.isEmpty) {
+        _draft = _draft.copyWith(
+          mode: SuitabilityMode.wholeFamily,
+          personIds: const {},
+        );
+      } else {
+        _draft = _draft.copyWith(
+          mode: SuitabilityMode.specificPeople,
+          personIds: current,
+        );
+      }
     });
   }
 
@@ -801,7 +860,6 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Main Toggle
               Row(
                 children: [
                   Expanded(
@@ -820,11 +878,10 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                     onChanged: (v) {
                       setState(() {
                         _draft = _draft.copyWith(enabled: v);
-                        // Reset selection when disabled
                         if (!v) {
                           _draft = _draft.copyWith(
                             mode: SuitabilityMode.wholeFamily,
-                            personId: null,
+                            personIds: const {},
                             includeSwaps: false,
                           );
                         }
@@ -833,7 +890,6 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                   ),
                 ],
               ),
-
               if (widget.householdLoading) ...[
                 const SizedBox(height: 20),
                 const Center(child: CircularProgressIndicator(strokeWidth: 2)),
@@ -843,14 +899,12 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                 Text(widget.householdError!, style: _FStyle.helper.copyWith(color: Colors.red)),
                 TextButton(onPressed: widget.onRetryHousehold, child: const Text('Retry')),
               ] else if (enabled) ...[
-                // THE SELECTOR LIST
                 const SizedBox(height: 12),
                 Text(
                   'SUITABLE FOR',
-                  style: _FStyle.sectionLabel.copyWith(color: _FStyle.muted, fontSize: 11),
+                  style: _FStyle.fieldLabel.copyWith(color: _FStyle.muted, fontSize: 11),
                 ),
                 const SizedBox(height: 8),
-
                 _PersonSelector(
                   label: 'Whole family',
                   isSelected: _draft.mode == SuitabilityMode.wholeFamily,
@@ -866,24 +920,23 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                   const SizedBox(height: 12),
                   Text(
                     'INDIVIDUALS',
-                    style: _FStyle.sectionLabel.copyWith(color: _FStyle.muted, fontSize: 11),
+                    style: _FStyle.fieldLabel.copyWith(color: _FStyle.muted, fontSize: 11),
                   ),
                   const SizedBox(height: 8),
-                  ..._allPeople.map((p) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: _PersonSelector(
-                      label: p.name,
-                      isSelected: _draft.mode == SuitabilityMode.singlePerson && _draft.personId == p.id,
-                      onTap: () => _setMode(SuitabilityMode.singlePerson, p.id),
+                  ..._allPeople.map(
+                    (p) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _PersonSelector(
+                        label: p.name,
+                        isSelected: _draft.mode == SuitabilityMode.specificPeople && _draft.personIds.contains(p.id),
+                        onTap: () => _togglePerson(p.id),
+                      ),
                     ),
-                  )),
+                  ),
                 ],
-
                 const SizedBox(height: 12),
                 const Divider(height: 1),
                 const SizedBox(height: 12),
-
-                // Swaps Toggle
                 Row(
                   children: [
                     const Expanded(child: _AllergySwapCopy()),
@@ -895,7 +948,6 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                   ],
                 ),
               ],
-
               const SizedBox(height: 20),
               SizedBox(
                 width: double.infinity,
@@ -927,35 +979,42 @@ class _PersonSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
+    // ✅ wrap in Material so InkWell is always responsive (visuals unchanged)
+    final bg = isSelected ? _FStyle.brand.withOpacity(0.08) : Colors.transparent;
+
+    return Material(
+      color: bg,
       borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: BoxDecoration(
-          color: isSelected ? _FStyle.brand.withOpacity(0.08) : Colors.transparent,
-          borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
-          border: Border.all(
-            color: isSelected ? _FStyle.brand : Colors.black.withOpacity(0.1),
-            width: isSelected ? 1.5 : 1,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            // color is on Material above to keep InkWell responsive
+            borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
+            border: Border.all(
+              color: isSelected ? _FStyle.brand : Colors.black.withOpacity(0.1),
+              width: isSelected ? 1.5 : 1,
+            ),
           ),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                label,
-                style: _FStyle.personName.copyWith(
-                  color: isSelected ? _FStyle.brand : Colors.black,
-                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: _FStyle.personName.copyWith(
+                    color: isSelected ? _FStyle.brand : Colors.black,
+                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                  ),
                 ),
               ),
-            ),
-            if (isSelected)
-              const Icon(Icons.check_circle, color: _FStyle.brand, size: 20)
-            else
-              const Icon(Icons.circle_outlined, color: Colors.black26, size: 20),
-          ],
+              if (isSelected)
+                const Icon(Icons.check_circle, color: _FStyle.brand, size: 20)
+              else
+                const Icon(Icons.circle_outlined, color: Colors.black26, size: 20),
+            ],
+          ),
         ),
       ),
     );
@@ -978,54 +1037,207 @@ class _AllergySwapCopy extends StatelessWidget {
   }
 }
 
-class _SelectField extends StatelessWidget {
-  const _SelectField({
+class _FloatingNativeSelectField extends StatelessWidget {
+  const _FloatingNativeSelectField({
     required this.label,
     required this.value,
     required this.options,
     required this.onChanged,
-    this.dropdownItemsOverride,
+    this.enabled = true,
   });
 
   final String label;
   final String value;
   final List<String> options;
   final ValueChanged<String> onChanged;
+  final bool enabled;
 
-  final List<DropdownMenuItem<String>>? dropdownItemsOverride;
+  String _displayValue(String v) => (v == 'All') ? '' : v;
+
+  String _materialDisplayInPicker(String v) => v == 'All' ? 'Any' : v;
 
   @override
   Widget build(BuildContext context) {
-    final items = dropdownItemsOverride ??
-        options.map((o) => DropdownMenuItem(value: o, child: Text(o))).toList();
+    final safeOptions = options.isEmpty ? const ['All'] : options;
 
-    final matches = items.where((i) => i.value == value).length;
-    final safeValue = (matches == 1) ? value : null;
+    final effectiveValue = safeOptions.contains(value)
+        ? value
+        : (safeOptions.contains('All') ? 'All' : safeOptions.first);
 
-    return Container(
-      padding: _FStyle.fieldPadding,
-      decoration: _FStyle.fieldDecoration(),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(label.toUpperCase(), style: _FStyle.sectionLabel),
+    // ✅ FIX: use effectiveValue for label empty-state (prevents weird float/empty glitches)
+    final hasSelection = effectiveValue != 'All';
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        // ❌ InkWell in your Flutter version DOES NOT have `behavior`
+        borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
+        onTap: enabled
+            ? () async {
+                final picked = await _NativePickers.pickString(
+                  context: context,
+                  label: label,
+                  current: effectiveValue,
+                  options: safeOptions,
+                  display: _materialDisplayInPicker,
+                );
+                if (picked != null && picked != value) onChanged(picked);
+              }
+            : null,
+        child: IgnorePointer(
+          // keeps the InputDecorator non-interactive, InkWell handles the tap
+          ignoring: true,
+          child: InputDecorator(
+            isEmpty: !hasSelection,
+            decoration: _FStyle.fieldInputDecoration(context, label, enabled: enabled),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _displayValue(effectiveValue),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: _FStyle.fieldValue.copyWith(
+                      color: enabled ? Colors.black : Colors.black45,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Icon(
+                  Icons.expand_more,
+                  color: enabled ? Colors.black54 : Colors.black26,
+                ),
+              ],
+            ),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            flex: 2,
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                isExpanded: true,
-                value: safeValue,
-                items: items,
-                onChanged: (v) {
-                  if (v == null) return;
-                  onChanged(v);
+        ),
+      ),
+    );
+  }
+}
+
+class _NativePickers {
+  static Future<String?> pickString({
+    required BuildContext context,
+    required String label,
+    required String current,
+    required List<String> options,
+    required String Function(String) display,
+  }) async {
+    if (Platform.isIOS) {
+      return _cupertino(context, label, current, options, display);
+    }
+    return _material(context, label, current, options, display);
+  }
+
+  static Future<String?> _material(
+    BuildContext context,
+    String label,
+    String current,
+    List<String> options,
+    String Function(String) display,
+  ) async {
+    final idx = options.indexOf(current);
+
+    return showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: _FStyle.sheetBg,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(_FStyle.sheetRadius)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text('Select $label', style: _FStyle.sheetTitle.copyWith(letterSpacing: 0)),
+              trailing: TextButton(
+                onPressed: () => Navigator.pop(ctx, 'All'),
+                child: const Text('Clear'),
+              ),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: options.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) {
+                  final v = options[i];
+                  final selected = i == idx;
+                  return ListTile(
+                    title: Text(display(v)),
+                    trailing: selected ? const Icon(Icons.check) : null,
+                    onTap: () => Navigator.pop(ctx, v),
+                  );
                 },
               ),
             ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static Future<String?> _cupertino(
+    BuildContext context,
+    String label,
+    String current,
+    List<String> options,
+    String Function(String) display,
+  ) async {
+    final initialIndex = options.indexOf(current).clamp(0, options.length - 1);
+    int tempIndex = initialIndex;
+
+    return showCupertinoModalPopup<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Container(
+          height: 320,
+          color: CupertinoColors.systemBackground.resolveFrom(ctx),
+          child: Column(
+            children: [
+              SizedBox(
+                height: 44,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    CupertinoButton(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      onPressed: () => Navigator.pop(ctx, null),
+                      child: const Text('Cancel'),
+                    ),
+                    Text('Select $label', style: const TextStyle(fontWeight: FontWeight.w600)),
+                    CupertinoButton(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      onPressed: () => Navigator.pop(ctx, options[tempIndex]),
+                      child: const Text('Done'),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: CupertinoPicker(
+                  scrollController: FixedExtentScrollController(initialItem: initialIndex),
+                  itemExtent: 40,
+                  onSelectedItemChanged: (i) => tempIndex = i,
+                  children: options.map((v) => Center(child: Text(display(v)))).toList(),
+                ),
+              ),
+              const Divider(height: 1),
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: CupertinoButton.filled(
+                  onPressed: () => Navigator.pop(ctx, 'All'),
+                  child: const Text('Clear'),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

@@ -1,6 +1,5 @@
-// lib/recipes/home_collection_rail.dart
+import 'dart:ui' show FontVariation;
 import 'package:flutter/material.dart';
-import 'package:dio/dio.dart';
 
 import '../utils/images.dart'; // upscaleJetpackImage
 import '../theme/app_theme.dart';
@@ -17,7 +16,7 @@ class HomeCollectionRail extends StatefulWidget {
   });
 
   final String title;
-  final String collectionSlug;
+  final String collectionSlug; // e.g. "15-minute-meals"
   final List<Map<String, dynamic>> recipes;
   final Set<int> favoriteIds;
 
@@ -26,115 +25,6 @@ class HomeCollectionRail extends StatefulWidget {
 }
 
 class _HomeCollectionRailState extends State<HomeCollectionRail> {
-  final Dio _dio = Dio(
-    BaseOptions(
-      headers: const {
-        'Accept': 'application/json',
-        'User-Agent': 'LittleVeganEatsApp/1.0',
-      },
-      connectTimeout: const Duration(seconds: 12),
-      receiveTimeout: const Duration(seconds: 20),
-    ),
-  );
-
-  // ✅ In-memory cache so rails feel instant after first load
-  static final Map<String, int> _termIdCacheBySlug = {};
-  static final Map<String, Future<int>> _inflightBySlug = {};
-
-  // We no longer “block” UI on loading
-  String? _error;
-  int? _termId;
-
-  @override
-  void initState() {
-    super.initState();
-
-    final cached = _termIdCacheBySlug[widget.collectionSlug];
-    if (cached != null) {
-      _termId = cached;
-
-      // ✅ Optional: silently refresh in background (no spinner)
-      _refreshTermIdSilently();
-    } else {
-      // ✅ No cached termId yet — load without blocking UI
-      _loadCollectionTermId();
-    }
-  }
-
-  Future<void> _refreshTermIdSilently() async {
-    try {
-      final id = await _fetchTermId(widget.collectionSlug);
-      if (!mounted) return;
-
-      // Only update if it actually changed
-      if (_termId != id) {
-        setState(() => _termId = id);
-      }
-    } catch (_) {
-      // silent refresh failures: ignore (don’t flash errors)
-    }
-  }
-
-  Future<void> _loadCollectionTermId() async {
-    setState(() {
-      _error = null;
-      // ✅ don’t set a “loading” state that blocks UI
-    });
-
-    try {
-      final id = await _fetchTermId(widget.collectionSlug);
-      if (!mounted) return;
-      setState(() => _termId = id);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString());
-    }
-  }
-
-  Future<int> _fetchTermId(String slug) {
-    // ✅ Return cache instantly if we have it
-    final cached = _termIdCacheBySlug[slug];
-    if (cached != null) return Future.value(cached);
-
-    // ✅ De-dupe concurrent requests (multiple rails on one screen)
-    final inflight = _inflightBySlug[slug];
-    if (inflight != null) return inflight;
-
-    final fut = () async {
-      final res = await _dio.get(
-        'https://littleveganeats.co/wp-json/wp/v2/wprm_collections',
-        queryParameters: {
-          'slug': slug,
-          'per_page': 1,
-        },
-      );
-
-      final data = res.data;
-      if (data is! List || data.isEmpty) {
-        throw Exception('Collection not found for slug "$slug"');
-      }
-
-      final obj = data.first;
-      if (obj is! Map) throw Exception('Unexpected collection response shape');
-
-      final map = Map<String, dynamic>.from(obj);
-      final id = _toInt(map['id']);
-      if (id == null || id <= 0) throw Exception('Collection term id missing');
-
-      // ✅ Save in cache
-      _termIdCacheBySlug[slug] = id;
-      return id;
-    }();
-
-    _inflightBySlug[slug] = fut;
-    fut.whenComplete(() {
-      // ✅ clean up inflight map
-      _inflightBySlug.remove(slug);
-    });
-
-    return fut;
-  }
-
   static int? _toInt(dynamic v) {
     if (v is int) return v;
     if (v is num) return v.toInt();
@@ -172,25 +62,63 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
     return _str(r['jetpack_featured_media_url']);
   }
 
-  bool _hasCollectionTerm(Map<String, dynamic> r, int termId) {
+  String _slugify(String s) {
+    // very lightweight slugify (good enough for matching)
+    final lower = s.trim().toLowerCase();
+    final cleaned = lower
+        .replaceAll('&', 'and')
+        .replaceAll(RegExp(r'[^a-z0-9\s-]'), '')
+        .replaceAll(RegExp(r'\s+'), '-')
+        .replaceAll(RegExp(r'-+'), '-');
+    return cleaned;
+  }
+
+  bool _matchesCollectionSlug(Map<String, dynamic> r, String slug) {
+    final wanted = slug.trim().toLowerCase();
+
+    // ✅ BEST SOURCE: recipe.tags.collections[].slug
+    final recipe = r['recipe'];
+    if (recipe is Map) {
+      final tags = recipe['tags'];
+      if (tags is Map) {
+        final cols = tags['collections'] ?? tags['collection'];
+        if (cols is List) {
+          for (final c in cols) {
+            if (c is Map) {
+              final cSlug = (c['slug'] ?? '').toString().trim().toLowerCase();
+              if (cSlug.isNotEmpty && cSlug == wanted) return true;
+
+              // fallback: match by name if slug missing
+              final cName = (c['name'] ?? '').toString().trim().toLowerCase();
+              if (cName.isNotEmpty && _slugify(cName) == wanted) return true;
+            } else if (c is String) {
+              final cs = c.trim().toLowerCase();
+              if (cs == wanted || _slugify(cs) == wanted) return true;
+            }
+          }
+        }
+      }
+    }
+
+    // ✅ Fallback: top-level wprm_collections if it’s strings (post-normalisation)
     final v = r['wprm_collections'];
     if (v is List) {
       for (final x in v) {
-        final id = _toInt(x);
-        if (id == termId) return true;
+        final xs = '$x'.trim().toLowerCase();
+        if (xs == wanted || _slugify(xs) == wanted) return true;
       }
     }
+
     return false;
   }
 
   List<Map<String, dynamic>> _filteredRecipes() {
-    final id = _termId;
-    if (id == null) return const [];
-    final list = <Map<String, dynamic>>[];
+    if (widget.recipes.isEmpty) return const [];
+    final out = <Map<String, dynamic>>[];
     for (final r in widget.recipes) {
-      if (_hasCollectionTerm(r, id)) list.add(r);
+      if (_matchesCollectionSlug(r, widget.collectionSlug)) out.add(r);
     }
-    return list;
+    return out;
   }
 
   Widget _skeletonRail({
@@ -198,8 +126,8 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
     required double railH,
     required double cardW,
     required double titleBlockH,
+    String? helper,
   }) {
-    // ✅ Instant placeholder (no spinner)
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -208,14 +136,14 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
           child: Row(
             children: [
               Expanded(child: Text(widget.title, style: sectionTitleStyle)),
-              if (_error != null)
-                TextButton(
-                  onPressed: _loadCollectionTermId,
-                  child: const Text('Retry'),
-                ),
             ],
           ),
         ),
+        if (helper != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: Text(helper, style: Theme.of(context).textTheme.bodySmall),
+          ),
         SizedBox(
           height: railH,
           child: ListView.separated(
@@ -232,17 +160,8 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                   borderRadius: BorderRadius.circular(12),
                   child: Column(
                     children: [
-                      Expanded(
-                        child: Container(
-                          color: Colors.black.withOpacity(0.06),
-                        ),
-                      ),
-                      SizedBox(
-                        height: titleBlockH,
-                        child: Container(
-                          color: Colors.black.withOpacity(0.04),
-                        ),
-                      ),
+                      Expanded(child: Container(color: Colors.black.withOpacity(0.06))),
+                      SizedBox(height: titleBlockH, child: Container(color: Colors.black.withOpacity(0.04))),
                     ],
                   ),
                 ),
@@ -276,31 +195,26 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
       height: 1.4,
     );
 
-    // ✅ Make cards less wide (more square / 4:3 feel)
     final screenW = MediaQuery.of(context).size.width;
     final cardW = (screenW * 0.42).clamp(150.0, 190.0);
 
-    // Rail height: image + title block
     const railH = 190.0;
-
-    // Title block height fixed
     const titleBlockH = 68.0;
 
-    // Image sizing: crisp
     final dpr = MediaQuery.of(context).devicePixelRatio;
     final requestW = (cardW * dpr * 2.0).round();
     final requestH = ((railH - titleBlockH) * dpr * 2.0).round();
-
     final cacheW = requestW;
     final cacheH = requestH;
 
-    // ✅ If we don’t have the termId yet, render skeleton instantly
-    if (_termId == null) {
+    // ✅ If recipes haven’t loaded yet, don’t lie with “No recipes yet”
+    if (widget.recipes.isEmpty) {
       return _skeletonRail(
         sectionTitleStyle: sectionTitleStyle,
         railH: railH,
         cardW: cardW,
         titleBlockH: titleBlockH,
+        helper: 'Loading recipes…',
       );
     }
 
@@ -331,13 +245,15 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
               Expanded(child: Text(widget.title, style: sectionTitleStyle)),
               TextButton(
                 onPressed: () {
-                  final termId = _termId!;
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) => CollectionPage(
                         title: widget.title,
                         collectionSlug: widget.collectionSlug,
-                        collectionTermId: termId,
+                        // termId not required anymore for filtering,
+                        // but keep it if your CollectionPage expects it.
+                        // Set to 0 (or remove param if you refactor CollectionPage).
+                        collectionTermId: 0,
                         recipes: widget.recipes,
                         favoriteIds: widget.favoriteIds,
                       ),
@@ -411,7 +327,6 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
                                   cacheWidth: cacheW,
                                   cacheHeight: cacheH,
                                   gaplessPlayback: true,
-                                  // ✅ prevents “pop” if image re-renders
                                   errorBuilder: (_, __, ___) => const Center(
                                     child: Icon(Icons.restaurant_menu),
                                   ),
