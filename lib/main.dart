@@ -16,22 +16,90 @@ import 'app/no_bounce_scroll_behavior.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ✅ Status bar: let UI draw behind it, make icons white
+  // ✅ Status bar: let UI draw behind it, make icons white (matches your hero screens)
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light, // Android icons
-      statusBarBrightness: Brightness.dark, // iOS icons (dark bg => light icons)
+      statusBarBrightness: Brightness.dark, // iOS: dark => light icons
     ),
   );
 
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
-
-  await Hive.initFlutter();
-
+  // ✅ IMPORTANT: don't block first frame with Firebase/Hive
   runApp(const MyApp());
+}
+
+/// Boots Firebase + Hive AFTER the first frame so you don't get the white screen
+/// during debug / wireless deploy.
+class _AppBootstrap extends StatefulWidget {
+  const _AppBootstrap({required this.child});
+  final Widget child;
+
+  @override
+  State<_AppBootstrap> createState() => _AppBootstrapState();
+}
+
+class _AppBootstrapState extends State<_AppBootstrap> {
+  bool _ready = false;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Run AFTER first paint so the app renders immediately.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform,
+        );
+        await Hive.initFlutter();
+
+        if (!mounted) return;
+        setState(() => _ready = true);
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _error = e);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // ✅ If you want "always show UI" even while booting, just return child.
+    // But AuthGate will likely touch Firebase, so we show a fast loader until ready.
+    if (_error != null) {
+      return Material(
+        color: const Color(0xFFECF3F4),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              'Startup error:\n$_error',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontFamily: 'Montserrat',
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF044246),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (!_ready) {
+      return const Material(
+        color: Color(0xFFECF3F4),
+        child: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    return widget.child;
+  }
 }
 
 class MyApp extends StatelessWidget {
@@ -187,12 +255,14 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(),
 
-      // ✅ GLOBAL: no bounce / no pull-down reveal (macOS trackpad-safe) + no glow
+      // ✅ GLOBAL: no bounce / no pull-down reveal + no glow
       scrollBehavior: const NoBounceScrollBehavior(),
 
-      initialRoute: '/',
+      // ✅ Boot Firebase/Hive AFTER first frame, then show AuthGate
+      home: const _AppBootstrap(child: AuthGate()),
+
+      // ✅ keep your routes intact (optional, but harmless)
       routes: {
-        '/': (_) => const AuthGate(),
         '/app': (_) => const AppShell(),
         '/meal-plan': (_) => RecipesBootstrapGate(child: MealPlanScreen()),
       },

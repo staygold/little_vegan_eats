@@ -34,15 +34,10 @@ class _AppShellState extends State<AppShell> {
     ProfileScreen(),
   ];
 
-  // 🎨 Colours
   static const Color inactiveColor = Color(0xFF005A4F);
   static const Color activeColor = Color(0xFF32998D);
-
-  // 📐 Sizing (visual bar height, safe-area will be added automatically)
-  static const double barHeight = 92;
   static const double iconSize = 24;
 
-  // ✅ Cache first name so it never flashes back to "…" during stream rebuilds
   String? _cachedFirstName;
 
   @override
@@ -62,7 +57,6 @@ class _AppShellState extends State<AppShell> {
     return FirebaseFirestore.instance.collection('users').doc(user.uid);
   }
 
-  /// users/{uid}.adults[0].name → "Cat Dean" → "Cat"
   String? _extractFirstName(Map<String, dynamic> data) {
     final adults = data['adults'];
     if (adults is! List || adults.isEmpty) return null;
@@ -73,8 +67,7 @@ class _AppShellState extends State<AppShell> {
     final name = (firstAdult['name'] ?? '').toString().trim();
     if (name.isEmpty) return null;
 
-    final parts = name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    return parts.isNotEmpty ? parts.first : null;
+    return name.split(RegExp(r'\s+')).first;
   }
 
   Widget _buildHeader() {
@@ -82,7 +75,7 @@ class _AppShellState extends State<AppShell> {
 
     if (doc == null) {
       return TopHeaderBar(
-        firstName: _cachedFirstName, // could be null
+        firstName: _cachedFirstName,
         onProfileTap: _goProfile,
       );
     }
@@ -90,22 +83,16 @@ class _AppShellState extends State<AppShell> {
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: doc.snapshots(),
       builder: (context, snap) {
-        // ✅ Always prefer cached value to avoid flashing
-        String? firstNameToShow = _cachedFirstName;
-
+        var name = _cachedFirstName;
         if (snap.hasData) {
-          final data = snap.data?.data() ?? <String, dynamic>{};
-          final extracted = _extractFirstName(data);
-
-          // only update cache when we have a real, non-empty value
-          if (extracted != null && extracted.trim().isNotEmpty) {
-            _cachedFirstName = extracted.trim();
-            firstNameToShow = _cachedFirstName;
+          final extracted = _extractFirstName(snap.data!.data() ?? {});
+          if (extracted != null && extracted.isNotEmpty) {
+            _cachedFirstName = extracted;
+            name = extracted;
           }
         }
-
         return TopHeaderBar(
-          firstName: firstNameToShow, // never forced to "…"
+          firstName: name,
           onProfileTap: _goProfile,
         );
       },
@@ -113,20 +100,14 @@ class _AppShellState extends State<AppShell> {
   }
 
   Widget _navIcon(String asset, bool active) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SvgPicture.asset(
-          asset,
-          width: iconSize,
-          height: iconSize,
-          colorFilter: ColorFilter.mode(
-            active ? activeColor : inactiveColor,
-            BlendMode.srcIn,
-          ),
-        ),
-        const SizedBox(height: 4),
-      ],
+    return SvgPicture.asset(
+      asset,
+      width: iconSize,
+      height: iconSize,
+      colorFilter: ColorFilter.mode(
+        active ? activeColor : inactiveColor,
+        BlendMode.srcIn,
+      ),
     );
   }
 
@@ -142,16 +123,11 @@ class _AppShellState extends State<AppShell> {
     return Scaffold(
       body: Column(
         children: [
-          // ✅ Header extends behind the iOS status bar
           _buildHeader(),
-
-          // ✅ IMPORTANT:
-          // We do NOT want bottom SafeArea padding here, because it creates the “green bar” gap
-          // above the bottom nav. The bottom nav will handle the safe area instead.
           Expanded(
             child: SafeArea(
               top: false,
-              bottom: false, // ✅ FIX: remove the gap above BottomNavigationBar
+              bottom: false,
               child: IndexedStack(
                 index: _index,
                 children: _pages,
@@ -161,25 +137,24 @@ class _AppShellState extends State<AppShell> {
         ],
       ),
 
+      // ✅ THIS IS THE KEY PART
       bottomNavigationBar: Theme(
         data: theme,
-        child: SafeArea(
-          top: false,
-          // ✅ Bottom safe area belongs to the nav (not the page body)
-          child: Container(
-            height: barHeight,
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  offset: Offset(0, 0),
-                  blurRadius: 20,
-                  spreadRadius: 0,
-                  color: Color.fromRGBO(0, 0, 0, 0.2),
-                ),
-              ],
-            ),
-            child: BottomNavigationBar(
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            boxShadow: [
+              BoxShadow(
+                blurRadius: 20,
+                color: Color.fromRGBO(0, 0, 0, 0.2),
+              ),
+            ],
+          ),
+         child: SafeArea(
+  top: false,
+  child: Padding(
+    padding: const EdgeInsets.only(top: 6), // 👈 adjust this
+    child: BottomNavigationBar(
               currentIndex: _index,
               onTap: (i) {
                 if (i == _index) return;
@@ -188,12 +163,11 @@ class _AppShellState extends State<AppShell> {
               type: BottomNavigationBarType.fixed,
               backgroundColor: Colors.white,
               elevation: 0,
+              iconSize: iconSize,
               selectedItemColor: activeColor,
               unselectedItemColor: inactiveColor,
               selectedFontSize: 12,
               unselectedFontSize: 12,
-
-              // ✅ Variable font weight lock
               selectedLabelStyle: const TextStyle(
                 fontFamily: 'Montserrat',
                 fontWeight: FontWeight.w700,
@@ -204,7 +178,6 @@ class _AppShellState extends State<AppShell> {
                 fontWeight: FontWeight.w700,
                 fontVariations: [FontVariation('wght', 700)],
               ),
-
               items: [
                 BottomNavigationBarItem(
                   icon: _navIcon('assets/images/icons/home.svg', false),
@@ -228,6 +201,7 @@ class _AppShellState extends State<AppShell> {
                 ),
               ],
             ),
+  ),
           ),
         ),
       ),

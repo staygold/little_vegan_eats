@@ -1,6 +1,7 @@
 // lib/recipes/recipe_search_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // ✅ for status bar style
 
 import '../theme/app_theme.dart';
 import '../app/sub_header_bar.dart';
@@ -265,81 +266,89 @@ class _RecipeSearchScreenState extends State<RecipeSearchScreen> {
     final showEmptyState = _query.isEmpty && !_hasSearched;
     final showNoResults = _query.isNotEmpty && _hasSearched && _results.isEmpty;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFECF3F4),
-      body: SafeArea(
-        child: Column(
-          children: [
-            const SubHeaderBar(title: 'SEARCH RECIPES'),
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      // ✅ Force this screen to use DARK status bar icons
+      value: SystemUiOverlayStyle.dark.copyWith(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark, // Android
+        statusBarBrightness: Brightness.light, // iOS (light bg -> dark icons)
+      ),
+      child: Scaffold(
+        backgroundColor: const Color(0xFFECF3F4),
+        body: SafeArea(
+          child: Column(
+            children: [
+              const SubHeaderBar(title: 'SEARCH RECIPES'),
 
-            // ✅ Use the shared SearchPill (SSoT)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-              child: SearchPill(
-                controller: _controller,
-                focusNode: _focus,
-                hintText: widget.hintText,
-                autofocus: true,
-                onChanged: _onQueryChanged,
-                onSubmitted: _submitSearch,
-                onClear: _clearQuery,
+              // ✅ Use the shared SearchPill (SSoT)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+                child: SearchPill(
+                  controller: _controller,
+                  focusNode: _focus,
+                  hintText: widget.hintText,
+                  autofocus: true,
+                  onChanged: _onQueryChanged,
+                  onSubmitted: _submitSearch,
+                  onClear: _clearQuery,
+                ),
               ),
-            ),
 
-            Expanded(
-              child: showEmptyState
-                  ? SingleChildScrollView(
-                      keyboardDismissBehavior:
-                          ScrollViewKeyboardDismissBehavior.onDrag,
-                      child: _buildEmptySuggestions(context),
-                    )
-                  : showNoResults
-                      ? Center(
-                          child: Text(
-                            'No results',
-                            style:
-                                (theme.textTheme.titleMedium ?? const TextStyle())
-                                    .copyWith(
-                              color: Colors.black.withOpacity(0.55),
+              Expanded(
+                child: showEmptyState
+                    ? SingleChildScrollView(
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        child: _buildEmptySuggestions(context),
+                      )
+                    : showNoResults
+                        ? Center(
+                            child: Text(
+                              'No results',
+                              style: (theme.textTheme.titleMedium ??
+                                      const TextStyle())
+                                  .copyWith(
+                                color: Colors.black.withOpacity(0.55),
+                              ),
                             ),
-                          ),
-                        )
-                      : ListView.separated(
-                          keyboardDismissBehavior:
-                              ScrollViewKeyboardDismissBehavior.onDrag,
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 18),
-                          itemCount: _results.length,
-                          separatorBuilder: (_, __) =>
-                              const SizedBox(height: 12),
-                          itemBuilder: (context, i) {
-                            final r = _results[i];
-                            final id = _idOf(r);
+                          )
+                        : ListView.separated(
+                            keyboardDismissBehavior:
+                                ScrollViewKeyboardDismissBehavior.onDrag,
+                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 18),
+                            itemCount: _results.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 12),
+                            itemBuilder: (context, i) {
+                              final r = _results[i];
+                              final id = _idOf(r);
 
-                            return RecipeCard(
-                              title: _titleOf(r),
-                              subtitle: _subtitleOf(r),
-                              imageUrl: _thumbOf(r),
-                              onTap: () => _openRecipe(r),
-                              badge: (id != null &&
-                                      widget.favoriteIds.contains(id))
-                                  ? Container(
-                                      padding: const EdgeInsets.all(6),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withOpacity(0.92),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: const Icon(
-                                        Icons.star_rounded,
-                                        size: 16,
-                                        color: Colors.amber,
-                                      ),
-                                    )
-                                  : null,
-                            );
-                          },
-                        ),
-            ),
-          ],
+                              return RecipeCard(
+                                title: _titleOf(r),
+                                subtitle: _subtitleOf(r),
+                                imageUrl: _thumbOf(r),
+                                onTap: () => _openRecipe(r),
+                                badge: (id != null &&
+                                        widget.favoriteIds.contains(id))
+                                    ? Container(
+                                        padding: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withOpacity(0.92),
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: const Icon(
+                                          Icons.star_rounded,
+                                          size: 16,
+                                          color: Colors.amber,
+                                        ),
+                                      )
+                                    : null,
+                              );
+                            },
+                          ),
+              ),
+            ],
+          ),
         ),
       ),
     );

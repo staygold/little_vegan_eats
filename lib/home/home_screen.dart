@@ -382,7 +382,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   // ✅ 2) CAROUSELS = LIGHT GREY WRAPPER (NOT GREEN)
                   Container(
                     color: railBg,
-                    padding: const EdgeInsets.only(top: 10, bottom: 16),
+                    padding: const EdgeInsets.only(top: 0, bottom: 40),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [

@@ -182,8 +182,9 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
         (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
       fontWeight: FontWeight.w900,
+      fontSize: 20,
       fontVariations: const [FontVariation('wght', 900)],
-      letterSpacing: 1.0,
+      letterSpacing: 0,
       height: 1.0,
     );
 
@@ -191,8 +192,9 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
         (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
       fontWeight: FontWeight.w700,
-      fontSize: 16,
+      fontSize: 14,
       height: 1.4,
+      letterSpacing: 0,
     );
 
     final screenW = MediaQuery.of(context).size.width;
@@ -239,7 +241,7 @@ class _HomeCollectionRailState extends State<HomeCollectionRail> {
       children: [
         // Header
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 18, 4, 10),
+          padding: const EdgeInsets.fromLTRB(16, 18, 4, 4),
           child: Row(
             children: [
               Expanded(child: Text(widget.title, style: sectionTitleStyle)),

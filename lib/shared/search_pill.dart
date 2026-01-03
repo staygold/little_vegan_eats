@@ -15,10 +15,10 @@ class SearchPill extends StatelessWidget {
 
     // layout
     this.height = 60,
-    this.horizontalPadding = 22,
+    this.horizontalPadding = 16,
 
     // typography
-    this.fontSize = 18,
+    this.fontSize = 16,
     this.fontWeightValue = 600, // semi-bold
   });
 
@@ -65,11 +65,11 @@ class SearchPill extends StatelessWidget {
           // ✅ SEARCH ICON — NOW ON THE LEFT
           const Icon(
             Icons.search,
-            size: 30,
+            size: 28,
             color: iconColor,
           ),
 
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
 
           // ✅ TEXT FIELD
           Expanded(
@@ -104,7 +104,7 @@ class SearchPill extends StatelessWidget {
                 padding: EdgeInsets.only(left: 10),
                 child: Icon(
                   Icons.close,
-                  size: 22,
+                  size: 20,
                   color: iconColor,
                 ),
               ),

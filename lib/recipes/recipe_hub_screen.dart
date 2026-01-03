@@ -227,8 +227,9 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
     return (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
       fontWeight: FontWeight.w900,
+      fontSize: 20,
       fontVariations: const [FontVariation('wght', 900)],
-      letterSpacing: 1.0,
+      letterSpacing: 0,
       height: 1.0,
     );
   }
@@ -238,8 +239,9 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
     return (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
       fontWeight: FontWeight.w700,
-      fontSize: 16,
+      fontSize: 14,
       height: 1.4,
+      letterSpacing: 0,
     );
   }
 

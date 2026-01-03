@@ -279,9 +279,10 @@ class TodayMealPlanSection extends StatelessWidget {
         (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
       fontWeight: FontWeight.w900,
+      fontSize: 20,
       fontVariations: const [FontVariation('wght', 900)],
-      letterSpacing: 1.0,
-      height: 1.0,
+      letterSpacing: 0,
+      height: 1.2,
     );
 
     return Padding(
@@ -1059,7 +1060,7 @@ class TodayMealPlanSection extends StatelessWidget {
     final heroTopStyle =
         (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
       color: AppColors.white,
-      fontSize: ((theme.textTheme.titleLarge?.fontSize) ?? 28),
+      fontSize: 12,
       fontWeight: FontWeight.w800,
       fontVariations: const [FontVariation('wght', 800)],
       letterSpacing: 1.2,

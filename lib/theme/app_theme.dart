@@ -97,7 +97,7 @@ ThemeData buildAppTheme() {
       ),
 
       titleLarge: const TextStyle(
-        fontSize: 30,
+        fontSize: 24,
         fontWeight: FontWeight.w700,
         letterSpacing: 4.0,
         color: AppColors.textPrimary,

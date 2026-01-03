@@ -57,7 +57,7 @@ class HomeSearchSection extends StatelessWidget {
             Text(
               'Hey, $greetingName!',
               style: const TextStyle(
-                fontSize: 20,
+                fontSize: 19,
                 fontWeight: FontWeight.w400,
                 color: Colors.white70,
               ),
@@ -71,7 +71,7 @@ class HomeSearchSection extends StatelessWidget {
           const Text(
             'What do you feel like eating?',
             style: TextStyle(
-              fontSize: 26,
+              fontSize: 22,
               fontWeight: FontWeight.w800,
               color: Colors.white,
               height: 1.2,
@@ -95,7 +95,7 @@ class HomeSearchSection extends StatelessWidget {
                 splashFactory: InkSparkle.splashFactory,
                 child: Ink(
                   height: 72,
-                  padding: const EdgeInsets.symmetric(horizontal: 22),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
                   decoration: BoxDecoration(
                     color: pillBg,
                     borderRadius: BorderRadius.circular(999),
@@ -104,18 +104,18 @@ class HomeSearchSection extends StatelessWidget {
                     children: const [
                       Icon(
                         Icons.search,
-                        size: 30,
+                        size: 26,
                         color: iconGrey,
                       ),
-                      SizedBox(width: 12),
+                      SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          'Search recipes or by ingredients',
+                          'Search recipes or ingredients',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontFamily: 'Montserrat',
-                            fontSize: 18,
+                            fontSize: 17,
                             fontWeight: FontWeight.w600,
                             fontVariations: [FontVariation('wght', 600)],
                             height: 1.0,
