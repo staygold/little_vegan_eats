@@ -264,6 +264,9 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
   int _unitSystem = 1;
 
+  // ✅ Only show swaps if profile has any allergies selected
+  bool _profileHasAllergies = false;
+
   StreamSubscription<User?>? _authSub;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _profileSub;
 
@@ -305,26 +308,79 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   void _wireFamilyProfile() {
     _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
       _profileSub?.cancel();
-      if (user == null) return;
+
+      if (user == null) {
+        if (!mounted) return;
+        setState(() {
+          _profileAdults = 2;
+          _profileKids = 1;
+          _profileHasAllergies = false;
+        });
+        return;
+      }
+
       final docRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
       _profileSub = docRef.snapshots().listen((snap) {
         final data = snap.data();
         if (data == null) return;
+
         final adults = (data['adults'] as List?) ?? const [];
         final children = (data['children'] as List?) ?? const [];
+
         final adultCount =
             adults.where((e) => e is Map && (e['name'] ?? '').toString().trim().isNotEmpty).length;
         final kidCount =
             children.where((e) => e is Map && (e['name'] ?? '').toString().trim().isNotEmpty).length;
+
+        // ✅ Detect allergies in any member
+        bool hasAllergies = false;
+
+        bool memberHasAllergies(Map m) {
+          final list1 = m['allergies'];
+          final list2 = m['selectedAllergies'];
+          if ((list1 is List && list1.isNotEmpty) || (list2 is List && list2.isNotEmpty)) return true;
+
+          final map1 = m['allergyMap'];
+          final map2 = m['allergiesMap'];
+          if ((map1 is Map && map1.values.any((v) => v == true)) ||
+              (map2 is Map && map2.values.any((v) => v == true))) return true;
+
+          return false;
+        }
+
+        for (final a in adults) {
+          if (a is Map && memberHasAllergies(a)) {
+            hasAllergies = true;
+            break;
+          }
+        }
+
+        if (!hasAllergies) {
+          for (final c in children) {
+            if (c is Map && memberHasAllergies(c)) {
+              hasAllergies = true;
+              break;
+            }
+          }
+        }
+
         final nextAdults = adultCount > 0 ? adultCount : 1;
         final nextKids = kidCount;
+
         if (!mounted) return;
-        if (nextAdults != _profileAdults || nextKids != _profileKids) {
+
+        final changedCounts = (nextAdults != _profileAdults) || (nextKids != _profileKids);
+        final changedAllergies = hasAllergies != _profileHasAllergies;
+
+        if (changedCounts || changedAllergies) {
           setState(() {
             final prevProfileAdults = _profileAdults;
             final prevProfileKids = _profileKids;
+
             _profileAdults = nextAdults;
             _profileKids = nextKids;
+            _profileHasAllergies = hasAllergies;
+
             if (_adults == prevProfileAdults) _adults = _profileAdults;
             if (_kids == prevProfileKids) _kids = _profileKids;
           });
@@ -528,9 +584,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
   // ===========================================================================
   // ✅ Items-mode scaling rules
-  // - Recommend bigger batch ONLY when required (needRatio > 1.0)
-  // - Recommend half batch when under/at 65% (needRatio <= 0.65)
-  // - Otherwise: perfect amount (no recommendation row)
   // ===========================================================================
 
   double _roundUpToHalf(double v) {
@@ -640,6 +693,42 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
+  // ✅ Frosted circle button (used only over the hero image)
+  Widget _circleFrostButton({
+    required Widget child,
+    required VoidCallback onTap,
+  }) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(999),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        child: Material(
+          color: Colors.white.withOpacity(0.22),
+          child: InkWell(
+            onTap: onTap,
+            splashFactory: NoSplash.splashFactory,
+            highlightColor: Colors.transparent,
+            splashColor: Colors.transparent,
+            child: Container(
+              width: 44,
+              height: 44,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                
+              ),
+              child: child,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _circleFrostIconWrapper({required Widget child}) {
+    return SizedBox(width: 28, height: 28, child: Center(child: child));
+  }
+
   Widget _unitSystemToggle({required bool show, String leftLabel = 'METRIC', String rightLabel = 'US'}) {
     if (!show) return const SizedBox.shrink();
     const trackBg = Colors.white;
@@ -712,6 +801,9 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   }
 
   Widget _swapsCard(Map<String, dynamic>? recipe) {
+    // ✅ gate: only show if profile has allergies
+    if (!_profileHasAllergies) return const SizedBox.shrink();
+
     final rawText = _getField(recipe, 'ingredient_swaps');
     final swaps = _parseSwaps(rawText);
     if (swaps.isEmpty) return const SizedBox.shrink();
@@ -830,8 +922,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
-  String _multiplierLabel(double v) =>
-      (v - 0.5).abs() < 0.0001 ? 'Half batch' : '${_fmtMultiplier(v)} batch';
+  String _multiplierLabel(double v) => (v - 0.5).abs() < 0.0001 ? 'Half batch' : '${_fmtMultiplier(v)} batch';
 
   String _ctaLabel(double v) =>
       (v - 0.5).abs() < 0.0001 ? 'MAKE HALF BATCH' : 'UPDATE INGREDIENTS (${_fmtMultiplier(v).toUpperCase()})';
@@ -840,7 +931,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   String _suggestMultiplierLine(double recommended, {required bool itemsMode}) => '';
 
   Widget _servingPanelCard(BuildContext context, Map<String, dynamic>? recipe) {
-    // ✅ Items-mode uses our ratio rules (does NOT rely on ServingEngine for "recommended")
     final itemsMode = _isItemsMode(recipe);
     final ipp = _itemsPerPerson(recipe);
     final itemSingular = _itemLabelSingular(recipe);
@@ -848,13 +938,9 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final servingsRaw = (recipe?['servings'] ?? recipe?['servings_number'] ?? recipe?['servings_amount']);
     final servingsCount = _toInt(servingsRaw);
 
-    // Non-items mode still uses engine
     final advice = _safeAdvice(recipe);
     if (!itemsMode && advice == null) return const SizedBox.shrink();
 
-    // ---------------------------
-    // Makes line
-    // ---------------------------
     String? makesLine;
     int? itemsMade;
     if (itemsMode && servingsCount != null && ipp != null) {
@@ -867,9 +953,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       makesLine = 'This recipe makes $servingsText adult portions';
     }
 
-    // ---------------------------
-    // Recommended logic
-    // ---------------------------
     bool needsMore;
     bool showHalf;
     double? recommended;
@@ -880,9 +963,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
       final ratio = itemsNeeded / itemsMade;
 
-      // ✅ your rules:
-      // - recommend more ONLY when required
-      // - recommend half batch if under 65%
       needsMore = ratio > 1.0;
       showHalf = ratio > 0 && ratio <= 0.65;
 
@@ -892,10 +972,9 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       } else if (showHalf) {
         recommended = 0.5;
       } else {
-        recommended = null; // perfect
+        recommended = null;
       }
     } else {
-      // default mode uses engine
       needsMore = advice!.multiplierRaw > 1.0;
       showHalf = advice.canHalf && !needsMore;
       recommended = showHalf ? 0.5 : advice.recommendedMultiplier;
@@ -910,18 +989,13 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         ? 'You may want to make more'
         : (showHalf ? "You'll have leftovers" : 'Perfect for your family');
 
-    // ---------------------------
-    // Need line
-    // ---------------------------
     String lineText;
     if (itemsMode && ipp != null && ipp > 0) {
       final rawItemsNeeded = (_adults * ipp) + (_kids * (ipp / 2));
       final totalItemsNeeded = rawItemsNeeded.round().clamp(0, 999999);
       lineText = 'Your family needs ~$totalItemsNeeded ${_pluralise(itemSingular, totalItemsNeeded)}';
     } else {
-      lineText = (advice != null && advice.detailLine.trim().isNotEmpty)
-          ? advice.detailLine
-          : 'Your family needs more';
+      lineText = (advice != null && advice.detailLine.trim().isNotEmpty) ? advice.detailLine : 'Your family needs more';
     }
 
     return _card(
@@ -955,10 +1029,8 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
           const SizedBox(height: 20),
           Divider(color: Colors.black.withOpacity(0.08), height: 1),
           const SizedBox(height: 20),
-
           Text(lineText, style: _RText.servingMid),
           const SizedBox(height: 12),
-
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -975,13 +1047,11 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               ),
             ],
           ),
-
           if (showHiddenSection) ...[
             const SizedBox(height: 20),
             Divider(color: Colors.black.withOpacity(0.08), height: 1),
             const SizedBox(height: 20),
           ],
-
           if (showRecommended) ...[
             Row(
               crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -1156,8 +1226,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                           ),
                         ]),
                       ),
-                      if (showDivider)
-                        Divider(height: 1, thickness: 1, color: Colors.black.withOpacity(0.06)),
+                      if (showDivider) Divider(height: 1, thickness: 1, color: Colors.black.withOpacity(0.06)),
                     ]);
                   }),
               const SizedBox(height: 20),
@@ -1341,9 +1410,8 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
     final headerColor = _showStickyHeader ? const Color(0xFFECF3F4) : Colors.transparent;
     final iconColor = _showStickyHeader ? AppColors.brandDark : Colors.white;
-    final headerShadow = _showStickyHeader
-        ? [const BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))]
-        : null;
+    final headerShadow =
+        _showStickyHeader ? [const BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))] : null;
     final statusBarStyle = _showStickyHeader ? SystemUiOverlayStyle.dark : SystemUiOverlayStyle.light;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -1361,7 +1429,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                   ? Container(color: const Color(0xFFEFEFEF), child: const Icon(Icons.image_outlined))
                   : Image.network(heroUrl ?? imageUrl, fit: BoxFit.cover, filterQuality: FilterQuality.high),
             ),
-
             ScrollConfiguration(
               behavior: const NoBounceScrollBehavior(),
               child: CustomScrollView(
@@ -1394,9 +1461,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                 style: _RText.meta,
                               ),
                               const SizedBox(height: 20),
-
                               _servingPanelCard(context, recipe),
-
                               const SizedBox(height: 40),
                               Text('INGREDIENTS', style: _RText.section),
                               _unitSystemToggle(show: canConvert, leftLabel: 'METRIC', rightLabel: 'US'),
@@ -1439,10 +1504,8 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                   child: const Text('START COOKING', style: _RText.servingCta),
                                 ),
                               ),
-
                               _servingSuggestionsCard(recipe),
                               _storageCard(recipe),
-
                               const SizedBox(height: 40),
                               _nutritionPanel(context, recipe),
                               const SizedBox(height: 40),
@@ -1455,7 +1518,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                 ],
               ),
             ),
-
             Positioned(
               top: 0,
               left: 0,
@@ -1478,15 +1540,65 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                     padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
                     child: Row(
                       children: [
-                        _heroBackButton(color: iconColor),
-                        const Spacer(),
-                        if (user == null)
-                          Icon(Icons.star_border, size: 36, color: iconColor.withOpacity(0.6))
+                        // ✅ Frosted circle when NOT sticky, otherwise keep original
+                        if (!_showStickyHeader)
+                          _circleFrostButton(
+                            onTap: () => Navigator.of(context).pop(),
+                            child: _circleFrostIconWrapper(
+                              child: SvgPicture.asset(
+                                'assets/images/icons/back-chevron.svg',
+                                width: 24,
+                                height: 24,
+                                fit: BoxFit.contain,
+                                colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcIn),
+                              ),
+                            ),
+                          )
                         else
+                          _heroBackButton(color: iconColor),
+
+                        const Spacer(),
+
+                        if (user == null) ...[
+                          if (!_showStickyHeader)
+                            _circleFrostButton(
+                              onTap: () {},
+                              child: _circleFrostIconWrapper(
+                                child: Icon(Icons.star_border, size: 26, color: Colors.white.withOpacity(0.9)),
+                              ),
+                            )
+                          else
+                            Icon(Icons.star_border, size: 36, color: iconColor.withOpacity(0.6)),
+                        ] else ...[
                           StreamBuilder<bool>(
                             stream: FavoritesService.watchIsFavorite(widget.id),
                             builder: (context, snap) {
                               final isFav = snap.data == true;
+
+                              if (!_showStickyHeader) {
+                                return _circleFrostButton(
+                                  onTap: () async {
+                                    final newState = await FavoritesService.toggleFavorite(
+                                      recipeId: widget.id,
+                                      title: title,
+                                      imageUrl: imageUrl,
+                                    );
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(newState ? 'Saved to favourites' : 'Removed from favourites'),
+                                      ),
+                                    );
+                                  },
+                                  child: _circleFrostIconWrapper(
+                                    child: Icon(
+                                      isFav ? Icons.star : Icons.star_border,
+                                      size: 26,
+                                      color: Colors.white.withOpacity(0.95),
+                                    ),
+                                  ),
+                                );
+                              }
+
                               return InkWell(
                                 onTap: () async {
                                   final newState = await FavoritesService.toggleFavorite(
@@ -1504,6 +1616,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                               );
                             },
                           ),
+                        ],
                       ],
                     ),
                   ),
