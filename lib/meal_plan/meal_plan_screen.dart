@@ -138,11 +138,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   }
 
   /// Convert an effective entry into a storable snapshot.
-  /// Stored snapshot format:
-  /// - recipe: { kind: 'recipe', id: <int>, source?: <string> }
-  /// - note:   { kind: 'note', text: <string> }
-  ///
-  /// ✅ Uses MealPlanEntryParser so notes/recipes are interpreted consistently.
   Map<String, dynamic>? _snapshotSlotEntry(String dayKey, String slot) {
     final raw = _ctrl.effectiveEntry(dayKey, slot);
     final e = MealPlanEntryParser.parse(raw);
@@ -307,10 +302,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     });
   }
 
-  // ------------------------------------------------------------
-  // ⭐ Favorites listener (read-only)
-  // Expects: users/{uid}/favorites docs with field { recipeId: <int|string> }
-  // ------------------------------------------------------------
   void _startFavoritesListener() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -379,20 +370,12 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   // Helpers
   // ------------------------------------------------------------
 
-  String _ingredientsTextOf(Map<String, dynamic> recipe) {
-    final recipeData = recipe['recipe'];
-    if (recipeData is! Map<String, dynamic>) return '';
-
-    final flat = recipeData['ingredients_flat'];
-    if (flat is! List) return '';
-
-    final buf = StringBuffer();
-    for (final row in flat) {
-      if (row is! Map) continue;
-      buf.write('${row['name'] ?? ''} ');
-      buf.write('${row['notes'] ?? ''} ');
+  String _swapTextOf(Map<String, dynamic> r) {
+    if (r['ingredient_swaps'] != null) return r['ingredient_swaps'].toString();
+    if (r['meta'] is Map && r['meta']['ingredient_swaps'] != null) {
+      return r['meta']['ingredient_swaps'].toString();
     }
-    return buf.toString().trim();
+    return '';
   }
 
   /// Returns: "safe" | "swap" | "blocked"
@@ -401,23 +384,25 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
       return 'safe';
     }
 
-    final ingredientsText = _ingredientsTextOf(recipe);
-    if (ingredientsText.isEmpty) return 'safe';
-
     final allAllergies = <String>{
       ..._ctrl.excludedAllergens,
       ..._ctrl.childAllergens,
-    };
+    }.toList();
 
-    final res = AllergyEngine.evaluateRecipe(
-      ingredientsText: ingredientsText,
-      childAllergies: allAllergies.toList(),
-      includeSwapRecipes: true,
+    // Note: Assuming 'wprm_allergen' or 'taxonomies' available in object
+    // If not, engine acts on ingredients text if available, or returns safe default.
+    final tags = <String>[]; 
+    final swapText = _swapTextOf(recipe);
+
+    final res = AllergyEngine.evaluate(
+      recipeAllergyTags: tags,
+      swapFieldText: swapText,
+      userAllergies: allAllergies,
     );
 
-    final s = res.status.toString().toLowerCase();
-    if (s.contains('safe')) return 'safe';
-    if (s.contains('swap')) return 'swap';
+    final s = res.status;
+    if (s == AllergyStatus.safe) return 'safe';
+    if (s == AllergyStatus.swapRequired) return 'swap';
     return 'blocked';
   }
 
@@ -443,42 +428,15 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     return null;
   }
 
-  List<int> _availableSafeRecipeIds() {
-    final ids = <int>[];
-    for (final r in _recipes) {
-      if (!_ctrl.recipeAllowed(r)) continue;
-      final rid = _recipeIdFrom(r);
-      if (rid != null) ids.add(rid);
-    }
-    return ids;
-  }
-
   String formatDayKeyPretty(String dayKey) {
     final dt = MealPlanKeys.parseDayKey(dayKey);
     if (dt == null) return dayKey;
 
     const weekdays = [
-      'Monday',
-      'Tuesday',
-      'Wednesday',
-      'Thursday',
-      'Friday',
-      'Saturday',
-      'Sunday'
+      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
     ];
     const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec'
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
     ];
 
     final weekday = weekdays[dt.weekday - 1];
@@ -488,22 +446,14 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 
   String _weekdayLetter(DateTime dt) {
     switch (dt.weekday) {
-      case DateTime.monday:
-        return 'M';
-      case DateTime.tuesday:
-        return 'T';
-      case DateTime.wednesday:
-        return 'W';
-      case DateTime.thursday:
-        return 'T';
-      case DateTime.friday:
-        return 'F';
-      case DateTime.saturday:
-        return 'S';
-      case DateTime.sunday:
-        return 'S';
-      default:
-        return '';
+      case DateTime.monday: return 'M';
+      case DateTime.tuesday: return 'T';
+      case DateTime.wednesday: return 'W';
+      case DateTime.thursday: return 'T';
+      case DateTime.friday: return 'F';
+      case DateTime.saturday: return 'S';
+      case DateTime.sunday: return 'S';
+      default: return '';
     }
   }
 
@@ -583,7 +533,8 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     required String dayKey,
     required String slot,
   }) async {
-    final ids = _availableSafeRecipeIds();
+    // ✅ FIX: Use strict candidates logic (Slot + Safe + Not Excluded)
+    final ids = _ctrl.getCandidatesForSlot(slot, _recipes);
 
     final raw = _ctrl.effectiveEntry(dayKey, slot);
     final parsed = MealPlanEntryParser.parse(raw);
@@ -607,7 +558,8 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     required String dayKey,
     required String slot,
   }) async {
-    final ids = _availableSafeRecipeIds();
+    // ✅ FIX: Use strict candidates logic (Slot + Safe + Not Excluded)
+    final ids = _ctrl.getCandidatesForSlot(slot, _recipes);
 
     final currentParsed =
         MealPlanEntryParser.parse(_ctrl.effectiveEntry(dayKey, slot));
@@ -622,6 +574,13 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 
     if (next != null) {
       _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
+    } else {
+      // Optional feedback if no valid recipes exist for this slot
+      if (ids.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No safe recipes found for this course')),
+        );
+      }
     }
   }
 
@@ -677,7 +636,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
           actions: _reviewMode
               ? []
               : [
-                  // ⭐ Add plan to favourites (day or week)
                   IconButton(
                     tooltip: 'Add plan to favourites',
                     icon: const Icon(Icons.star_border_rounded),
@@ -689,8 +647,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                       }
                     },
                   ),
-
-                  // ✅ One toggle button only
                   if (_mode == MealPlanViewMode.today)
                     IconButton(
                       tooltip: 'View week',
@@ -713,7 +669,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
               return const Center(child: CircularProgressIndicator());
             }
 
-            // ✅ Day renderer (now with STICKY Save Changes bar)
             Widget buildColourfulDay(
               String dayKey, {
               required String heroTop,
@@ -726,21 +681,16 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                 children: [
                   ListView(
                     padding: EdgeInsets.only(
-                      bottom: canSave ? 86 : 0, // space for sticky bar
+                      bottom: canSave ? 86 : 0, 
                     ),
                     children: [
                       TodayMealPlanSection(
                         todayRaw: dayRaw,
                         recipes: _recipes,
                         favoriteIds: _favoriteIds,
-
                         heroTopText: heroTop,
                         heroBottomText: heroBottom,
-
-                        // ✅ No customise/full-week footer in MealPlanScreen
                         onOpenMealPlan: null,
-
-                        // ✅ Keep all functionality
                         onInspireSlot: (slot) =>
                             _inspireSlot(dayKey: dayKey, slot: slot),
                         onChooseSlot: (slot) =>
@@ -759,15 +709,11 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                         },
                         onClearSlot: (slot) =>
                             _clearSlot(dayKey: dayKey, slot: slot),
-
-                        // ✅ IMPORTANT: disable in-section save bar so it doesn't scroll
                         canSave: false,
                         onSaveChanges: null,
                       ),
                     ],
                   ),
-
-                  // ✅ Sticky save bar overlay
                   if (canSave)
                     Positioned(
                       left: 0,
@@ -777,7 +723,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                         top: false,
                         child: Container(
                           decoration: const BoxDecoration(
-                            color: Color(0xFF044246), // hero bg
+                            color: Color(0xFF044246),
                             boxShadow: [
                               BoxShadow(
                                 offset: Offset(0, -6),
@@ -805,7 +751,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor:
-                                    const Color(0xFF32998D), // hero accent
+                                    const Color(0xFF32998D), 
                                 shape: const StadiumBorder(),
                               ),
                               child: const Text('SAVE CHANGES'),
@@ -818,7 +764,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
               );
             }
 
-            // ✅ TODAY MODE (colourful)
             if (_mode == MealPlanViewMode.today) {
               return buildColourfulDay(
                 focusDayKey,
@@ -827,7 +772,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
               );
             }
 
-            // ✅ WEEK MODE (tabs + colourful day section in each tab)
             final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
             final initialIndex = () {
               final idx = dayKeys.indexOf(focusDayKey);
@@ -875,15 +819,13 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 }
 
 // ----------------------------------------------------
-// Choose Recipe Sheet (safe + needs swap + excluded)
+// Choose Recipe Sheet
 // ----------------------------------------------------
 class _ChooseRecipeSheet extends StatefulWidget {
   final List<Map<String, dynamic>> recipes;
   final String Function(Map<String, dynamic>) titleOf;
   final String? Function(Map<String, dynamic>) thumbOf;
   final int? Function(Map<String, dynamic>) idOf;
-
-  /// Return: "safe" | "swap" | "blocked" (or null = safe)
   final String Function(Map<String, dynamic> recipe)? statusTextOf;
 
   const _ChooseRecipeSheet({

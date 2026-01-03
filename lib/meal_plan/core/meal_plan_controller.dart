@@ -27,7 +27,6 @@ class MealPlanController extends ChangeNotifier {
   String weekId;
   Map<String, dynamic>? weekData;
 
-  /// Draft edits: dayKey -> slot -> entryMap
   final Map<String, Map<String, Map<String, dynamic>>> _draft = {};
 
   StreamSubscription<Map<String, dynamic>?>? _sub;
@@ -36,7 +35,7 @@ class MealPlanController extends ChangeNotifier {
   String? _lastPopulatedWeekId;
 
   // -------------------------------------------------------
-  // Allergies (profile-driven)
+  // Allergies
   // -------------------------------------------------------
 
   Set<String> _excludedAllergens = {};
@@ -51,11 +50,11 @@ class MealPlanController extends ChangeNotifier {
   }) {
     _excludedAllergens = excludedAllergens;
     _childAllergens = childAllergens;
-    notifyListeners(); // important for card refresh
+    notifyListeners();
   }
 
   // -------------------------------------------------------
-  // Ingredient text (MATCHES recipe list)
+  // Ingredient text
   // -------------------------------------------------------
 
   String _ingredientsTextOf(Map<String, dynamic> recipe) {
@@ -71,15 +70,13 @@ class MealPlanController extends ChangeNotifier {
       buf.write('${row['name'] ?? ''} ');
       buf.write('${row['notes'] ?? ''} ');
     }
-
     return buf.toString().trim();
   }
 
   // -------------------------------------------------------
-  // Allergy engine helpers (NO NEW TYPES / NO swapAvailable enum)
+  // Allergy engine
   // -------------------------------------------------------
 
-  /// Returns the raw engine response (dynamic) or null if we should "fail open".
   dynamic evaluateRecipe(
     Map<String, dynamic> recipe, {
     required bool includeSwapRecipes,
@@ -101,7 +98,6 @@ class MealPlanController extends ChangeNotifier {
     );
   }
 
-  /// ✅ Safe-only (this is what your meal plan generation + inspire pool uses)
   bool recipeAllowed(Map<String, dynamic> recipe) {
     if (_excludedAllergens.isEmpty && _childAllergens.isEmpty) return true;
 
@@ -116,67 +112,14 @@ class MealPlanController extends ChangeNotifier {
     final res = AllergyEngine.evaluateRecipe(
       ingredientsText: ingredientsText,
       childAllergies: allAllergies.toList(),
-      includeSwapRecipes: false, // ✅ SAFE ONLY
+      includeSwapRecipes: false,
     );
 
     return res.status == AllergyStatus.safe;
   }
 
-  /// ✅ “Swap available” style signal for Meal Plan UI
-  /// (works even though your AllergyStatus enum does NOT have swapAvailable)
-  bool recipeHasSwap(Map<String, dynamic> recipe) {
-    // No allergies set -> nothing to swap for
-    if (_excludedAllergens.isEmpty && _childAllergens.isEmpty) return false;
-
-    final res = evaluateRecipe(recipe, includeSwapRecipes: true);
-    if (res == null) return false;
-
-    // If it's safe, we don't treat it as "needs swap"
-    try {
-      final st = (res as dynamic).status;
-      if (st == AllergyStatus.safe) return false;
-    } catch (_) {
-      // ignore
-    }
-
-    // 1) Status might be a string/enum containing "swap"
-    try {
-      final st = (res as dynamic).status;
-      final s = st?.toString().toLowerCase() ?? '';
-      if (s.contains('swap')) return true;
-    } catch (_) {
-      // ignore
-    }
-
-    // 2) Engine might return explicit lists of swaps/suggestions
-    bool hasNonEmptyList(dynamic v) =>
-        v is List && v.where((e) => e != null).isNotEmpty;
-
-    try {
-      final v = (res as dynamic).swapRecipes;
-      if (hasNonEmptyList(v)) return true;
-    } catch (_) {}
-
-    try {
-      final v = (res as dynamic).swaps;
-      if (hasNonEmptyList(v)) return true;
-    } catch (_) {}
-
-    try {
-      final v = (res as dynamic).suggestions;
-      if (hasNonEmptyList(v)) return true;
-    } catch (_) {}
-
-    try {
-      final v = (res as dynamic).swapSuggestions;
-      if (hasNonEmptyList(v)) return true;
-    } catch (_) {}
-
-    return false;
-  }
-
   // -------------------------------------------------------
-  // Auth
+  // Lifecycle
   // -------------------------------------------------------
 
   String get uid {
@@ -184,10 +127,6 @@ class MealPlanController extends ChangeNotifier {
     if (u == null) throw StateError('User not logged in');
     return u.uid;
   }
-
-  // -------------------------------------------------------
-  // Lifecycle
-  // -------------------------------------------------------
 
   void start() {
     _sub?.cancel();
@@ -220,10 +159,8 @@ class MealPlanController extends ChangeNotifier {
     await ensureWeek();
   }
 
-  List<String> dayKeysForWeek() => MealPlanKeys.weekDayKeys(weekId);
-
   // -------------------------------------------------------
-  // Helpers
+  // Parsing / Entries
   // -------------------------------------------------------
 
   int? recipeIdFromAny(dynamic raw) {
@@ -233,10 +170,6 @@ class MealPlanController extends ChangeNotifier {
     return null;
   }
 
-  // -------------------------------------------------------
-  // Entry parsing
-  // -------------------------------------------------------
-
   static Map<String, dynamic>? _parseEntry(dynamic raw) {
     if (raw is int) {
       return {'type': 'recipe', 'recipeId': raw, 'source': 'auto'};
@@ -244,7 +177,6 @@ class MealPlanController extends ChangeNotifier {
     if (raw is num) {
       return {'type': 'recipe', 'recipeId': raw.toInt(), 'source': 'auto'};
     }
-
     if (raw is Map) {
       final m = Map<String, dynamic>.from(raw);
       final type = (m['type'] ?? '').toString();
@@ -254,7 +186,6 @@ class MealPlanController extends ChangeNotifier {
         if (text.isEmpty) return null;
         return {'type': 'note', 'text': text};
       }
-
       if (type == 'recipe') {
         final rid = m['recipeId'];
         final recipeId =
@@ -267,7 +198,6 @@ class MealPlanController extends ChangeNotifier {
         };
       }
     }
-
     return null;
   }
 
@@ -287,27 +217,18 @@ class MealPlanController extends ChangeNotifier {
     return draftEntry(dayKey, slot) ?? firestoreEntry(dayKey, slot);
   }
 
-  bool entryIsRecipe(Map<String, dynamic>? e) => e?['type'] == 'recipe';
-  bool entryIsNote(Map<String, dynamic>? e) => e?['type'] == 'note';
-
   int? entryRecipeId(Map<String, dynamic>? e) {
-    if (e == null) return null;
-    if (e['type'] != 'recipe') return null;
-    final rid = e['recipeId'];
-    if (rid is int) return rid;
-    if (rid is num) return rid.toInt();
-    return null;
+    if (e == null || e['type'] != 'recipe') return null;
+    return recipeIdFromAny(e['recipeId']);
   }
 
   String? entryNoteText(Map<String, dynamic>? e) {
-    if (e == null) return null;
-    if (e['type'] != 'note') return null;
-    final t = (e['text'] ?? '').toString().trim();
-    return t.isEmpty ? null : t;
+    if (e == null || e['type'] != 'note') return null;
+    return (e['text'] ?? '').toString().trim();
   }
 
   // -------------------------------------------------------
-  // Draft editing
+  // Draft Editing
   // -------------------------------------------------------
 
   void setDraftRecipe(
@@ -344,10 +265,8 @@ class MealPlanController extends ChangeNotifier {
     if (a == null && b == null) return true;
     if (a == null || b == null) return false;
     if (a['type'] != b['type']) return false;
-
     if (a['type'] == 'recipe') {
-      return entryRecipeId(a) == entryRecipeId(b) &&
-          (a['source'] ?? '') == (b['source'] ?? '');
+      return entryRecipeId(a) == entryRecipeId(b);
     }
     if (a['type'] == 'note') {
       return entryNoteText(a) == entryNoteText(b);
@@ -368,30 +287,129 @@ class MealPlanController extends ChangeNotifier {
       dayKey: dayKey,
       daySlots: {...existing, ...dayDraft},
     );
-
     _draft.remove(dayKey);
     notifyListeners();
   }
 
-  int? pickDifferentId({
-    required List<int> availableIds,
-    required int? currentId,
-  }) {
-    if (availableIds.isEmpty) return null;
-    if (availableIds.length == 1) return availableIds.first;
+  // -------------------------------------------------------
+  // COURSE EXTRACTION
+  // -------------------------------------------------------
 
-    final idx = currentId == null ? -1 : availableIds.indexOf(currentId);
-    final start = idx < 0 ? 0 : (idx + 1) % availableIds.length;
+  String? _extractCourse(Map<String, dynamic> recipe) {
+    final r = recipe['recipe'] is Map ? (recipe['recipe'] as Map) : recipe;
+    dynamic v;
 
-    for (int step = 0; step < availableIds.length; step++) {
-      final c = availableIds[(start + step) % availableIds.length];
-      if (c != currentId) return c;
+    if (r['tags'] is Map) {
+      final tags = r['tags'];
+      v = tags['course'] ?? tags['courses'] ?? tags['meal'];
+    }
+
+    if (v == null) {
+      v = r['course'] ?? r['courses'] ?? r['meal'] ?? r['meal_type'];
+    }
+
+    if (v == null && r['taxonomies'] is Map) {
+      final tax = r['taxonomies'];
+      v = tax['course'] ??
+          tax['recipe_course'] ??
+          tax['wprm_course'] ??
+          tax['category'];
+    }
+
+    if (v == null) return null;
+
+    if (v is String) return v.trim();
+    if (v is List) {
+      if (v.isEmpty) return null;
+      final parts = <String>[];
+      for (final item in v) {
+        if (item is String) {
+          parts.add(item);
+        } else if (item is Map) {
+          final name = item['name'] ?? item['slug'] ?? item['term'] ?? '';
+          if (name is String && name.isNotEmpty) parts.add(name);
+        }
+      }
+      if (parts.isEmpty) return null;
+      return parts.join(', ');
     }
     return null;
   }
 
+  List<String> _courseTokens(String? courseRaw) {
+    if (courseRaw == null) return const [];
+    final raw = courseRaw.toLowerCase().trim();
+    if (raw.isEmpty) return const [];
+    return raw
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
+
+  bool _anyTokenContains(List<String> tokens, List<String> needles) {
+    for (final t in tokens) {
+      for (final n in needles) {
+        if (t.contains(n)) return true;
+      }
+    }
+    return false;
+  }
+
+  // Only these 4 exist in your dataset
+  bool _isBreakfastCourseTokens(List<String> tokens) {
+    return _anyTokenContains(tokens, const ['breakfast']);
+  }
+
+  bool _isMainsCourseTokens(List<String> tokens) {
+    return _anyTokenContains(tokens, const ['mains']);
+  }
+
+  bool _isSnacksCourseTokens(List<String> tokens) {
+    return _anyTokenContains(tokens, const ['snacks']);
+  }
+
+  bool _isSweetsCourseTokens(List<String> tokens) {
+    return _anyTokenContains(tokens, const ['sweets']);
+  }
+
   // -------------------------------------------------------
-  // Generator (hybrid: uses "course" when available)
+  // CANDIDATE FILTERING
+  // -------------------------------------------------------
+
+  List<int> getCandidatesForSlot(
+    String slot,
+    List<Map<String, dynamic>> recipes,
+  ) {
+    return recipes.where((r) {
+      if (!recipeAllowed(r)) return false;
+
+      final courseRaw = _extractCourse(r);
+      final tokens = _courseTokens(courseRaw);
+      if (tokens.isEmpty) return false;
+
+      if (slot == 'breakfast') {
+        // breakfast if breakfast appears anywhere in the course list
+        return _isBreakfastCourseTokens(tokens);
+      }
+
+      if (slot == 'lunch' || slot == 'dinner') {
+        // mains only
+        return _isMainsCourseTokens(tokens);
+      }
+
+      if (slot == 'snack1' || slot == 'snack2') {
+        // ✅ STRICT: snacks only if "snacks" appears anywhere
+        // (Breakfast can be a snack ONLY if it ALSO has snacks)
+        return _isSnacksCourseTokens(tokens);
+      }
+
+      return false;
+    }).map((r) => recipeIdFromAny(r['id'])).whereType<int>().toList();
+  }
+
+  // -------------------------------------------------------
+  // GENERATOR
   // -------------------------------------------------------
 
   Future<void> ensurePlanPopulated({
@@ -402,7 +420,6 @@ class MealPlanController extends ChangeNotifier {
 
     await ensureWeek();
 
-    // Ensure we have latest week data so we don't overwrite changes
     Map<String, dynamic> data;
     if (weekData != null) {
       data = weekData!;
@@ -413,65 +430,62 @@ class MealPlanController extends ChangeNotifier {
       notifyListeners();
     }
 
-    final existingDays =
-        data['days'] is Map ? (data['days'] as Map) : const {};
+    final existingDays = data['days'] is Map ? (data['days'] as Map) : const {};
 
-    // SAFE pool (respect allergies) - safe only
-    final allIds = <int>[];
-    for (final r in recipes) {
-      if (!recipeAllowed(r)) continue;
-      final id = recipeIdFromAny(r['id']);
-      if (id != null) allIds.add(id);
-    }
-    if (allIds.isEmpty) return;
+    final buckets = <String, List<int>>{
+      'breakfast': getCandidatesForSlot('breakfast', recipes),
+      'lunch': getCandidatesForSlot('lunch', recipes),
+      'dinner': getCandidatesForSlot('dinner', recipes),
+      'snack1': getCandidatesForSlot('snack1', recipes),
+      'snack2': getCandidatesForSlot('snack2', recipes),
+    };
 
-    // Buckets must be built from SAFE recipes too
-    final safeRecipes = recipes.where(recipeAllowed).toList();
-    final buckets = _buildSlotBucketsFromCourse(safeRecipes);
-
-    final rng = Random(weekId.hashCode);
-
-    final used = <int>{};
-    final toUpsert = <String, Map<String, dynamic>>{};
-
+    final usedInWeek = <int>{};
     final dayKeys = MealPlanKeys.weekDayKeys(weekId);
 
+    for (final dayKey in dayKeys) {
+      final rawExisting = existingDays[dayKey];
+      final dayMap = (rawExisting is Map) ? rawExisting : {};
+      for (final slot in MealPlanSlots.order) {
+        final rid1 = entryRecipeId(_parseEntry(dayMap[slot]));
+        if (rid1 != null) usedInWeek.add(rid1);
+        final rid2 = entryRecipeId(_draft[dayKey]?[slot]);
+        if (rid2 != null) usedInWeek.add(rid2);
+      }
+    }
+
+    final rng = Random(weekId.hashCode);
+    final toUpsert = <String, Map<String, dynamic>>{};
     _populateInFlight = true;
+
     try {
       for (final dayKey in dayKeys) {
         Map<String, dynamic> existingDay = {};
-        final rawExisting = existingDays[dayKey];
-        if (rawExisting is Map) {
-          existingDay = Map<String, dynamic>.from(rawExisting);
+        if (existingDays[dayKey] is Map) {
+          existingDay = Map<String, dynamic>.from(existingDays[dayKey]);
         }
 
         final updatedDay = <String, dynamic>{...existingDay};
         bool changed = false;
 
         for (final slot in MealPlanSlots.order) {
-          // Respect existing Firestore entry (recipe OR note)
-          final existingEntry = _parseEntry(existingDay[slot]);
-          if (existingEntry != null) {
-            final rid = entryRecipeId(existingEntry);
-            if (rid != null) used.add(rid);
-            continue;
+          if (_parseEntry(existingDay[slot]) != null) continue;
+          if (_draft[dayKey]?[slot] != null) continue;
+
+          var candidates = buckets[slot] ?? [];
+
+          if (candidates.isEmpty && (slot == 'lunch' || slot == 'dinner')) {
+            candidates = (slot == 'lunch')
+                ? (buckets['dinner'] ?? [])
+                : (buckets['lunch'] ?? []);
+          }
+          if (candidates.isEmpty && (slot == 'snack1' || slot == 'snack2')) {
+            candidates = (slot == 'snack1')
+                ? (buckets['snack2'] ?? [])
+                : (buckets['snack1'] ?? []);
           }
 
-          // Respect draft
-          final d = _draft[dayKey]?[slot];
-          if (d != null) {
-            final rid = entryRecipeId(d);
-            if (rid != null) used.add(rid);
-            continue;
-          }
-
-          final candidates = buckets[slot];
-          final picked = _pickId(
-            rng: rng,
-            preferred: candidates ?? const [],
-            fallback: allIds,
-            avoid: used,
-          );
+          final picked = _pickId(rng, candidates, usedInWeek);
 
           if (picked != null) {
             updatedDay[slot] = {
@@ -479,7 +493,7 @@ class MealPlanController extends ChangeNotifier {
               'recipeId': picked,
               'source': 'auto',
             };
-            used.add(picked);
+            usedInWeek.add(picked);
             changed = true;
           }
         }
@@ -497,99 +511,10 @@ class MealPlanController extends ChangeNotifier {
     }
   }
 
-  Map<String, List<int>> _buildSlotBucketsFromCourse(
-    List<Map<String, dynamic>> recipes,
-  ) {
-    const breakfastKeys = {'breakfast', 'brunch'};
-    const snackKeys = {'snack', 'snacks'};
-    const lunchKeys = {'lunch'};
-    const dinnerKeys = {'dinner', 'main', 'mains', 'entree', 'entrée', 'supper'};
-
-    final out = <String, List<int>>{
-      'breakfast': <int>[],
-      'snack1': <int>[],
-      'lunch': <int>[],
-      'snack2': <int>[],
-      'dinner': <int>[],
-    };
-
-    for (final r in recipes) {
-      final id = recipeIdFromAny(r['id']);
-      if (id == null) continue;
-
-      final course = _extractCourse(r);
-      if (course == null) continue;
-
-      final c = course.toLowerCase();
-      bool matched = false;
-
-      if (breakfastKeys.any((k) => c.contains(k))) {
-        out['breakfast']!.add(id);
-        matched = true;
-      }
-      if (snackKeys.any((k) => c.contains(k))) {
-        out['snack1']!.add(id);
-        out['snack2']!.add(id);
-        matched = true;
-      }
-      if (lunchKeys.any((k) => c.contains(k))) {
-        out['lunch']!.add(id);
-        matched = true;
-      }
-      if (dinnerKeys.any((k) => c.contains(k))) {
-        out['dinner']!.add(id);
-        matched = true;
-      }
-
-      if (!matched) {
-        // fallback only
-      }
-    }
-
-    out.removeWhere((_, v) => v.isEmpty);
-    return out;
-  }
-
-  String? _extractCourse(Map<String, dynamic> recipe) {
-    dynamic v;
-
-    final inner = recipe['recipe'];
-    if (inner is Map<String, dynamic>) {
-      v = inner['course'] ??
-          inner['courses'] ??
-          inner['meal'] ??
-          inner['meal_type'];
-    }
-    v ??= recipe['course'] ?? recipe['courses'];
-
-    if (v is String) {
-      final s = v.trim();
-      return s.isEmpty ? null : s;
-    }
-    if (v is List) {
-      final parts = v
-          .whereType<String>()
-          .map((e) => e.trim())
-          .where((e) => e.isNotEmpty)
-          .toList();
-      if (parts.isEmpty) return null;
-      return parts.join(', ');
-    }
-    return null;
-  }
-
-  int? _pickId({
-    required Random rng,
-    required List<int> preferred,
-    required List<int> fallback,
-    required Set<int> avoid,
-  }) {
-    final pref = preferred.where((id) => !avoid.contains(id)).toList();
-    if (pref.isNotEmpty) return pref[rng.nextInt(pref.length)];
-    if (preferred.isNotEmpty) return preferred[rng.nextInt(preferred.length)];
-
-    final fb = fallback.where((id) => !avoid.contains(id)).toList();
-    if (fb.isNotEmpty) return fb[rng.nextInt(fb.length)];
-    return fallback.isEmpty ? null : fallback[rng.nextInt(fallback.length)];
+  int? _pickId(Random rng, List<int> candidates, Set<int> avoid) {
+    if (candidates.isEmpty) return null;
+    final fresh = candidates.where((id) => !avoid.contains(id)).toList();
+    if (fresh.isNotEmpty) return fresh[rng.nextInt(fresh.length)];
+    return candidates[rng.nextInt(candidates.length)];
   }
 }

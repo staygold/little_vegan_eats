@@ -5,6 +5,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+// ✅ robust import (won't break when moving files)
+import 'package:little_vegan_eats/resources/resources_hub_screen.dart';
+
 import '../meal_plan/core/meal_plan_review_service.dart';
 import '../theme/app_theme.dart';
 import 'adult_profile_screen.dart';
@@ -21,7 +24,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _ensuredAdult1 = false;
   bool _hydratingChildKeys = false;
 
-  // ✅ Change this if your welcome route isn't "/"
   static const String _welcomeRoute = '/';
 
   void _goToWelcome() {
@@ -90,7 +92,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final map = Map<String, dynamic>.from(c);
       final key = (map['childKey'] ?? '').toString().trim();
       if (key.isEmpty) {
-        // unique id without any deps
         final newKey = FirebaseFirestore.instance.collection('_').doc().id;
         map['childKey'] = newKey;
         needsWrite = true;
@@ -107,7 +108,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     } catch (_) {
-      // ignore; we'll try again next render if needed
+      // ignore
     } finally {
       _hydratingChildKeys = false;
     }
@@ -179,8 +180,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     List children,
   ) async {
     final updated = [...children];
-
-    // ✅ stable key for first foods + any child-specific data
     final childKey = FirebaseFirestore.instance.collection('_').doc().id;
 
     updated.add({
@@ -268,7 +267,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required String subtitleLine1,
     Widget? subtitleLine2,
     required VoidCallback onTap,
-    required double tileHeight, // ✅ allow different sizes
+    required double tileHeight,
   }) {
     final theme = Theme.of(context);
 
@@ -318,7 +317,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
-                    mainAxisSize: MainAxisSize.max,
                     children: [
                       Row(
                         children: [
@@ -429,9 +427,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  // --------------------------------------------------
-  // Build
-  // --------------------------------------------------
   @override
   Widget build(BuildContext context) {
     const panelBg = Color(0xFFECF3F4);
@@ -441,7 +436,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     const cardsToButtonGap = 12.0;
     const sectionGap = 40.0;
 
-    // ✅ split heights
     const adultTileHeight = 96.0;
     const childTileHeight = 122.0;
 
@@ -449,9 +443,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, authSnap) {
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
 
         final user = authSnap.data;
@@ -492,7 +484,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               final adults = (data['adults'] as List?) ?? [];
               final children = (data['children'] as List?) ?? [];
 
-              // ✅ auto-migrate missing childKey fields
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 _ensureChildKeys(docRef, children);
               });
@@ -517,7 +508,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               return ListView(
                 padding: EdgeInsets.zero,
                 children: [
-                  // ---------------- Header ----------------
                   Container(
                     color: AppColors.brandDark,
                     child: SafeArea(
@@ -535,9 +525,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   .copyWith(
                                 color: Colors.white,
                                 fontWeight: FontWeight.w900,
-                                fontVariations: const [
-                                  FontVariation('wght', 900)
-                                ],
+                                fontVariations: const [FontVariation('wght', 900)],
                                 letterSpacing: 0.6,
                               ),
                             ),
@@ -589,7 +577,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
 
-                  // ---------------- Rounded light panel ----------------
                   Container(
                     color: AppColors.brandDark,
                     child: Container(
@@ -604,7 +591,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // ---------------- Adults ----------------
                           Text('ADULTS', style: _sectionHeading(context)),
                           const SizedBox(height: headingToCardsGap),
 
@@ -654,7 +640,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
                           const SizedBox(height: sectionGap),
 
-                          // ---------------- Children ----------------
                           Text('CHILDREN', style: _sectionHeading(context)),
                           const SizedBox(height: headingToCardsGap),
 
@@ -664,7 +649,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               final name = (raw['name'] ?? '').toString().trim();
                               final i = children.indexOf(raw);
 
-                              // ✅ stable ID for first foods
                               final childKey =
                                   (raw['childKey'] ?? '').toString().trim();
 
@@ -678,7 +662,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   subtitleLine2: (childKey.isEmpty)
                                       ? const Text('0 / 100 foods tried')
                                       : FirstFoodsProgressInline(
-                                          childId: childKey, // ✅ stable
+                                          childId: childKey,
                                           baseTotal: 100,
                                         ),
                                   onTap: () async {
@@ -715,12 +699,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           const SizedBox(height: 18),
 
                           _bigOutlineButton(
+                            label: 'RESOURCES',
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const ResourcesHubScreen(),
+                                ),
+                              );
+                            },
+                          ),
+
+                          const SizedBox(height: 12),
+
+                          _bigOutlineButton(
                             label: 'SETTINGS',
                             onTap: () {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Settings (TODO)'),
-                                ),
+                                const SnackBar(content: Text('Settings (TODO)')),
                               );
                             },
                           ),
@@ -745,9 +740,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-/// Inline progress text for Profile cards:
-/// - Counts ANY item with any try == true (base + “Other” custom).
-/// - Always displays as “X / 100 foods tried”.
 class FirstFoodsProgressInline extends StatelessWidget {
   final String childId;
   final int baseTotal;

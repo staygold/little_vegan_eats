@@ -1,10 +1,7 @@
 // lib/recipes/widgets/recipe_filters_ui.dart
-import 'dart:io';
 import 'dart:ui';
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-
 import '../../theme/app_theme.dart';
 
 // ✅ UPDATED: Supports "specificPeople" (plural)
@@ -123,11 +120,11 @@ class _FStyle {
   static const Color chipText = Colors.white;
 
   // Radii
-  static const double pillRadius = 14;
+  static const double pillRadius = 8;
   static const double chipRadius = 999;
   static const double sheetRadius = 20;
-  static const double fieldRadius = 14;
-  static const double ctaRadius = 14;
+  static const double fieldRadius = 12;
+  static const double ctaRadius = 12;
 
   // Sizes
   static const double pillHeight = 44;
@@ -137,11 +134,57 @@ class _FStyle {
   // Spacing
   static const EdgeInsets pillPadding = EdgeInsets.symmetric(horizontal: 14);
   static const EdgeInsets sheetPadding = EdgeInsets.fromLTRB(16, 0, 16, 16);
-  static const EdgeInsets fieldContentPadding = EdgeInsets.symmetric(horizontal: 16, vertical: 14);
   static const EdgeInsets chipPadding = EdgeInsets.symmetric(horizontal: 12);
 
   // Typography
   static const TextStyle pillLabel = TextStyle(
+    fontFamily: font,
+    fontSize: 14,
+    fontWeight: FontWeight.w700,
+    fontVariations: [FontVariation('wght', 700)],
+    height: 1.0,
+    color: AppColors.brandDark,
+  );
+
+  static const TextStyle badge = TextStyle(
+    fontFamily: font,
+    fontSize: 12,
+    fontWeight: FontWeight.w700,
+    fontVariations: [FontVariation('wght', 700)],
+    height: 1.0,
+    color: Colors.white,
+  );
+
+  static const TextStyle chip = TextStyle(
+    fontFamily: font,
+    fontSize: 12,
+    fontWeight: FontWeight.w700,
+    fontVariations: [FontVariation('wght', 700)],
+    height: 1.0,
+    color: chipText,
+  );
+
+  static const TextStyle sheetTitle = TextStyle(
+    fontFamily: font,
+    fontSize: 18,
+    fontWeight: FontWeight.w900,
+    fontVariations: [FontVariation('wght', 900)],
+    letterSpacing: 0.6,
+    height: 1.0,
+    color: AppColors.brandDark,
+  );
+
+  static const TextStyle sectionLabel = TextStyle(
+    fontFamily: font,
+    fontSize: 11,
+    fontWeight: FontWeight.w900,
+    fontVariations: [FontVariation('wght', 900)],
+    letterSpacing: 0.8,
+    height: 1.0,
+    color: Color(0x8C000000),
+  );
+
+  static const TextStyle rowTitle = TextStyle(
     fontFamily: font,
     fontSize: 14,
     fontWeight: FontWeight.w800,
@@ -150,56 +193,13 @@ class _FStyle {
     color: AppColors.brandDark,
   );
 
-  static const TextStyle badge = TextStyle(
+  static const TextStyle rowValue = TextStyle(
     fontFamily: font,
-    fontSize: 12,
-    fontWeight: FontWeight.w900,
-    fontVariations: [FontVariation('wght', 900)],
+    fontSize: 14,
+    fontWeight: FontWeight.w600,
+    fontVariations: [FontVariation('wght', 600)],
     height: 1.0,
-    color: Colors.white,
-  );
-
-  static const TextStyle chip = TextStyle(
-    fontFamily: font,
-    fontSize: 12.5,
-    fontWeight: FontWeight.w800,
-    fontVariations: [FontVariation('wght', 800)],
-    height: 1.0,
-    color: chipText,
-  );
-
-  static const TextStyle sheetTitle = TextStyle(
-    fontFamily: font,
-    fontSize: 16,
-    fontWeight: FontWeight.w900,
-    fontVariations: [FontVariation('wght', 900)],
-    letterSpacing: 0.6,
-    height: 1.0,
-    color: AppColors.brandDark,
-  );
-
-  static const TextStyle fieldLabel = TextStyle(
-    fontFamily: font,
-    fontSize: 13,
-    fontWeight: FontWeight.w900,
-    fontVariations: [FontVariation('wght', 900)],
-    letterSpacing: 0.2,
-    height: 1.0,
-    color: AppColors.brandDark,
-  );
-
-  static TextStyle fieldFloatingLabel(BuildContext context) => fieldLabel.copyWith(
-        fontSize: 12,
-        color: brand.withOpacity(0.90),
-      );
-
-  static const TextStyle fieldValue = TextStyle(
-    fontFamily: font,
-    fontSize: 20,
-    fontWeight: FontWeight.w800,
-    fontVariations: [FontVariation('wght', 800)],
-    height: 1.05,
-    color: Colors.black,
+    color: Colors.black87,
   );
 
   static const TextStyle helper = TextStyle(
@@ -229,43 +229,6 @@ class _FStyle {
     color: Colors.black,
   );
 
-  // Reusable decorations
-  static BoxDecoration pillDecoration() => BoxDecoration(
-        borderRadius: BorderRadius.circular(pillRadius),
-        border: Border.all(color: border),
-        color: pillBg,
-      );
-
-  static BoxDecoration chipDecoration() => BoxDecoration(
-        color: chipBg,
-        borderRadius: BorderRadius.circular(chipRadius),
-      );
-
-  static InputDecoration fieldInputDecoration(BuildContext context, String label, {bool enabled = true}) {
-    return InputDecoration(
-      labelText: label,
-      floatingLabelBehavior: FloatingLabelBehavior.auto,
-      contentPadding: fieldContentPadding,
-      labelStyle: fieldLabel.copyWith(
-        color: enabled ? fieldLabel.color : Colors.black45,
-      ),
-      floatingLabelStyle: fieldFloatingLabel(context),
-      enabled: enabled,
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(fieldRadius),
-        borderSide: BorderSide(color: Colors.black.withOpacity(0.10)),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(fieldRadius),
-        borderSide: BorderSide(color: brand.withOpacity(0.55), width: 1.2),
-      ),
-      disabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(fieldRadius),
-        borderSide: BorderSide(color: Colors.black.withOpacity(0.06)),
-      ),
-    );
-  }
-
   static ButtonStyle ctaButtonStyle() => ElevatedButton.styleFrom(
         backgroundColor: brand,
         foregroundColor: Colors.white,
@@ -274,6 +237,18 @@ class _FStyle {
         ),
         elevation: 0,
       );
+}
+
+enum _DrawerRoute {
+  filters,
+  allergies,
+
+  // selector sub-pages (inside same drawer)
+  selectCourse,
+  selectCuisine,
+  selectAge,
+  selectNutrition,
+  selectCollection,
 }
 
 class RecipeFilterBar extends StatelessWidget {
@@ -298,6 +273,13 @@ class RecipeFilterBar extends StatelessWidget {
     this.householdLoading = false,
     this.householdError,
     this.onRetryHousehold,
+
+    // ✅ NEW: pass ID -> label maps so IDs show as words
+    this.courseLabelsById = const {},
+    this.cuisineLabelsById = const {},
+    this.ageLabelsById = const {},
+    this.nutritionLabelsById = const {},
+    this.collectionLabelsById = const {},
   });
 
   final RecipeFilterSelection filters;
@@ -325,6 +307,13 @@ class RecipeFilterBar extends StatelessWidget {
   final String? householdError;
   final VoidCallback? onRetryHousehold;
 
+  // ✅ label maps
+  final Map<String, String> courseLabelsById;
+  final Map<String, String> cuisineLabelsById;
+  final Map<String, String> ageLabelsById;
+  final Map<String, String> nutritionLabelsById;
+  final Map<String, String> collectionLabelsById;
+
   List<ProfilePerson> get _allPeople => [...adults, ...children];
 
   String _allergiesChipLabel(AllergiesSelection a) {
@@ -343,6 +332,62 @@ class RecipeFilterBar extends StatelessWidget {
     return 'Whole family';
   }
 
+  String _labelFor(String raw, Map<String, String> map) {
+    if (raw == 'All') return 'Any';
+    return map[raw] ?? raw;
+  }
+
+  Future<void> _openDrawer(BuildContext context, _DrawerRoute initial) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: _FStyle.sheetBg,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(_FStyle.sheetRadius)),
+      ),
+      builder: (sheetCtx) {
+        return _SheetScrollShell(
+          child: _DrawerNavigator(
+            initialRoute: initial,
+            initialFilters: filters,
+            initialAllergies: allergies,
+            courseOptions: courseOptions,
+            cuisineOptions: cuisineOptions,
+            suitableForOptions: suitableForOptions,
+            nutritionOptions: nutritionOptions,
+            collectionOptions: collectionOptions,
+            lockCourse: lockCourse,
+            lockCuisine: lockCuisine,
+            lockSuitableFor: lockSuitableFor,
+            lockNutrition: lockNutrition,
+            lockCollection: lockCollection,
+            adults: adults,
+            children: children,
+            householdLoading: householdLoading,
+            householdError: householdError,
+            onRetryHousehold: onRetryHousehold,
+            onCloseSheet: () => Navigator.of(sheetCtx).pop(),
+            onApplyFilters: (next) {
+              onFiltersApplied(next);
+              Navigator.of(sheetCtx).pop();
+            },
+            onApplyAllergies: (next) {
+              onAllergiesApplied(next);
+              Navigator.of(sheetCtx).pop();
+            },
+
+            // ✅ pass maps down
+            courseLabelsById: courseLabelsById,
+            cuisineLabelsById: cuisineLabelsById,
+            ageLabelsById: ageLabelsById,
+            nutritionLabelsById: nutritionLabelsById,
+            collectionLabelsById: collectionLabelsById,
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final filterCount = filters.activeCount;
@@ -352,31 +397,31 @@ class RecipeFilterBar extends StatelessWidget {
 
     if (filters.course != 'All') {
       chips.add(_ChipSpec(
-        label: filters.course,
+        label: _labelFor(filters.course, courseLabelsById),
         onClear: () => onFiltersApplied(filters.copyWith(course: 'All')),
       ));
     }
     if (filters.cuisine != 'All') {
       chips.add(_ChipSpec(
-        label: filters.cuisine,
+        label: _labelFor(filters.cuisine, cuisineLabelsById),
         onClear: () => onFiltersApplied(filters.copyWith(cuisine: 'All')),
       ));
     }
     if (filters.suitableFor != 'All') {
       chips.add(_ChipSpec(
-        label: filters.suitableFor,
+        label: _labelFor(filters.suitableFor, ageLabelsById),
         onClear: () => onFiltersApplied(filters.copyWith(suitableFor: 'All')),
       ));
     }
     if (filters.nutritionTag != 'All') {
       chips.add(_ChipSpec(
-        label: filters.nutritionTag,
+        label: _labelFor(filters.nutritionTag, nutritionLabelsById),
         onClear: () => onFiltersApplied(filters.copyWith(nutritionTag: 'All')),
       ));
     }
     if (filters.collection != 'All') {
       chips.add(_ChipSpec(
-        label: filters.collection,
+        label: _labelFor(filters.collection, collectionLabelsById),
         onClear: () => onFiltersApplied(filters.copyWith(collection: 'All')),
       ));
     }
@@ -411,34 +456,7 @@ class RecipeFilterBar extends StatelessWidget {
               child: _PillButton(
                 label: 'Filters',
                 count: filterCount,
-                onTap: () async {
-                  final next = await showModalBottomSheet<RecipeFilterSelection>(
-                    context: context,
-                    isScrollControlled: true,
-                    backgroundColor: _FStyle.sheetBg,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.vertical(
-                        top: Radius.circular(_FStyle.sheetRadius),
-                      ),
-                    ),
-                    builder: (_) => _SheetScrollShell(
-                      child: _FiltersSheet(
-                        initial: filters,
-                        courseOptions: courseOptions,
-                        cuisineOptions: cuisineOptions,
-                        suitableForOptions: suitableForOptions,
-                        nutritionOptions: nutritionOptions,
-                        collectionOptions: collectionOptions,
-                        lockCourse: lockCourse,
-                        lockCollection: lockCollection,
-                        lockCuisine: lockCuisine,
-                        lockSuitableFor: lockSuitableFor,
-                        lockNutrition: lockNutrition,
-                      ),
-                    ),
-                  );
-                  if (next != null) onFiltersApplied(next);
-                },
+                onTap: () => _openDrawer(context, _DrawerRoute.filters),
               ),
             ),
             const SizedBox(width: 10),
@@ -446,29 +464,7 @@ class RecipeFilterBar extends StatelessWidget {
               child: _PillButton(
                 label: 'Allergies',
                 count: allergyCount,
-                onTap: () async {
-                  final next = await showModalBottomSheet<AllergiesSelection>(
-                    context: context,
-                    isScrollControlled: true,
-                    backgroundColor: _FStyle.sheetBg,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.vertical(
-                        top: Radius.circular(_FStyle.sheetRadius),
-                      ),
-                    ),
-                    builder: (_) => _SheetScrollShell(
-                      child: _AllergiesSheet(
-                        initial: allergies,
-                        adults: adults,
-                        children: children,
-                        householdLoading: householdLoading,
-                        householdError: householdError,
-                        onRetryHousehold: onRetryHousehold,
-                      ),
-                    ),
-                  );
-                  if (next != null) onAllergiesApplied(next);
-                },
+                onTap: () => _openDrawer(context, _DrawerRoute.allergies),
               ),
             ),
           ],
@@ -488,8 +484,6 @@ class RecipeFilterBar extends StatelessWidget {
               ],
             ),
           ),
-        ] else ...[
-          const SizedBox(height: 0),
         ],
       ],
     );
@@ -518,7 +512,6 @@ class _PillButton extends StatelessWidget {
     final showCount = count > 0;
 
     return Material(
-      // ✅ keep your visuals exactly the same, but ensure InkWell has a Material color to draw on
       color: _FStyle.pillBg,
       borderRadius: BorderRadius.circular(_FStyle.pillRadius),
       child: InkWell(
@@ -527,7 +520,6 @@ class _PillButton extends StatelessWidget {
         child: Container(
           height: _FStyle.pillHeight,
           padding: _FStyle.pillPadding,
-          // ✅ border only here, fill comes from Material above
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(_FStyle.pillRadius),
             border: Border.all(color: _FStyle.border),
@@ -567,13 +559,15 @@ class _FilterChip extends StatelessWidget {
     return Container(
       height: _FStyle.chipHeight,
       padding: _FStyle.chipPadding,
-      decoration: _FStyle.chipDecoration(),
+      decoration: BoxDecoration(
+        color: _FStyle.chipBg,
+        borderRadius: BorderRadius.circular(_FStyle.chipRadius),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(label, style: _FStyle.chip),
           const SizedBox(width: 6),
-          // ✅ GestureDetector DOES support behavior in your Flutter version (InkWell doesn't).
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: onClear,
@@ -588,17 +582,329 @@ class _FilterChip extends StatelessWidget {
   }
 }
 
-class _SheetHeader extends StatelessWidget {
-  const _SheetHeader({required this.title, required this.onClose});
-  final String title;
-  final VoidCallback onClose;
+class _SheetScrollShell extends StatelessWidget {
+  const _SheetScrollShell({required this.child});
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
+    // Keep it simple: let the sheet size naturally, still safe for keyboard insets.
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottom),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// --------------------
+/// Drawer Navigator Model
+/// --------------------
+class _DrawerModel extends ChangeNotifier {
+  RecipeFilterSelection filters;
+  AllergiesSelection allergies;
+
+  _DrawerModel({
+    required this.filters,
+    required this.allergies,
+  });
+
+  void setFilters(RecipeFilterSelection next) {
+    filters = next;
+    notifyListeners();
+  }
+
+  void setAllergies(AllergiesSelection next) {
+    allergies = next;
+    notifyListeners();
+  }
+}
+
+class _DrawerScope extends InheritedNotifier<_DrawerModel> {
+  const _DrawerScope({
+    required _DrawerModel model,
+    required super.child,
+  }) : super(notifier: model);
+
+  static _DrawerModel modelOf(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<_DrawerScope>();
+    assert(scope != null, '_DrawerScope not found');
+    return scope!.notifier!;
+  }
+}
+
+/// ✅ No-animation route (removes the janky page transitions)
+class _NoAnimRoute<T> extends PageRouteBuilder<T> {
+  _NoAnimRoute({required Widget page, RouteSettings? settings})
+      : super(
+          settings: settings,
+          pageBuilder: (_, __, ___) => page,
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+          transitionsBuilder: (_, __, ___, child) => child,
+        );
+}
+
+/// --------------------
+/// Drawer Navigator (single sheet, stepped navigation, NO animations)
+/// --------------------
+class _DrawerNavigator extends StatefulWidget {
+  const _DrawerNavigator({
+    required this.initialRoute,
+    required this.initialFilters,
+    required this.initialAllergies,
+    required this.courseOptions,
+    required this.cuisineOptions,
+    required this.suitableForOptions,
+    required this.nutritionOptions,
+    required this.collectionOptions,
+    required this.lockCourse,
+    required this.lockCuisine,
+    required this.lockSuitableFor,
+    required this.lockNutrition,
+    required this.lockCollection,
+    required this.adults,
+    required this.children,
+    required this.householdLoading,
+    required this.householdError,
+    required this.onRetryHousehold,
+    required this.onCloseSheet,
+    required this.onApplyFilters,
+    required this.onApplyAllergies,
+
+    // label maps
+    required this.courseLabelsById,
+    required this.cuisineLabelsById,
+    required this.ageLabelsById,
+    required this.nutritionLabelsById,
+    required this.collectionLabelsById,
+  });
+
+  final _DrawerRoute initialRoute;
+
+  final RecipeFilterSelection initialFilters;
+  final AllergiesSelection initialAllergies;
+
+  final List<String> courseOptions;
+  final List<String> cuisineOptions;
+  final List<String> suitableForOptions;
+  final List<String> nutritionOptions;
+  final List<String> collectionOptions;
+
+  final bool lockCourse;
+  final bool lockCuisine;
+  final bool lockSuitableFor;
+  final bool lockNutrition;
+  final bool lockCollection;
+
+  final List<ProfilePerson> adults;
+  final List<ProfilePerson> children;
+
+  final bool householdLoading;
+  final String? householdError;
+  final VoidCallback? onRetryHousehold;
+
+  final VoidCallback onCloseSheet;
+  final ValueChanged<RecipeFilterSelection> onApplyFilters;
+  final ValueChanged<AllergiesSelection> onApplyAllergies;
+
+  final Map<String, String> courseLabelsById;
+  final Map<String, String> cuisineLabelsById;
+  final Map<String, String> ageLabelsById;
+  final Map<String, String> nutritionLabelsById;
+  final Map<String, String> collectionLabelsById;
+
+  @override
+  State<_DrawerNavigator> createState() => _DrawerNavigatorState();
+}
+
+class _DrawerNavigatorState extends State<_DrawerNavigator> {
+  final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
+  late final _DrawerModel _model;
+
+  @override
+  void initState() {
+    super.initState();
+    _model = _DrawerModel(filters: widget.initialFilters, allergies: widget.initialAllergies);
+  }
+
+  void pop() => _navKey.currentState?.maybePop();
+  void push(_DrawerRoute r) => _navKey.currentState?.pushNamed(r.name);
+
+  String _labelFor(String raw, Map<String, String> map) {
+    if (raw == 'All') return 'Any';
+    return map[raw] ?? raw;
+  }
+
+  Route<dynamic> _routeFor(RouteSettings settings) {
+    final name = settings.name ?? widget.initialRoute.name;
+
+    Widget page;
+
+    switch (name) {
+      case 'filters':
+        page = _FiltersPage(
+          courseOptions: widget.courseOptions,
+          cuisineOptions: widget.cuisineOptions,
+          suitableForOptions: widget.suitableForOptions,
+          nutritionOptions: widget.nutritionOptions,
+          collectionOptions: widget.collectionOptions,
+          lockCourse: widget.lockCourse,
+          lockCuisine: widget.lockCuisine,
+          lockSuitableFor: widget.lockSuitableFor,
+          lockNutrition: widget.lockNutrition,
+          lockCollection: widget.lockCollection,
+          onClose: widget.onCloseSheet,
+          onGoSelect: push,
+          onApply: () => widget.onApplyFilters(_model.filters),
+          courseLabelsById: widget.courseLabelsById,
+          cuisineLabelsById: widget.cuisineLabelsById,
+          ageLabelsById: widget.ageLabelsById,
+          nutritionLabelsById: widget.nutritionLabelsById,
+          collectionLabelsById: widget.collectionLabelsById,
+        );
+        break;
+
+      case 'allergies':
+        page = _AllergiesPage(
+          adults: widget.adults,
+          children: widget.children,
+          householdLoading: widget.householdLoading,
+          householdError: widget.householdError,
+          onRetryHousehold: widget.onRetryHousehold,
+          onClose: widget.onCloseSheet,
+          onApply: () => widget.onApplyAllergies(_model.allergies),
+        );
+        break;
+
+      case 'selectCourse':
+        page = _SelectorPage(
+          title: 'Course',
+          options: widget.courseOptions.isEmpty ? const ['All'] : widget.courseOptions,
+          current: _model.filters.course,
+          onClose: widget.onCloseSheet,
+          onBack: pop,
+          display: (v) => _labelFor(v, widget.courseLabelsById),
+          onSelected: (v) {
+            _model.setFilters(_model.filters.copyWith(course: v));
+            pop();
+          },
+        );
+        break;
+
+      case 'selectCuisine':
+        page = _SelectorPage(
+          title: 'Cuisine',
+          options: widget.cuisineOptions.isEmpty ? const ['All'] : widget.cuisineOptions,
+          current: _model.filters.cuisine,
+          onClose: widget.onCloseSheet,
+          onBack: pop,
+          display: (v) => _labelFor(v, widget.cuisineLabelsById),
+          onSelected: (v) {
+            _model.setFilters(_model.filters.copyWith(cuisine: v));
+            pop();
+          },
+        );
+        break;
+
+      case 'selectAge':
+        page = _SelectorPage(
+          title: 'Age range',
+          options: widget.suitableForOptions.isEmpty ? const ['All'] : widget.suitableForOptions,
+          current: _model.filters.suitableFor,
+          onClose: widget.onCloseSheet,
+          onBack: pop,
+          display: (v) => _labelFor(v, widget.ageLabelsById),
+          onSelected: (v) {
+            _model.setFilters(_model.filters.copyWith(suitableFor: v));
+            pop();
+          },
+        );
+        break;
+
+      case 'selectNutrition':
+        page = _SelectorPage(
+          title: 'Nutrition',
+          options: widget.nutritionOptions.isEmpty ? const ['All'] : widget.nutritionOptions,
+          current: _model.filters.nutritionTag,
+          onClose: widget.onCloseSheet,
+          onBack: pop,
+          display: (v) => _labelFor(v, widget.nutritionLabelsById),
+          onSelected: (v) {
+            _model.setFilters(_model.filters.copyWith(nutritionTag: v));
+            pop();
+          },
+        );
+        break;
+
+      case 'selectCollection':
+        page = _SelectorPage(
+          title: 'Collection',
+          options: widget.collectionOptions.isEmpty ? const ['All'] : widget.collectionOptions,
+          current: _model.filters.collection,
+          onClose: widget.onCloseSheet,
+          onBack: pop,
+          display: (v) => _labelFor(v, widget.collectionLabelsById),
+          onSelected: (v) {
+            _model.setFilters(_model.filters.copyWith(collection: v));
+            pop();
+          },
+        );
+        break;
+
+      default:
+        page = const SizedBox.shrink();
+    }
+
+    return _NoAnimRoute(
+      settings: settings,
+      page: _DrawerScope(model: _model, child: page),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Navigator(
+      key: _navKey,
+      initialRoute: widget.initialRoute.name,
+      onGenerateRoute: _routeFor,
+    );
+  }
+}
+
+/// --------------------
+/// Header
+/// - Root screens (Filters / Allergies): close only
+/// - Sub pages (selectors): back + close
+/// --------------------
+class _DrawerHeader extends StatelessWidget {
+  const _DrawerHeader({
+    required this.title,
+    required this.onClose,
+    this.onBack,
+  });
+
+  final String title;
+  final VoidCallback onClose;
+  final VoidCallback? onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasBack = onBack != null;
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 14, 10, 10),
+      padding: const EdgeInsets.fromLTRB(8, 14, 8, 10),
       child: Row(
         children: [
+          if (hasBack)
+            IconButton(
+              onPressed: onBack,
+              icon: Icon(Icons.arrow_back, color: _FStyle.brand),
+            )
+          else
+            const SizedBox(width: 8),
           Expanded(child: Text(title.toUpperCase(), style: _FStyle.sheetTitle)),
           IconButton(
             onPressed: onClose,
@@ -610,39 +916,31 @@ class _SheetHeader extends StatelessWidget {
   }
 }
 
-class _SheetScrollShell extends StatelessWidget {
-  const _SheetScrollShell({required this.child});
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final bottom = MediaQuery.of(context).viewInsets.bottom;
-
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: EdgeInsets.only(bottom: bottom),
-        child: child,
-      ),
-    );
-  }
-}
-
-class _FiltersSheet extends StatefulWidget {
-  const _FiltersSheet({
-    required this.initial,
+/// --------------------
+/// Filters (root) page
+/// --------------------
+class _FiltersPage extends StatelessWidget {
+  const _FiltersPage({
     required this.courseOptions,
     required this.cuisineOptions,
     required this.suitableForOptions,
     required this.nutritionOptions,
     required this.collectionOptions,
     required this.lockCourse,
-    required this.lockCollection,
     required this.lockCuisine,
     required this.lockSuitableFor,
     required this.lockNutrition,
+    required this.lockCollection,
+    required this.onClose,
+    required this.onGoSelect,
+    required this.onApply,
+    required this.courseLabelsById,
+    required this.cuisineLabelsById,
+    required this.ageLabelsById,
+    required this.nutritionLabelsById,
+    required this.collectionLabelsById,
   });
 
-  final RecipeFilterSelection initial;
   final List<String> courseOptions;
   final List<String> cuisineOptions;
   final List<String> suitableForOptions;
@@ -650,113 +948,89 @@ class _FiltersSheet extends StatefulWidget {
   final List<String> collectionOptions;
 
   final bool lockCourse;
-  final bool lockCollection;
   final bool lockCuisine;
   final bool lockSuitableFor;
   final bool lockNutrition;
+  final bool lockCollection;
 
-  @override
-  State<_FiltersSheet> createState() => _FiltersSheetState();
-}
+  final VoidCallback onClose;
+  final void Function(_DrawerRoute route) onGoSelect;
+  final VoidCallback onApply;
 
-class _FiltersSheetState extends State<_FiltersSheet> {
-  late RecipeFilterSelection _draft;
+  final Map<String, String> courseLabelsById;
+  final Map<String, String> cuisineLabelsById;
+  final Map<String, String> ageLabelsById;
+  final Map<String, String> nutritionLabelsById;
+  final Map<String, String> collectionLabelsById;
 
-  @override
-  void initState() {
-    super.initState();
-    _draft = widget.initial;
-  }
-
-  String _safeValue(String current, List<String> options) {
-    if (options.isEmpty) return 'All';
-    if (options.contains(current)) return current;
-    return options.contains('All') ? 'All' : options.first;
+  String _labelFor(String raw, Map<String, String> map) {
+    if (raw == 'All') return 'Any';
+    return map[raw] ?? raw;
   }
 
   @override
   Widget build(BuildContext context) {
-    final course = _safeValue(_draft.course, widget.courseOptions);
-    final cuisine = _safeValue(_draft.cuisine, widget.cuisineOptions);
-    final suitableFor = _safeValue(_draft.suitableFor, widget.suitableForOptions);
-    final nutrition = _safeValue(_draft.nutritionTag, widget.nutritionOptions);
-    final collection = _safeValue(_draft.collection, widget.collectionOptions);
-
-    if (course != _draft.course ||
-        cuisine != _draft.cuisine ||
-        suitableFor != _draft.suitableFor ||
-        nutrition != _draft.nutritionTag ||
-        collection != _draft.collection) {
-      _draft = _draft.copyWith(
-        course: course,
-        cuisine: cuisine,
-        suitableFor: suitableFor,
-        nutritionTag: nutrition,
-        collection: collection,
-      );
-    }
+    final model = _DrawerScope.modelOf(context);
+    final f = model.filters;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _SheetHeader(
-          title: 'Filters',
-          onClose: () => Navigator.of(context).pop(),
-        ),
+        _DrawerHeader(title: 'Filters', onClose: onClose), // ✅ no back here
         Padding(
           padding: _FStyle.sheetPadding,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (!widget.lockCourse)
-                _FloatingNativeSelectField(
-                  label: 'Course',
-                  value: course,
-                  options: widget.courseOptions,
-                  onChanged: (v) => setState(() => _draft = _draft.copyWith(course: v)),
+              Text('FILTERS', style: _FStyle.sectionLabel),
+              const SizedBox(height: 10),
+
+              if (!lockCourse)
+                _SelectorRow(
+                  title: 'Course',
+                  value: _labelFor(f.course, courseLabelsById),
+                  onTap: () => onGoSelect(_DrawerRoute.selectCourse),
                 ),
-              if (!widget.lockCuisine) ...[
+              if (!lockCuisine) ...[
                 const SizedBox(height: 10),
-                _FloatingNativeSelectField(
-                  label: 'Cuisine',
-                  value: cuisine,
-                  options: widget.cuisineOptions,
-                  onChanged: (v) => setState(() => _draft = _draft.copyWith(cuisine: v)),
+                _SelectorRow(
+                  title: 'Cuisine',
+                  value: _labelFor(f.cuisine, cuisineLabelsById),
+                  onTap: () => onGoSelect(_DrawerRoute.selectCuisine),
                 ),
               ],
-              if (!widget.lockSuitableFor) ...[
+              if (!lockSuitableFor) ...[
                 const SizedBox(height: 10),
-                _FloatingNativeSelectField(
-                  label: 'Age range',
-                  value: suitableFor,
-                  options: widget.suitableForOptions,
-                  onChanged: (v) => setState(() => _draft = _draft.copyWith(suitableFor: v)),
+                _SelectorRow(
+                  title: 'Age range',
+                  value: _labelFor(f.suitableFor, ageLabelsById),
+                  onTap: () => onGoSelect(_DrawerRoute.selectAge),
                 ),
               ],
-              if (!widget.lockNutrition) ...[
+              if (!lockNutrition) ...[
                 const SizedBox(height: 10),
-                _FloatingNativeSelectField(
-                  label: 'Nutrition',
-                  value: nutrition,
-                  options: widget.nutritionOptions,
-                  onChanged: (v) => setState(() => _draft = _draft.copyWith(nutritionTag: v)),
+                _SelectorRow(
+                  title: 'Nutrition',
+                  value: _labelFor(f.nutritionTag, nutritionLabelsById),
+                  onTap: () => onGoSelect(_DrawerRoute.selectNutrition),
                 ),
               ],
-              if (!widget.lockCollection) ...[
+              if (!lockCollection) ...[
                 const SizedBox(height: 10),
-                _FloatingNativeSelectField(
-                  label: 'Collection',
-                  value: collection,
-                  options: widget.collectionOptions,
-                  onChanged: (v) => setState(() => _draft = _draft.copyWith(collection: v)),
+                _SelectorRow(
+                  title: 'Collection',
+                  value: _labelFor(f.collection, collectionLabelsById),
+                  onTap: () => onGoSelect(_DrawerRoute.selectCollection),
                 ),
               ],
+
               const SizedBox(height: 14),
               SizedBox(
                 width: double.infinity,
                 height: _FStyle.ctaHeight,
                 child: ElevatedButton(
                   style: _FStyle.ctaButtonStyle(),
-                  onPressed: () => Navigator.of(context).pop(_draft),
+                  onPressed: onApply,
                   child: Text('APPLY FILTERS', style: _FStyle.cta),
                 ),
               ),
@@ -768,17 +1042,138 @@ class _FiltersSheetState extends State<_FiltersSheet> {
   }
 }
 
-class _AllergiesSheet extends StatefulWidget {
-  const _AllergiesSheet({
-    required this.initial,
+class _SelectorRow extends StatelessWidget {
+  const _SelectorRow({
+    required this.title,
+    required this.value,
+    required this.onTap,
+  });
+
+  final String title;
+  final String value;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
+            border: Border.all(color: _FStyle.border),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: _FStyle.rowTitle),
+                    const SizedBox(height: 6),
+                    Text(value, style: _FStyle.rowValue, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: _FStyle.brand.withOpacity(0.90)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// --------------------
+/// Selector sub-page (inside same drawer)
+/// --------------------
+class _SelectorPage extends StatelessWidget {
+  const _SelectorPage({
+    required this.title,
+    required this.options,
+    required this.current,
+    required this.onClose,
+    required this.onBack,
+    required this.onSelected,
+    required this.display,
+  });
+
+  final String title;
+  final List<String> options;
+  final String current;
+  final VoidCallback onClose;
+  final VoidCallback onBack;
+  final ValueChanged<String> onSelected;
+
+  /// ✅ display mapper (id -> label)
+  final String Function(String raw) display;
+
+  @override
+  Widget build(BuildContext context) {
+    final safeOptions = options.isEmpty ? const ['All'] : options;
+    final effectiveCurrent = safeOptions.contains(current) ? current : (safeOptions.contains('All') ? 'All' : safeOptions.first);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _DrawerHeader(title: title, onClose: onClose, onBack: onBack),
+        Padding(
+          padding: _FStyle.sheetPadding,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('SELECT', style: _FStyle.sectionLabel),
+              const SizedBox(height: 10),
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
+                  border: Border.all(color: _FStyle.border),
+                ),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: safeOptions.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final v = safeOptions[i];
+                    final selected = v == effectiveCurrent;
+                    return ListTile(
+                      dense: true,
+                      title: Text(display(v), style: _FStyle.rowValue),
+                      trailing: selected ? Icon(Icons.check, color: _FStyle.brand) : null,
+                      onTap: () => onSelected(v),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text('Tip: choose "Any" to clear this filter.', style: _FStyle.helper),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// --------------------
+/// Allergies (root) page
+/// --------------------
+class _AllergiesPage extends StatefulWidget {
+  const _AllergiesPage({
     required this.adults,
     required this.children,
     required this.householdLoading,
     required this.householdError,
     required this.onRetryHousehold,
+    required this.onClose,
+    required this.onApply,
   });
 
-  final AllergiesSelection initial;
   final List<ProfilePerson> adults;
   final List<ProfilePerson> children;
 
@@ -786,75 +1181,50 @@ class _AllergiesSheet extends StatefulWidget {
   final String? householdError;
   final VoidCallback? onRetryHousehold;
 
+  final VoidCallback onClose;
+  final VoidCallback onApply;
+
   @override
-  State<_AllergiesSheet> createState() => _AllergiesSheetState();
+  State<_AllergiesPage> createState() => _AllergiesPageState();
 }
 
-class _AllergiesSheetState extends State<_AllergiesSheet> {
-  late AllergiesSelection _draft;
-
+class _AllergiesPageState extends State<_AllergiesPage> {
   List<ProfilePerson> get _allPeople => [...widget.adults, ...widget.children];
 
-  @override
-  void initState() {
-    super.initState();
-    _draft = widget.initial;
-
-    if (_draft.mode == SuitabilityMode.specificPeople) {
-      final valid = _draft.personIds.where((id) => _allPeople.any((p) => p.id == id)).toSet();
-      if (valid.length != _draft.personIds.length) {
-        _draft = _draft.copyWith(personIds: valid);
-      }
-      if (valid.isEmpty) {
-        _draft = _draft.copyWith(mode: SuitabilityMode.wholeFamily);
-      }
+  void _setMode(_DrawerModel model, SuitabilityMode mode) {
+    var next = model.allergies.copyWith(mode: mode);
+    if (mode != SuitabilityMode.specificPeople) {
+      next = next.copyWith(personIds: const {});
     }
+    model.setAllergies(next);
   }
 
-  void _setMode(SuitabilityMode mode) {
-    setState(() {
-      _draft = _draft.copyWith(mode: mode);
-      if (mode != SuitabilityMode.specificPeople) {
-        _draft = _draft.copyWith(personIds: const {});
-      }
-    });
-  }
-
-  void _togglePerson(String id) {
-    final current = Set<String>.from(_draft.personIds);
+  void _togglePerson(_DrawerModel model, String id) {
+    final current = Set<String>.from(model.allergies.personIds);
     if (current.contains(id)) {
       current.remove(id);
     } else {
       current.add(id);
     }
 
-    setState(() {
-      if (current.isEmpty) {
-        _draft = _draft.copyWith(
-          mode: SuitabilityMode.wholeFamily,
-          personIds: const {},
-        );
-      } else {
-        _draft = _draft.copyWith(
-          mode: SuitabilityMode.specificPeople,
-          personIds: current,
-        );
-      }
-    });
+    if (current.isEmpty) {
+      model.setAllergies(model.allergies.copyWith(mode: SuitabilityMode.wholeFamily, personIds: const {}));
+    } else {
+      model.setAllergies(model.allergies.copyWith(mode: SuitabilityMode.specificPeople, personIds: current));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final enabled = _draft.enabled;
+    final model = _DrawerScope.modelOf(context);
+    final a = model.allergies;
+    final enabled = a.enabled;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _SheetHeader(
-          title: 'Allergies',
-          onClose: () => Navigator.of(context).pop(),
-        ),
+        _DrawerHeader(title: 'Allergies', onClose: widget.onClose),
         Padding(
           padding: _FStyle.sheetPadding,
           child: Column(
@@ -876,16 +1246,18 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                     value: enabled,
                     activeColor: _FStyle.brand,
                     onChanged: (v) {
-                      setState(() {
-                        _draft = _draft.copyWith(enabled: v);
-                        if (!v) {
-                          _draft = _draft.copyWith(
+                      if (!v) {
+                        model.setAllergies(
+                          model.allergies.copyWith(
+                            enabled: false,
                             mode: SuitabilityMode.wholeFamily,
                             personIds: const {},
                             includeSwaps: false,
-                          );
-                        }
-                      });
+                          ),
+                        );
+                      } else {
+                        model.setAllergies(model.allergies.copyWith(enabled: true));
+                      }
                     },
                   ),
                 ],
@@ -900,36 +1272,30 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                 TextButton(onPressed: widget.onRetryHousehold, child: const Text('Retry')),
               ] else if (enabled) ...[
                 const SizedBox(height: 12),
-                Text(
-                  'SUITABLE FOR',
-                  style: _FStyle.fieldLabel.copyWith(color: _FStyle.muted, fontSize: 11),
-                ),
+                Text('SUITABLE FOR', style: _FStyle.sectionLabel),
                 const SizedBox(height: 8),
                 _PersonSelector(
                   label: 'Whole family',
-                  isSelected: _draft.mode == SuitabilityMode.wholeFamily,
-                  onTap: () => _setMode(SuitabilityMode.wholeFamily),
+                  isSelected: a.mode == SuitabilityMode.wholeFamily,
+                  onTap: () => _setMode(model, SuitabilityMode.wholeFamily),
                 ),
                 const SizedBox(height: 8),
                 _PersonSelector(
                   label: 'All children',
-                  isSelected: _draft.mode == SuitabilityMode.allChildren,
-                  onTap: () => _setMode(SuitabilityMode.allChildren),
+                  isSelected: a.mode == SuitabilityMode.allChildren,
+                  onTap: () => _setMode(model, SuitabilityMode.allChildren),
                 ),
                 if (_allPeople.isNotEmpty) ...[
                   const SizedBox(height: 12),
-                  Text(
-                    'INDIVIDUALS',
-                    style: _FStyle.fieldLabel.copyWith(color: _FStyle.muted, fontSize: 11),
-                  ),
+                  Text('INDIVIDUALS', style: _FStyle.sectionLabel),
                   const SizedBox(height: 8),
                   ..._allPeople.map(
                     (p) => Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: _PersonSelector(
                         label: p.name,
-                        isSelected: _draft.mode == SuitabilityMode.specificPeople && _draft.personIds.contains(p.id),
-                        onTap: () => _togglePerson(p.id),
+                        isSelected: a.mode == SuitabilityMode.specificPeople && a.personIds.contains(p.id),
+                        onTap: () => _togglePerson(model, p.id),
                       ),
                     ),
                   ),
@@ -941,9 +1307,9 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                   children: [
                     const Expanded(child: _AllergySwapCopy()),
                     Switch(
-                      value: _draft.includeSwaps,
+                      value: a.includeSwaps,
                       activeColor: _FStyle.brand,
-                      onChanged: (v) => setState(() => _draft = _draft.copyWith(includeSwaps: v)),
+                      onChanged: (v) => model.setAllergies(model.allergies.copyWith(includeSwaps: v)),
                     ),
                   ],
                 ),
@@ -954,7 +1320,7 @@ class _AllergiesSheetState extends State<_AllergiesSheet> {
                 height: _FStyle.ctaHeight,
                 child: ElevatedButton(
                   style: _FStyle.ctaButtonStyle(),
-                  onPressed: () => Navigator.of(context).pop(_draft),
+                  onPressed: widget.onApply,
                   child: Text('APPLY ALLERGIES', style: _FStyle.cta),
                 ),
               ),
@@ -979,7 +1345,6 @@ class _PersonSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ✅ wrap in Material so InkWell is always responsive (visuals unchanged)
     final bg = isSelected ? _FStyle.brand.withOpacity(0.08) : Colors.transparent;
 
     return Material(
@@ -991,7 +1356,6 @@ class _PersonSelector extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
-            // color is on Material above to keep InkWell responsive
             borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
             border: Border.all(
               color: isSelected ? _FStyle.brand : Colors.black.withOpacity(0.1),
@@ -1033,212 +1397,6 @@ class _AllergySwapCopy extends StatelessWidget {
         const SizedBox(height: 2),
         Text('Shows recipes with a safe ingredient replacement', style: _FStyle.helper),
       ],
-    );
-  }
-}
-
-class _FloatingNativeSelectField extends StatelessWidget {
-  const _FloatingNativeSelectField({
-    required this.label,
-    required this.value,
-    required this.options,
-    required this.onChanged,
-    this.enabled = true,
-  });
-
-  final String label;
-  final String value;
-  final List<String> options;
-  final ValueChanged<String> onChanged;
-  final bool enabled;
-
-  String _displayValue(String v) => (v == 'All') ? '' : v;
-
-  String _materialDisplayInPicker(String v) => v == 'All' ? 'Any' : v;
-
-  @override
-  Widget build(BuildContext context) {
-    final safeOptions = options.isEmpty ? const ['All'] : options;
-
-    final effectiveValue = safeOptions.contains(value)
-        ? value
-        : (safeOptions.contains('All') ? 'All' : safeOptions.first);
-
-    // ✅ FIX: use effectiveValue for label empty-state (prevents weird float/empty glitches)
-    final hasSelection = effectiveValue != 'All';
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        // ❌ InkWell in your Flutter version DOES NOT have `behavior`
-        borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
-        onTap: enabled
-            ? () async {
-                final picked = await _NativePickers.pickString(
-                  context: context,
-                  label: label,
-                  current: effectiveValue,
-                  options: safeOptions,
-                  display: _materialDisplayInPicker,
-                );
-                if (picked != null && picked != value) onChanged(picked);
-              }
-            : null,
-        child: IgnorePointer(
-          // keeps the InputDecorator non-interactive, InkWell handles the tap
-          ignoring: true,
-          child: InputDecorator(
-            isEmpty: !hasSelection,
-            decoration: _FStyle.fieldInputDecoration(context, label, enabled: enabled),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    _displayValue(effectiveValue),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: _FStyle.fieldValue.copyWith(
-                      color: enabled ? Colors.black : Colors.black45,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Icon(
-                  Icons.expand_more,
-                  color: enabled ? Colors.black54 : Colors.black26,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _NativePickers {
-  static Future<String?> pickString({
-    required BuildContext context,
-    required String label,
-    required String current,
-    required List<String> options,
-    required String Function(String) display,
-  }) async {
-    if (Platform.isIOS) {
-      return _cupertino(context, label, current, options, display);
-    }
-    return _material(context, label, current, options, display);
-  }
-
-  static Future<String?> _material(
-    BuildContext context,
-    String label,
-    String current,
-    List<String> options,
-    String Function(String) display,
-  ) async {
-    final idx = options.indexOf(current);
-
-    return showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      backgroundColor: _FStyle.sheetBg,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(_FStyle.sheetRadius)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              title: Text('Select $label', style: _FStyle.sheetTitle.copyWith(letterSpacing: 0)),
-              trailing: TextButton(
-                onPressed: () => Navigator.pop(ctx, 'All'),
-                child: const Text('Clear'),
-              ),
-            ),
-            const Divider(height: 1),
-            Flexible(
-              child: ListView.separated(
-                shrinkWrap: true,
-                itemCount: options.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) {
-                  final v = options[i];
-                  final selected = i == idx;
-                  return ListTile(
-                    title: Text(display(v)),
-                    trailing: selected ? const Icon(Icons.check) : null,
-                    onTap: () => Navigator.pop(ctx, v),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
-
-  static Future<String?> _cupertino(
-    BuildContext context,
-    String label,
-    String current,
-    List<String> options,
-    String Function(String) display,
-  ) async {
-    final initialIndex = options.indexOf(current).clamp(0, options.length - 1);
-    int tempIndex = initialIndex;
-
-    return showCupertinoModalPopup<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Container(
-          height: 320,
-          color: CupertinoColors.systemBackground.resolveFrom(ctx),
-          child: Column(
-            children: [
-              SizedBox(
-                height: 44,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    CupertinoButton(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      onPressed: () => Navigator.pop(ctx, null),
-                      child: const Text('Cancel'),
-                    ),
-                    Text('Select $label', style: const TextStyle(fontWeight: FontWeight.w600)),
-                    CupertinoButton(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      onPressed: () => Navigator.pop(ctx, options[tempIndex]),
-                      child: const Text('Done'),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: CupertinoPicker(
-                  scrollController: FixedExtentScrollController(initialItem: initialIndex),
-                  itemExtent: 40,
-                  onSelectedItemChanged: (i) => tempIndex = i,
-                  children: options.map((v) => Center(child: Text(display(v)))).toList(),
-                ),
-              ),
-              const Divider(height: 1),
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: CupertinoButton.filled(
-                  onPressed: () => Navigator.pop(ctx, 'All'),
-                  child: const Text('Clear'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

@@ -22,11 +22,9 @@ class SubHeaderBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ✅ If parent already applied SafeArea(top:true), this will be 0 (no double padding).
     final topInset = MediaQuery.of(context).padding.top;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      // ✅ black status bar icons
       value: SystemUiOverlayStyle.dark.copyWith(
         statusBarColor: Colors.transparent,
         statusBarIconBrightness: Brightness.dark,
@@ -37,30 +35,23 @@ class SubHeaderBar extends StatelessWidget {
         child: Padding(
           padding: EdgeInsets.fromLTRB(16, topInset + 8, 16, 12),
           child: SizedBox(
-            height: 44, // ✅ consistent hit area
-            child: Stack(
-              children: [
-                // ✅ Tap target (LEFT SIDE) – much easier to hit than the SVG
-                Positioned.fill(
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: InkWell(
-                      onTap: () => _goBack(context),
-                      borderRadius: BorderRadius.circular(12),
-                      child: SizedBox(
-                        // ✅ big target: icon + spacing + some of the title area
-                        width: MediaQuery.of(context).size.width * 0.70,
-                        height: double.infinity,
-                      ),
-                    ),
-                  ),
-                ),
+            height: 44, // consistent bar height
+            child: InkWell(
+              onTap: () => _goBack(context),
 
-                // ✅ Visible content
-                Row(
+              // ✅ now the tap target is the actual visible content width
+              borderRadius: BorderRadius.circular(12),
+              splashFactory: NoSplash.splashFactory,
+              splashColor: Colors.transparent,
+              highlightColor: Colors.transparent,
+              hoverColor: Colors.transparent,
+              focusColor: Colors.transparent,
+
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    // keep the icon visible (no longer needs InkWell)
                     SvgPicture.asset(
                       'assets/images/icons/back-chevron.svg',
                       width: 28,
@@ -72,6 +63,8 @@ class SubHeaderBar extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 16),
+
+                    // ✅ title stays visible, row is still fully tappable
                     Expanded(
                       child: Text(
                         title.toUpperCase(),
@@ -94,7 +87,7 @@ class SubHeaderBar extends StatelessWidget {
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
           ),
         ),

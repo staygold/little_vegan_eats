@@ -1,15 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // 👈 REQUIRED
+import 'package:flutter/services.dart'; // REQUIRED for status bar styling
 import 'package:flutter_svg/flutter_svg.dart';
 
 class TopHeaderBar extends StatelessWidget {
-  final String? firstName;
-  final VoidCallback onProfileTap;
+  final VoidCallback onFamilyTap;
 
   const TopHeaderBar({
     super.key,
-    required this.firstName,
-    required this.onProfileTap,
+    required this.onFamilyTap,
   });
 
   @override
@@ -20,11 +18,8 @@ class TopHeaderBar extends StatelessWidget {
     const pillBg = Colors.white;
     const pillText = Color(0xFF044246);
 
-    final name = (firstName ?? '').trim();
-    final displayName = name.isEmpty ? '…' : name;
-
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      // ✅ WHITE status bar icons on iOS
+      // White status bar icons (iOS)
       value: SystemUiOverlayStyle.light,
       child: Container(
         color: bg,
@@ -32,7 +27,7 @@ class TopHeaderBar extends StatelessWidget {
         padding: EdgeInsets.fromLTRB(16, topInset + 10, 16, 12),
         child: Row(
           children: [
-            // Logo
+            // LVE logo
             SvgPicture.asset(
               'assets/images/LVE.svg',
               height: 44,
@@ -43,10 +38,10 @@ class TopHeaderBar extends StatelessWidget {
 
             const Spacer(),
 
-            // Profile pill
+            // Family pill
             GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: onProfileTap,
+              onTap: onFamilyTap,
               child: Container(
                 height: 40,
                 padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -64,22 +59,17 @@ class TopHeaderBar extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(minWidth: 36),
-                      child: Text(
-                        displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: pillText,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.2,
-                        ),
+                    const Text(
+                      'Family',
+                      style: TextStyle(
+                        color: pillText,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.2,
                       ),
                     ),
                     const SizedBox(width: 10),
                     SvgPicture.asset(
-                      'assets/images/icons/profile.svg',
+                      'assets/images/icons/family.svg',
                       width: 18,
                       height: 18,
                       colorFilter: const ColorFilter.mode(

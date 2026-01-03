@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // ✅ status bar style
 import 'package:dio/dio.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:cached_network_image/cached_network_image.dart'; // ✅ clean placeholder + caching
 
 import '../theme/app_theme.dart';
 import '../utils/text.dart';
@@ -407,6 +408,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         });
         return;
       }
+
       final res = await _dio.get(
         'https://littleveganeats.co/wp-json/wp/v2/wprm_recipe/${widget.id}',
       );
@@ -713,10 +715,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               width: 44,
               height: 44,
               alignment: Alignment.center,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                
-              ),
+              decoration: const BoxDecoration(shape: BoxShape.circle),
               child: child,
             ),
           ),
@@ -1368,6 +1367,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final imageUrl = (recipe?['image_url_full'] ?? recipe?['image_url'] ?? recipe?['image'] ?? recipe?['thumbnail_url'])
         ?.toString();
     final heroUrl = upscaleJetpackImage(imageUrl, w: 1600, h: 900);
+
     final ingredientsFlat = (recipe?['ingredients_flat'] is List) ? (recipe!['ingredients_flat'] as List) : const [];
     final canConvert = _hasConvertedSystem2(ingredientsFlat);
     if (!canConvert && _unitSystem != 1) {
@@ -1426,8 +1426,26 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               right: 0,
               height: heroHeight,
               child: (imageUrl == null)
-                  ? Container(color: const Color(0xFFEFEFEF), child: const Icon(Icons.image_outlined))
-                  : Image.network(heroUrl ?? imageUrl, fit: BoxFit.cover, filterQuality: FilterQuality.high),
+                  ? Container(color: const Color(0xFFEFEFEF))
+                  : CachedNetworkImage(
+                      imageUrl: (heroUrl ?? imageUrl),
+                      fit: BoxFit.cover,
+                      filterQuality: FilterQuality.high,
+
+                      // ✅ clean (no weird icon / spinner)
+                      placeholder: (context, url) => Container(color: const Color(0xFFEFEFEF)),
+                      errorWidget: (context, url, error) => Container(color: const Color(0xFFEFEFEF)),
+
+                      // ✅ kill flicker / fade
+                      fadeInDuration: Duration.zero,
+                      fadeOutDuration: Duration.zero,
+
+                      // ✅ matches your Dio UA; helps some CDNs
+                      httpHeaders: const {
+                        'User-Agent': 'LittleVeganEatsApp/1.0',
+                        'Accept': 'application/json',
+                      },
+                    ),
             ),
             ScrollConfiguration(
               behavior: const NoBounceScrollBehavior(),
@@ -1477,9 +1495,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                   )
                                 else if (row is Map)
                                   _ingredientRow(row),
-
                               _swapsCard(recipe),
-
                               const SizedBox(height: 40),
                               Text('INSTRUCTIONS', style: _RText.section),
                               const SizedBox(height: 12),
@@ -1556,9 +1572,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                           )
                         else
                           _heroBackButton(color: iconColor),
-
                         const Spacer(),
-
                         if (user == null) ...[
                           if (!_showStickyHeader)
                             _circleFrostButton(
@@ -1575,20 +1589,23 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                             builder: (context, snap) {
                               final isFav = snap.data == true;
 
+                              Future<void> toggleFav() async {
+                                final newState = await FavoritesService.toggleFavorite(
+                                  recipeId: widget.id,
+                                  title: title,
+                                  imageUrl: imageUrl,
+                                );
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(newState ? 'Saved to favourites' : 'Removed from favourites'),
+                                  ),
+                                );
+                              }
+
                               if (!_showStickyHeader) {
                                 return _circleFrostButton(
-                                  onTap: () async {
-                                    final newState = await FavoritesService.toggleFavorite(
-                                      recipeId: widget.id,
-                                      title: title,
-                                      imageUrl: imageUrl,
-                                    );
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text(newState ? 'Saved to favourites' : 'Removed from favourites'),
-                                      ),
-                                    );
-                                  },
+                                  onTap: toggleFav,
                                   child: _circleFrostIconWrapper(
                                     child: Icon(
                                       isFav ? Icons.star : Icons.star_border,
@@ -1600,18 +1617,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                               }
 
                               return InkWell(
-                                onTap: () async {
-                                  final newState = await FavoritesService.toggleFavorite(
-                                    recipeId: widget.id,
-                                    title: title,
-                                    imageUrl: imageUrl,
-                                  );
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(newState ? 'Saved to favourites' : 'Removed from favourites'),
-                                    ),
-                                  );
-                                },
+                                onTap: toggleFav,
                                 child: _heroStarIcon(isFav: isFav, color: iconColor),
                               );
                             },
