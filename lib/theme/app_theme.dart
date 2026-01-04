@@ -9,7 +9,7 @@ class AppColors {
   static const brandDark = Color(0xFF005A4F);
   static const brandActive = Color(0xFF32998D);
 
-  // Primary text: #00484B
+  // Primary text
   static const textPrimary = Color(0xFF005A4F);
 
   static const white = Colors.white;
@@ -55,8 +55,6 @@ ThemeData buildAppTheme() {
       primary: AppColors.brandActive,
       secondary: AppColors.brandDark,
       surface: AppColors.white,
-
-      // default “on” colours
       onSurface: AppColors.textPrimary,
       onPrimary: AppColors.white,
       onSecondary: AppColors.white,
@@ -65,7 +63,6 @@ ThemeData buildAppTheme() {
 
   final transparentOverlay = WidgetStateProperty.all(Colors.transparent);
 
-  // Explicitly colored text theme (Material 3 won’t override)
   final textTheme = base.textTheme.apply(
     fontFamily: AppText.fontFamily,
     bodyColor: AppColors.textPrimary,
@@ -79,6 +76,22 @@ ThemeData buildAppTheme() {
     highlightColor: Colors.transparent,
     hoverColor: Colors.transparent,
 
+   // ✅ Snackbar styling (global)
+snackBarTheme: const SnackBarThemeData(
+  backgroundColor: AppColors.brandDark,
+  behavior: SnackBarBehavior.fixed, // 👈 THIS removes padding
+  elevation: 0,
+  contentTextStyle: TextStyle(
+    fontFamily: AppText.fontFamily,
+    fontSize: 14,
+    fontWeight: FontWeight.w600,
+    fontVariations: [FontVariation('wght', 600)],
+    color: Colors.white,
+    height: 1.2,
+  ),
+  actionTextColor: Colors.white,
+),
+
     // ✅ “Master” text styles + variable wght axis applied everywhere that matters
     textTheme: textTheme.copyWith(
       headlineSmall: const TextStyle(
@@ -87,7 +100,6 @@ ThemeData buildAppTheme() {
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 700)],
       ),
-
       headlineMedium: const TextStyle(
         fontSize: 20,
         fontWeight: FontWeight.w700,
@@ -95,7 +107,6 @@ ThemeData buildAppTheme() {
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 900)],
       ),
-
       titleLarge: const TextStyle(
         fontSize: 24,
         fontWeight: FontWeight.w700,
@@ -103,35 +114,30 @@ ThemeData buildAppTheme() {
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 700)],
       ),
-
       titleMedium: const TextStyle(
         fontSize: 16,
         fontWeight: FontWeight.w800,
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 800)],
       ),
-
       bodyLarge: const TextStyle(
         fontSize: 16,
         fontWeight: FontWeight.w800,
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 600)],
       ),
-
       bodyMedium: const TextStyle(
         fontSize: 14,
         fontWeight: FontWeight.w700,
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 600)],
       ),
-
       bodySmall: const TextStyle(
         fontSize: 12,
         fontWeight: FontWeight.w600,
         color: AppColors.textPrimary,
         fontVariations: [FontVariation('wght', 600)],
       ),
-
       labelLarge: const TextStyle(
         fontSize: 12,
         fontWeight: FontWeight.w700,

@@ -21,6 +21,12 @@ import 'course_page.dart';
 
 import 'recipe_detail_screen.dart';
 
+// ✅ latest page
+import 'latest_recipes_page.dart';
+
+// ✅ popular page (same pattern as Home)
+import 'popular_recipes_page.dart';
+
 class RecipeHubScreen extends StatefulWidget {
   const RecipeHubScreen({super.key});
 
@@ -193,8 +199,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
     return 'Untitled';
   }
 
-  String? _str(dynamic v) =>
-      (v is String && v.trim().isNotEmpty) ? v.trim() : null;
+  String? _str(dynamic v) => (v is String && v.trim().isNotEmpty) ? v.trim() : null;
 
   String? _bestImageUrl(Map<String, dynamic> r) {
     final recipe = r['recipe'];
@@ -222,7 +227,6 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
   // ---------- STYLES ----------
 
   TextStyle _sectionTitleStyle(BuildContext context) {
-    // ✅ same title style as favourites & rails
     final theme = Theme.of(context);
     return (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
@@ -308,6 +312,34 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
     );
   }
 
+  // ✅ Latest (top 20)
+  void _openLatest() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LatestRecipesPage(
+          title: 'Latest recipes',
+          recipes: _recipes,
+          favoriteIds: _favoriteIds,
+          limit: 20,
+        ),
+      ),
+    );
+  }
+
+  // ✅ Popular (same as Home)
+  void _openPopular() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PopularRecipesPage(
+          title: 'Popular',
+          recipes: _recipes,
+          favoriteIds: _favoriteIds,
+          limit: 50,
+        ),
+      ),
+    );
+  }
+
   // ---------- UI ----------
 
   @override
@@ -352,12 +384,12 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
               QuickActionItem(
                 label: 'Latest',
                 asset: 'assets/images/icons/latest.svg',
-                onTap: _openViewAllRecipes,
+                onTap: _openLatest,
               ),
               QuickActionItem(
                 label: 'Popular',
                 asset: 'assets/images/icons/popular.svg',
-                onTap: _openViewAllRecipes,
+                onTap: _openPopular, // ✅ now wired to PopularRecipesPage
               ),
               QuickActionItem(
                 label: 'Mains',
@@ -398,9 +430,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
                         onPressed: _openViewAllFavourites,
                         child: Text(
                           'VIEW ALL',
-                          style:
-                              (theme.textTheme.titleMedium ?? const TextStyle())
-                                  .copyWith(
+                          style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
                             color: AppColors.brandDark,
                             fontWeight: FontWeight.w700,
                             fontVariations: const [FontVariation('wght', 700)],
@@ -427,8 +457,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
                   const Padding(
                     padding: EdgeInsets.symmetric(horizontal: 16),
                     child: _EmptyStateCard(
-                      text:
-                          'Your favourites will show here.\nTap the ⭐ on any recipe to save it.',
+                      text: 'Your favourites will show here.\nTap the ⭐ on any recipe to save it.',
                     ),
                   )
                 else
@@ -448,8 +477,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
                         final baseUrl = _bestImageUrl(r);
                         final imgUrl = baseUrl == null
                             ? null
-                            : upscaleJetpackImage(baseUrl,
-                                w: requestW, h: requestH);
+                            : upscaleJetpackImage(baseUrl, w: requestW, h: requestH);
 
                         final isFav = id != null && _favoriteIds.contains(id);
 
@@ -470,9 +498,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
                                       fit: StackFit.expand,
                                       children: [
                                         if (imgUrl == null)
-                                          const Center(
-                                              child:
-                                                  Icon(Icons.restaurant_menu))
+                                          const Center(child: Icon(Icons.restaurant_menu))
                                         else
                                           Image.network(
                                             imgUrl,
@@ -482,18 +508,13 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
                                             cacheHeight: cacheH,
                                             gaplessPlayback: true,
                                             errorBuilder: (_, __, ___) =>
-                                                const Center(
-                                              child: Icon(Icons.restaurant_menu),
-                                            ),
+                                                const Center(child: Icon(Icons.restaurant_menu)),
                                           ),
                                         if (isFav)
                                           const Positioned(
                                             right: 10,
                                             top: 10,
-                                            child: Icon(
-                                              Icons.star_rounded,
-                                              color: Colors.amber,
-                                            ),
+                                            child: Icon(Icons.star_rounded, color: Colors.amber),
                                           ),
                                       ],
                                     ),
@@ -501,8 +522,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
                                   SizedBox(
                                     height: favTitleBlockH,
                                     child: Padding(
-                                      padding: const EdgeInsets.fromLTRB(
-                                          12, 12, 12, 12),
+                                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
                                       child: Align(
                                         alignment: Alignment.topLeft,
                                         child: Text(
@@ -526,7 +546,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
                 const SizedBox(height: 18),
 
                 // --------------------
-                // BROWSE BY COURSE (new design)
+                // BROWSE BY COURSE
                 // --------------------
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
@@ -545,17 +565,12 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
                             subtitle: c.subtitle,
                             iconAsset: c.iconAsset,
                             iconBoxBg: iconBoxBg,
-                            onTap: () => _openCourse(
-                              c.slug,
-                              c.title,
-                              c.subtitle,
-                            ),
+                            onTap: () => _openCourse(c.slug, c.title, c.subtitle),
                           ),
                         ),
                       ),
                       const SizedBox(height: 16),
 
-                      // ✅ VIEW ALL RECIPES button
                       SizedBox(
                         width: double.infinity,
                         height: 56,
@@ -570,14 +585,14 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
                             ),
                           ),
                           child: Text(
-  'VIEW ALL RECIPES',
-  style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
-    color: Colors.white, // 👈 THIS is the missing piece
-    fontWeight: FontWeight.w800,
-    fontSize: 14, // 👈 change this
-    letterSpacing: 1.2,
-  ),
-),
+                            'VIEW ALL RECIPES',
+                            style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 14,
+                              letterSpacing: 1.2,
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -648,8 +663,7 @@ class _CourseCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    final titleStyle =
-        (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+    final titleStyle = (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
       color: AppColors.brandDark,
       fontWeight: FontWeight.w800,
       fontSize: 16,
@@ -657,8 +671,7 @@ class _CourseCard extends StatelessWidget {
       letterSpacing: 0,
     );
 
-    final subtitleStyle =
-        (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+    final subtitleStyle = (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
       color: AppColors.brandDark.withOpacity(0.85),
       fontWeight: FontWeight.w600,
     );
@@ -682,7 +695,6 @@ class _CourseCard extends StatelessWidget {
                   iconAsset,
                   width: 30,
                   height: 30,
-                  // assumes your svg is already the right stroke colour
                 ),
               ),
               Expanded(

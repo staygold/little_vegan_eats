@@ -1,4 +1,3 @@
-// lib/meal_plan/meal_plan_screen.dart
 import 'dart:async';
 import 'dart:math';
 
@@ -15,11 +14,11 @@ import 'core/meal_plan_keys.dart';
 import 'core/meal_plan_repository.dart';
 import 'core/meal_plan_slots.dart';
 
-// ✅ Canonical entry parser
 import 'widgets/meal_plan_entry_parser.dart';
-
-// ✅ Colourful shared UI (Home version) used everywhere
 import 'widgets/today_meal_plan_section.dart';
+
+// ✅ Import shopping sheet
+import 'widgets/meal_plan_shopping_sheet.dart';
 
 enum MealPlanViewMode { today, week }
 
@@ -47,20 +46,17 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   late final MealPlanController _ctrl;
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userDocSub;
-
-  // ------------------------------------------------------------
-  // ⭐ Favorites (read-only indicator)
-  // ------------------------------------------------------------
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
   final Set<int> _favoriteIds = <int>{};
 
-  // ------------------------------------------------------------
-  // ✅ Random inspire (avoid “same order” + avoid recent repeats)
-  // ------------------------------------------------------------
   final Random _rng = Random();
   final Map<String, List<int>> _recentBySlot = <String, List<int>>{};
   static const int _recentWindow = 12;
 
+  // ------------------------------------------------------------
+  // Helpers
+  // ------------------------------------------------------------
+  
   int? _pickRandomDifferentId({
     required List<int> availableIds,
     required int? currentId,
@@ -68,81 +64,45 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     required String slot,
   }) {
     if (availableIds.isEmpty) return null;
-
     final key = '$dayKey|$slot';
     final recent = _recentBySlot.putIfAbsent(key, () => <int>[]);
-
-    final fresh =
-        availableIds.where((id) => id != currentId && !recent.contains(id));
-
-    final pool = (fresh.isNotEmpty)
-        ? fresh.toList()
-        : availableIds.where((id) => id != currentId).toList();
+    final fresh = availableIds.where((id) => id != currentId && !recent.contains(id));
+    final pool = (fresh.isNotEmpty) ? fresh.toList() : availableIds.where((id) => id != currentId).toList();
     if (pool.isEmpty) return null;
-
     final next = pool[_rng.nextInt(pool.length)];
-
     recent.add(next);
     if (recent.length > _recentWindow) recent.removeAt(0);
-
     return next;
   }
-
-  // ------------------------------------------------------------
-  // ✅ Saved meal plans helpers (day + week snapshots)
-  // ------------------------------------------------------------
 
   CollectionReference<Map<String, dynamic>>? _savedPlansCol() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return null;
-
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('savedMealPlans');
+    return FirebaseFirestore.instance.collection('users').doc(user.uid).collection('savedMealPlans');
   }
 
-  Future<String?> _promptPlanName(
-    BuildContext context, {
-    required String title,
-  }) async {
+  Future<String?> _promptPlanName(BuildContext context, {required String title}) async {
     final ctrl = TextEditingController();
-
     final res = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
         title: Text(title),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: 'Name your meal plan',
-          ),
-        ),
+        content: TextField(controller: ctrl, autofocus: true, decoration: const InputDecoration(hintText: 'Name your meal plan')),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(null),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(ctrl.text),
-            child: const Text('Save'),
-          ),
+          TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.of(context).pop(ctrl.text), child: const Text('Save')),
         ],
       ),
     );
-
     final name = (res ?? '').trim();
     if (name.isEmpty) return null;
     return name;
   }
 
-  /// Convert an effective entry into a storable snapshot.
   Map<String, dynamic>? _snapshotSlotEntry(String dayKey, String slot) {
     final raw = _ctrl.effectiveEntry(dayKey, slot);
     final e = MealPlanEntryParser.parse(raw);
     if (e == null) return null;
-
     final rid = MealPlanEntryParser.entryRecipeId(e);
     if (rid != null) {
       String src = '';
@@ -150,21 +110,11 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
         final m = Map<String, dynamic>.from(raw as Map);
         src = (m['source'] ?? m['src'] ?? '').toString();
       }
-
-      return {
-        'kind': 'recipe',
-        'id': rid,
-        if (src.trim().isNotEmpty) 'source': src.trim(),
-      };
+      return {'kind': 'recipe', 'id': rid, if (src.trim().isNotEmpty) 'source': src.trim()};
     }
-
     final note = (MealPlanEntryParser.entryNoteText(e) ?? '').trim();
     if (note.isEmpty) return null;
-
-    return {
-      'kind': 'note',
-      'text': note,
-    };
+    return {'kind': 'note', 'text': note};
   }
 
   Map<String, dynamic> _snapshotDay(String dayKey) {
@@ -179,45 +129,31 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   Future<void> _addDayPlanToFavourites(String dayKey) async {
     final col = _savedPlansCol();
     if (col == null) return;
-
-    final name =
-        await _promptPlanName(context, title: 'Add day plan to favourites');
+    final name = await _promptPlanName(context, title: 'Add day plan to favourites');
     if (name == null) return;
-
     final payload = _snapshotDay(dayKey);
-
     await col.add({
       'title': name,
       'type': 'day',
       'savedAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
       'day': payload,
-      'meta': {
-        'fromDayKey': dayKey,
-        'fromWeekId': _ctrl.weekId,
-      },
+      'meta': {'fromDayKey': dayKey, 'fromWeekId': _ctrl.weekId},
     });
-
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('Added "$name" to favourites')));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added "$name" to favourites')));
   }
 
   Future<void> _addWeekPlanToFavourites() async {
     final col = _savedPlansCol();
     if (col == null) return;
-
-    final name =
-        await _promptPlanName(context, title: 'Add week plan to favourites');
+    final name = await _promptPlanName(context, title: 'Add week plan to favourites');
     if (name == null) return;
-
     final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
-
     final days = <String, dynamic>{};
     for (final dk in dayKeys) {
       days[dk] = _snapshotDay(dk);
     }
-
     await col.add({
       'title': name,
       'type': 'week',
@@ -226,16 +162,55 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
       'updatedAt': FieldValue.serverTimestamp(),
       'days': days,
     });
-
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('Added "$name" to favourites')));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added "$name" to favourites')));
+  }
+
+  // ------------------------------------------------------------
+  // ✅ SHOPPING LOGIC
+  // ------------------------------------------------------------
+  void _openShoppingSheet() {
+    Map<String, dynamic> planData;
+    
+    // 1. Construct correct payload based on view mode
+    if (_mode == MealPlanViewMode.today) {
+      // Just the focused day
+      final dayKey = (widget.focusDayKey?.isNotEmpty == true) 
+          ? widget.focusDayKey! 
+          : MealPlanKeys.todayKey();
+      
+      planData = {
+        'type': 'day',
+        'day': _snapshotDay(dayKey),
+      };
+    } else {
+      // Full week
+      final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
+      final days = <String, dynamic>{};
+      for (final dk in dayKeys) {
+        days[dk] = _snapshotDay(dk);
+      }
+      planData = {
+        'type': 'week',
+        'days': days,
+      };
+    }
+
+    // 2. Build Title Map from loaded recipes (for instant display)
+    final knownTitles = <int, String>{};
+    for (final r in _recipes) {
+      final id = _recipeIdFrom(r);
+      final title = _titleOf(r);
+      if (id != null) knownTitles[id] = title;
+    }
+
+    // 3. Open Sheet with 3 arguments
+    MealPlanShoppingSheet.show(context, planData, knownTitles);
   }
 
   @override
   void initState() {
     super.initState();
-
     _mode = (widget.focusDayKey != null && widget.focusDayKey!.trim().isNotEmpty)
         ? MealPlanViewMode.today
         : MealPlanViewMode.week;
@@ -278,26 +253,13 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     super.dispose();
   }
 
-  // ------------------------------------------------------------
-  // Firestore live listener for allergy changes
-  // ------------------------------------------------------------
   void _startUserDocAllergyListener() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-
     _userDocSub?.cancel();
-    _userDocSub = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .snapshots()
-        .listen((snap) {
+    _userDocSub = FirebaseFirestore.instance.collection('users').doc(user.uid).snapshots().listen((snap) {
       final sets = AllergyProfile.buildFromUserDoc(snap.data());
-
-      _ctrl.setAllergySets(
-        excludedAllergens: sets.excludedAllergens,
-        childAllergens: sets.childAllergens,
-      );
-
+      _ctrl.setAllergySets(excludedAllergens: sets.excludedAllergens, childAllergens: sets.childAllergens);
       if (mounted) setState(() {});
     });
   }
@@ -305,48 +267,26 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   void _startFavoritesListener() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-
     _favSub?.cancel();
-
-    _favSub = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('favorites')
-        .snapshots()
-        .listen((snap) {
+    _favSub = FirebaseFirestore.instance.collection('users').doc(user.uid).collection('favorites').snapshots().listen((snap) {
       final next = <int>{};
-
       for (final d in snap.docs) {
         final raw = d.data()['recipeId'];
         final id = (raw is int) ? raw : int.tryParse(raw?.toString() ?? '');
         if (id != null && id > 0) next.add(id);
       }
-
       if (!mounted) return;
-      setState(() {
-        _favoriteIds
-          ..clear()
-          ..addAll(next);
-      });
+      setState(() { _favoriteIds..clear()..addAll(next); });
     });
   }
 
   Future<void> _loadAllergies() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-
     try {
-      final snap = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
-
+      final snap = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
       final sets = AllergyProfile.buildFromUserDoc(snap.data());
-
-      _ctrl.setAllergySets(
-        excludedAllergens: sets.excludedAllergens,
-        childAllergens: sets.childAllergens,
-      );
+      _ctrl.setAllergySets(excludedAllergens: sets.excludedAllergens, childAllergens: sets.childAllergens);
     } catch (_) {
       _ctrl.setAllergySets(excludedAllergens: {}, childAllergens: {});
     }
@@ -360,55 +300,27 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     } finally {
       if (mounted) setState(() => _recipesLoading = false);
     }
-
     if (_recipes.isNotEmpty && FirebaseAuth.instance.currentUser != null) {
       await _ctrl.ensurePlanPopulated(recipes: _recipes);
     }
   }
 
-  // ------------------------------------------------------------
-  // Helpers
-  // ------------------------------------------------------------
-
   String _swapTextOf(Map<String, dynamic> r) {
     if (r['ingredient_swaps'] != null) return r['ingredient_swaps'].toString();
-    if (r['meta'] is Map && r['meta']['ingredient_swaps'] != null) {
-      return r['meta']['ingredient_swaps'].toString();
-    }
+    if (r['meta'] is Map && r['meta']['ingredient_swaps'] != null) return r['meta']['ingredient_swaps'].toString();
     return '';
   }
 
-  /// Returns: "safe" | "swap" | "blocked"
   String _statusTextOf(Map<String, dynamic> recipe) {
-    if (_ctrl.excludedAllergens.isEmpty && _ctrl.childAllergens.isEmpty) {
-      return 'safe';
-    }
-
-    final allAllergies = <String>{
-      ..._ctrl.excludedAllergens,
-      ..._ctrl.childAllergens,
-    }.toList();
-
-    // Note: Assuming 'wprm_allergen' or 'taxonomies' available in object
-    // If not, engine acts on ingredients text if available, or returns safe default.
-    final tags = <String>[]; 
-    final swapText = _swapTextOf(recipe);
-
-    final res = AllergyEngine.evaluate(
-      recipeAllergyTags: tags,
-      swapFieldText: swapText,
-      userAllergies: allAllergies,
-    );
-
-    final s = res.status;
-    if (s == AllergyStatus.safe) return 'safe';
-    if (s == AllergyStatus.swapRequired) return 'swap';
+    if (_ctrl.excludedAllergens.isEmpty && _ctrl.childAllergens.isEmpty) return 'safe';
+    final allAllergies = <String>{..._ctrl.excludedAllergens, ..._ctrl.childAllergens}.toList();
+    final res = AllergyEngine.evaluate(recipeAllergyTags: [], swapFieldText: _swapTextOf(recipe), userAllergies: allAllergies);
+    if (res.status == AllergyStatus.safe) return 'safe';
+    if (res.status == AllergyStatus.swapRequired) return 'swap';
     return 'blocked';
   }
 
-  int? _recipeIdFrom(Map<String, dynamic> r) {
-    return MealPlanEntryParser.recipeIdFromAny(r['id']);
-  }
+  int? _recipeIdFrom(Map<String, dynamic> r) => MealPlanEntryParser.recipeIdFromAny(r['id']);
 
   String _titleOf(Map<String, dynamic> r) {
     final t = r['title'];
@@ -431,30 +343,14 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   String formatDayKeyPretty(String dayKey) {
     final dt = MealPlanKeys.parseDayKey(dayKey);
     if (dt == null) return dayKey;
-
-    const weekdays = [
-      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
-    ];
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-
-    final weekday = weekdays[dt.weekday - 1];
-    final mon = months[dt.month - 1];
-    return '$weekday, ${dt.day} $mon';
+    const w = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return '${w[dt.weekday - 1]}, ${dt.day} ${m[dt.month - 1]}';
   }
 
   String _weekdayLetter(DateTime dt) {
-    switch (dt.weekday) {
-      case DateTime.monday: return 'M';
-      case DateTime.tuesday: return 'T';
-      case DateTime.wednesday: return 'W';
-      case DateTime.thursday: return 'T';
-      case DateTime.friday: return 'F';
-      case DateTime.saturday: return 'S';
-      case DateTime.sunday: return 'S';
-      default: return '';
-    }
+    const l = ['M','T','W','T','F','S','S'];
+    return l[dt.weekday - 1];
   }
 
   Map<String, dynamic> _dayRawFromController(String dayKey) {
@@ -466,122 +362,50 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
     return out;
   }
 
-  Future<void> _chooseRecipe({
-    required String dayKey,
-    required String slot,
-  }) async {
+  Future<void> _chooseRecipe({required String dayKey, required String slot}) async {
     final picked = await showModalBottomSheet<int>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _ChooseRecipeSheet(
-        recipes: _recipes,
-        titleOf: _titleOf,
-        thumbOf: _thumbOf,
-        idOf: _recipeIdFrom,
-        statusTextOf: _statusTextOf,
-      ),
+      builder: (_) => _ChooseRecipeSheet(recipes: _recipes, titleOf: _titleOf, thumbOf: _thumbOf, idOf: _recipeIdFrom, statusTextOf: _statusTextOf),
     );
-
-    if (picked != null) {
-      _ctrl.setDraftRecipe(dayKey, slot, picked, source: 'manual');
-    }
+    if (picked != null) _ctrl.setDraftRecipe(dayKey, slot, picked, source: 'manual');
   }
 
-  Future<void> _addOrEditNote({
-    required String dayKey,
-    required String slot,
-    String? initial,
-  }) async {
+  Future<void> _addOrEditNote({required String dayKey, required String slot, String? initial}) async {
     final textCtrl = TextEditingController(text: initial ?? '');
-
     final result = await showDialog<_NoteResult>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Add note'),
-        content: TextField(
-          controller: textCtrl,
-          autofocus: true,
-          maxLines: 3,
-          decoration: const InputDecoration(
-            hintText: "e.g. Out for dinner / Visiting family",
-          ),
-        ),
+        content: TextField(controller: textCtrl, autofocus: true, maxLines: 3, decoration: const InputDecoration(hintText: "e.g. Out for dinner")),
         actions: [
-          TextButton(
-            onPressed: () =>
-                Navigator.of(context).pop(const _NoteResult.cancel()),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () =>
-                Navigator.of(context).pop(_NoteResult.save(textCtrl.text)),
-            child: const Text('Confirm'),
-          ),
+          TextButton(onPressed: () => Navigator.of(context).pop(const _NoteResult.cancel()), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.of(context).pop(_NoteResult.save(textCtrl.text)), child: const Text('Confirm')),
         ],
       ),
     );
-
     if (result == null || result.kind == _NoteResultKind.cancel) return;
-
     final text = (result.text ?? '').trim();
     if (text.isEmpty) return;
-
     _ctrl.setDraftNote(dayKey, slot, text);
   }
 
-  Future<void> _clearSlot({
-    required String dayKey,
-    required String slot,
-  }) async {
-    // ✅ FIX: Use strict candidates logic (Slot + Safe + Not Excluded)
+  Future<void> _clearSlot({required String dayKey, required String slot}) async {
     final ids = _ctrl.getCandidatesForSlot(slot, _recipes);
-
-    final raw = _ctrl.effectiveEntry(dayKey, slot);
-    final parsed = MealPlanEntryParser.parse(raw);
-    final currentId = MealPlanEntryParser.entryRecipeId(parsed);
-
-    final next = _pickRandomDifferentId(
-      availableIds: ids,
-      currentId: currentId,
-      dayKey: dayKey,
-      slot: slot,
-    );
-
-    if (next != null) {
-      _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
-    } else {
-      _ctrl.setDraftNote(dayKey, slot, '');
-    }
+    final currentParsed = MealPlanEntryParser.parse(_ctrl.effectiveEntry(dayKey, slot));
+    final currentId = MealPlanEntryParser.entryRecipeId(currentParsed);
+    final next = _pickRandomDifferentId(availableIds: ids, currentId: currentId, dayKey: dayKey, slot: slot);
+    if (next != null) _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
+    else _ctrl.setDraftNote(dayKey, slot, '');
   }
 
-  Future<void> _inspireSlot({
-    required String dayKey,
-    required String slot,
-  }) async {
-    // ✅ FIX: Use strict candidates logic (Slot + Safe + Not Excluded)
+  Future<void> _inspireSlot({required String dayKey, required String slot}) async {
     final ids = _ctrl.getCandidatesForSlot(slot, _recipes);
-
-    final currentParsed =
-        MealPlanEntryParser.parse(_ctrl.effectiveEntry(dayKey, slot));
+    final currentParsed = MealPlanEntryParser.parse(_ctrl.effectiveEntry(dayKey, slot));
     final currentId = MealPlanEntryParser.entryRecipeId(currentParsed);
-
-    final next = _pickRandomDifferentId(
-      availableIds: ids,
-      currentId: currentId,
-      dayKey: dayKey,
-      slot: slot,
-    );
-
-    if (next != null) {
-      _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
-    } else {
-      // Optional feedback if no valid recipes exist for this slot
-      if (ids.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No safe recipes found for this course')),
-        );
-      }
-    }
+    final next = _pickRandomDifferentId(availableIds: ids, currentId: currentId, dayKey: dayKey, slot: slot);
+    if (next != null) _ctrl.setDraftRecipe(dayKey, slot, next, source: 'auto');
+    else if (ids.isEmpty) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No safe recipes found')));
   }
 
   Future<bool> _handleBack() async {
@@ -599,40 +423,18 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      return const Scaffold(
-        body: Center(child: Text('Log in to view your meal plan')),
-      );
-    }
+    if (user == null) return const Scaffold(body: Center(child: Text('Log in to view your meal plan')));
+    if (_recipesLoading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
 
-    if (_recipesLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
-    final focusDayKey =
-        (widget.focusDayKey != null && widget.focusDayKey!.trim().isNotEmpty)
-            ? widget.focusDayKey!.trim()
-            : MealPlanKeys.todayKey();
-
+    final focusDayKey = (widget.focusDayKey != null && widget.focusDayKey!.trim().isNotEmpty) ? widget.focusDayKey!.trim() : MealPlanKeys.todayKey();
     final now = DateTime.now();
 
     return WillPopScope(
       onWillPop: _handleBack,
       child: Scaffold(
         appBar: AppBar(
-          leading: _reviewMode
-              ? IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => _handleBack(),
-                )
-              : null,
-          title: Text(
-            _reviewMode
-                ? 'Review meal plan'
-                : (_mode == MealPlanViewMode.today
-                    ? "Today's meal plan"
-                    : "Next 7 days"),
-          ),
+          leading: _reviewMode ? IconButton(icon: const Icon(Icons.close), onPressed: () => _handleBack()) : null,
+          title: Text(_reviewMode ? 'Review meal plan' : (_mode == MealPlanViewMode.today ? "Today's meal plan" : "Next 7 days")),
           actions: _reviewMode
               ? []
               : [
@@ -640,49 +442,36 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                     tooltip: 'Add plan to favourites',
                     icon: const Icon(Icons.star_border_rounded),
                     onPressed: () async {
-                      if (_mode == MealPlanViewMode.today) {
-                        await _addDayPlanToFavourites(focusDayKey);
-                      } else {
-                        await _addWeekPlanToFavourites();
-                      }
+                      if (_mode == MealPlanViewMode.today) await _addDayPlanToFavourites(focusDayKey);
+                      else await _addWeekPlanToFavourites();
                     },
                   ),
                   if (_mode == MealPlanViewMode.today)
-                    IconButton(
-                      tooltip: 'View week',
-                      icon: const Icon(Icons.calendar_month),
-                      onPressed: () => setState(() => _mode = MealPlanViewMode.week),
-                    )
-                  else
-                    IconButton(
-                      tooltip: 'View today',
-                      icon: const Icon(Icons.today),
-                      onPressed: () => setState(() => _mode = MealPlanViewMode.today),
-                    ),
+                    IconButton(tooltip: 'View week', icon: const Icon(Icons.calendar_month), onPressed: () => setState(() => _mode = MealPlanViewMode.week))
+                  else ...[
+                    // ✅ Shopping List Button (Week Mode)
+                    IconButton(tooltip: 'Shopping List', icon: const Icon(Icons.shopping_cart_outlined), onPressed: _openShoppingSheet),
+                    IconButton(tooltip: 'View today', icon: const Icon(Icons.today), onPressed: () => setState(() => _mode = MealPlanViewMode.today)),
+                  ],
+                  // ✅ Shopping List Button (Today Mode - added here)
+                  if (_mode == MealPlanViewMode.today)
+                    IconButton(tooltip: 'Shopping List', icon: const Icon(Icons.shopping_cart_outlined), onPressed: _openShoppingSheet),
                 ],
         ),
         body: AnimatedBuilder(
           animation: _ctrl,
           builder: (context, _) {
             final data = _ctrl.weekData;
-            if (data == null) {
-              return const Center(child: CircularProgressIndicator());
-            }
+            if (data == null) return const Center(child: CircularProgressIndicator());
 
-            Widget buildColourfulDay(
-              String dayKey, {
-              required String heroTop,
-              required String heroBottom,
-            }) {
+            Widget buildColourfulDay(String dayKey, {required String heroTop, required String heroBottom}) {
               final dayRaw = _dayRawFromController(dayKey);
               final canSave = _ctrl.hasDraftChanges(dayKey);
 
               return Stack(
                 children: [
                   ListView(
-                    padding: EdgeInsets.only(
-                      bottom: canSave ? 86 : 0, 
-                    ),
+                    padding: EdgeInsets.only(bottom: canSave ? 86 : 0),
                     children: [
                       TodayMealPlanSection(
                         todayRaw: dayRaw,
@@ -691,24 +480,13 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                         heroTopText: heroTop,
                         heroBottomText: heroBottom,
                         onOpenMealPlan: null,
-                        onInspireSlot: (slot) =>
-                            _inspireSlot(dayKey: dayKey, slot: slot),
-                        onChooseSlot: (slot) =>
-                            _chooseRecipe(dayKey: dayKey, slot: slot),
+                        onInspireSlot: (slot) => _inspireSlot(dayKey: dayKey, slot: slot),
+                        onChooseSlot: (slot) => _chooseRecipe(dayKey: dayKey, slot: slot),
                         onNoteSlot: (slot) async {
-                          final currentParsed = MealPlanEntryParser.parse(
-                            _ctrl.effectiveEntry(dayKey, slot),
-                          );
-                          final initial =
-                              MealPlanEntryParser.entryNoteText(currentParsed);
-                          await _addOrEditNote(
-                            dayKey: dayKey,
-                            slot: slot,
-                            initial: initial,
-                          );
+                          final initial = MealPlanEntryParser.entryNoteText(MealPlanEntryParser.parse(_ctrl.effectiveEntry(dayKey, slot)));
+                          await _addOrEditNote(dayKey: dayKey, slot: slot, initial: initial);
                         },
-                        onClearSlot: (slot) =>
-                            _clearSlot(dayKey: dayKey, slot: slot),
+                        onClearSlot: (slot) => _clearSlot(dayKey: dayKey, slot: slot),
                         canSave: false,
                         onSaveChanges: null,
                       ),
@@ -716,44 +494,21 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                   ),
                   if (canSave)
                     Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
+                      left: 0, right: 0, bottom: 0,
                       child: SafeArea(
                         top: false,
                         child: Container(
-                          decoration: const BoxDecoration(
-                            color: Color(0xFF044246),
-                            boxShadow: [
-                              BoxShadow(
-                                offset: Offset(0, -6),
-                                blurRadius: 18,
-                                spreadRadius: 0,
-                                color: Color.fromRGBO(0, 0, 0, 0.10),
-                              ),
-                            ],
-                          ),
+                          decoration: const BoxDecoration(color: Color(0xFF044246), boxShadow: [BoxShadow(offset: Offset(0, -6), blurRadius: 18, color: Color.fromRGBO(0, 0, 0, 0.10))]),
                           padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
                           child: SizedBox(
-                            height: 52,
-                            width: double.infinity,
+                            height: 52, width: double.infinity,
                             child: ElevatedButton(
                               onPressed: () async {
                                 await _ctrl.saveDay(dayKey);
                                 if (!mounted) return;
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      'Saved ${formatDayKeyPretty(dayKey)}',
-                                    ),
-                                  ),
-                                );
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved ${formatDayKeyPretty(dayKey)}')));
                               },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor:
-                                    const Color(0xFF32998D), 
-                                shape: const StadiumBorder(),
-                              ),
+                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF32998D), shape: const StadiumBorder()),
                               child: const Text('SAVE CHANGES'),
                             ),
                           ),
@@ -764,19 +519,10 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
               );
             }
 
-            if (_mode == MealPlanViewMode.today) {
-              return buildColourfulDay(
-                focusDayKey,
-                heroTop: "TODAY’S",
-                heroBottom: "MEAL PLAN",
-              );
-            }
+            if (_mode == MealPlanViewMode.today) return buildColourfulDay(focusDayKey, heroTop: "TODAY’S", heroBottom: "MEAL PLAN");
 
             final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
-            final initialIndex = () {
-              final idx = dayKeys.indexOf(focusDayKey);
-              return idx >= 0 ? idx : 0;
-            }();
+            final initialIndex = dayKeys.indexOf(focusDayKey) >= 0 ? dayKeys.indexOf(focusDayKey) : 0;
 
             return DefaultTabController(
               length: dayKeys.length,
@@ -785,29 +531,9 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
                 children: [
                   Material(
                     color: Theme.of(context).colorScheme.surface,
-                    child: TabBar(
-                      isScrollable: false,
-                      tabs: [
-                        for (final k in dayKeys)
-                          Tab(
-                            text: _weekdayLetter(
-                                MealPlanKeys.parseDayKey(k) ?? now),
-                          ),
-                      ],
-                    ),
+                    child: TabBar(isScrollable: false, tabs: [for (final k in dayKeys) Tab(text: _weekdayLetter(MealPlanKeys.parseDayKey(k) ?? now))]),
                   ),
-                  Expanded(
-                    child: TabBarView(
-                      children: [
-                        for (final dayKey in dayKeys)
-                          buildColourfulDay(
-                            dayKey,
-                            heroTop: formatDayKeyPretty(dayKey).toUpperCase(),
-                            heroBottom: '',
-                          ),
-                      ],
-                    ),
-                  ),
+                  Expanded(child: TabBarView(children: [for (final dayKey in dayKeys) buildColourfulDay(dayKey, heroTop: formatDayKeyPretty(dayKey).toUpperCase(), heroBottom: '')])),
                 ],
               ),
             );
@@ -819,7 +545,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> {
 }
 
 // ----------------------------------------------------
-// Choose Recipe Sheet
+// Choose Recipe Sheet & Note Result (Unchanged)
 // ----------------------------------------------------
 class _ChooseRecipeSheet extends StatefulWidget {
   final List<Map<String, dynamic>> recipes;
@@ -827,15 +553,7 @@ class _ChooseRecipeSheet extends StatefulWidget {
   final String? Function(Map<String, dynamic>) thumbOf;
   final int? Function(Map<String, dynamic>) idOf;
   final String Function(Map<String, dynamic> recipe)? statusTextOf;
-
-  const _ChooseRecipeSheet({
-    required this.recipes,
-    required this.titleOf,
-    required this.thumbOf,
-    required this.idOf,
-    this.statusTextOf,
-  });
-
+  const _ChooseRecipeSheet({required this.recipes, required this.titleOf, required this.thumbOf, required this.idOf, this.statusTextOf});
   @override
   State<_ChooseRecipeSheet> createState() => _ChooseRecipeSheetState();
 }
@@ -843,61 +561,20 @@ class _ChooseRecipeSheet extends StatefulWidget {
 class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
   final _search = TextEditingController();
   String _q = '';
-
   @override
-  void dispose() {
-    _search.dispose();
-    super.dispose();
-  }
-
-  String _status(Map<String, dynamic> r) {
-    final s = widget.statusTextOf?.call(r);
-    if (s == null || s.trim().isEmpty) return 'safe';
-    return s.toLowerCase();
-  }
-
-  bool _isSafe(Map<String, dynamic> r) => _status(r) == 'safe';
-  bool _needsSwap(Map<String, dynamic> r) => _status(r) == 'swap';
-  bool _isBlocked(Map<String, dynamic> r) => _status(r) == 'blocked';
-
+  void dispose() { _search.dispose(); super.dispose(); }
+  String _status(Map<String, dynamic> r) => widget.statusTextOf?.call(r)?.toLowerCase() ?? 'safe';
   @override
   Widget build(BuildContext context) {
-    final filtered = widget.recipes.where((r) {
-      if (_isBlocked(r)) return false;
-
-      if (_q.trim().isEmpty) return true;
-      final t = widget.titleOf(r).toLowerCase();
-      return t.contains(_q.toLowerCase());
-    }).toList();
-
+    final filtered = widget.recipes.where((r) => _status(r) != 'blocked' && (_q.isEmpty || widget.titleOf(r).toLowerCase().contains(_q.toLowerCase()))).toList();
     return SafeArea(
       child: Padding(
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 12,
-          bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
-        ),
+        padding: EdgeInsets.only(left: 16, right: 16, top: 12, bottom: 16 + MediaQuery.of(context).viewInsets.bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                color: Theme.of(context).dividerColor,
-                borderRadius: BorderRadius.circular(999),
-              ),
-            ),
-            TextField(
-              controller: _search,
-              decoration: const InputDecoration(
-                prefixIcon: Icon(Icons.search),
-                hintText: 'Search recipes',
-              ),
-              onChanged: (v) => setState(() => _q = v),
-            ),
+            Container(width: 40, height: 4, margin: const EdgeInsets.only(bottom: 12), decoration: BoxDecoration(color: Theme.of(context).dividerColor, borderRadius: BorderRadius.circular(999))),
+            TextField(controller: _search, decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search recipes'), onChanged: (v) => setState(() => _q = v)),
             const SizedBox(height: 12),
             Flexible(
               child: ListView.builder(
@@ -906,30 +583,14 @@ class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
                 itemBuilder: (_, i) {
                   final r = filtered[i];
                   final id = widget.idOf(r);
-                  final title = widget.titleOf(r);
-                  final thumb = widget.thumbOf(r);
-
-                  final safe = _isSafe(r);
-                  final swap = _needsSwap(r);
-
-                  final enabled = id != null && (safe || swap);
-
+                  final swap = _status(r) == 'swap';
                   return ListTile(
-                    enabled: enabled,
-                    leading: thumb == null
-                        ? const Icon(Icons.restaurant_menu)
-                        : Image.network(
-                            thumb,
-                            width: 44,
-                            height: 44,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                const Icon(Icons.restaurant_menu),
-                          ),
-                    title: Text(title),
+                    enabled: id != null,
+                    leading: widget.thumbOf(r) == null ? const Icon(Icons.restaurant_menu) : Image.network(widget.thumbOf(r)!, width: 44, height: 44, fit: BoxFit.cover),
+                    title: Text(widget.titleOf(r)),
                     subtitle: swap ? const Text('Needs swap') : null,
                     trailing: swap ? const Icon(Icons.swap_horiz, size: 18) : null,
-                    onTap: !enabled ? null : () => Navigator.of(context).pop(id),
+                    onTap: id != null ? () => Navigator.of(context).pop(id) : null,
                   );
                 },
               ),
@@ -941,17 +602,11 @@ class _ChooseRecipeSheetState extends State<_ChooseRecipeSheet> {
   }
 }
 
-// ----------------------------------------------------
-// Dialog result helper
-// ----------------------------------------------------
 enum _NoteResultKind { cancel, save }
-
 class _NoteResult {
   final _NoteResultKind kind;
   final String? text;
-
   const _NoteResult._(this.kind, this.text);
-
   const _NoteResult.cancel() : this._(_NoteResultKind.cancel, null);
   _NoteResult.save(String text) : this._(_NoteResultKind.save, text);
 }

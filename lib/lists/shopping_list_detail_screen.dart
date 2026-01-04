@@ -1,10 +1,8 @@
-// lib/lists/shopping_list_detail_screen.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import 'shopping_repo.dart';
 import 'shopping_engine.dart';
-// ✅ Import the new add sheet
 import 'shopping_item_add_sheet.dart'; 
 
 class ShoppingListDetailScreen extends StatefulWidget {
@@ -25,6 +23,18 @@ class ShoppingListDetailScreen extends StatefulWidget {
 class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
   String? _pendingUnitSystem; // metric|us
   bool _savingPrefs = false;
+
+  // ✅ Stable streams
+  late Stream<DocumentSnapshot<Map<String, dynamic>>> _listStream;
+  late Stream<QuerySnapshot<Map<String, dynamic>>> _itemsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    final repo = ShoppingRepo.instance;
+    _listStream = repo.listDocStream(widget.listId);
+    _itemsStream = repo.itemsStream(widget.listId);
+  }
 
   Future<void> _setPrefs({
     String? unitSystem,
@@ -61,7 +71,6 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
 
   void _showRecipes(
       List<QueryDocumentSnapshot<Map<String, dynamic>>> allItems) {
-    // 1. Extract unique recipes from item sources
     final uniqueRecipes = <int, String>{};
 
     for (final doc in allItems) {
@@ -74,7 +83,6 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
             final title =
                 (s['recipeTitle'] ?? '').toString().trim();
             
-            // Only add if we have a valid ID and it's not empty
             if (rid != null && rid > 0) {
               uniqueRecipes[rid] = title.isNotEmpty ? title : 'Recipe #$rid';
             }
@@ -92,7 +100,6 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
       ),
       builder: (ctx) {
         final recipeList = uniqueRecipes.entries.toList();
-        // Sort alphabetically by title
         recipeList.sort((a, b) => a.value.compareTo(b.value));
 
         return DraggableScrollableSheet(
@@ -103,7 +110,6 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
           builder: (context, scrollController) {
             return Column(
               children: [
-                // Handle bar
                 Center(
                   child: Container(
                     margin: const EdgeInsets.only(top: 12, bottom: 12),
@@ -250,7 +256,7 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
     final repo = ShoppingRepo.instance;
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: repo.listDocStream(widget.listId),
+      stream: _listStream,
       builder: (context, listSnap) {
         if (listSnap.hasError) {
           return Scaffold(
@@ -277,7 +283,7 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
         }
 
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: repo.itemsStream(widget.listId),
+          stream: _itemsStream,
           builder: (context, itemsSnap) {
             final docs = itemsSnap.data?.docs ?? [];
             final isLoading = itemsSnap.connectionState == ConnectionState.waiting;
@@ -289,13 +295,12 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
                   IconButton(
                     icon: const Icon(Icons.menu_book_rounded),
                     tooltip: 'Managed Recipes',
-                    onPressed: (docs.isEmpty || isLoading)
+                    onPressed: (docs.isEmpty && isLoading)
                         ? null
                         : () => _showRecipes(docs),
                   ),
                 ],
               ),
-              // ✅ NEW: Add Button for Manual Entry
               floatingActionButton: FloatingActionButton(
                 onPressed: () => ShoppingItemAddSheet.show(context, widget.listId),
                 backgroundColor: Colors.black,
@@ -368,19 +373,16 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
       return an.compareTo(bn);
     });
 
-    // Group by section
     final groups = <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
     
     for (final d in sorted) {
       final data = d.data();
-      // Use standard logic (since you are recreating lists to fix old data)
       final section = ShoppingEngine.sectionForItem(data) ?? 'Other';
       groups.putIfAbsent(section, () => []).add(d);
     }
 
     final groupKeys = groups.keys.toList();
     groupKeys.sort((a, b) {
-      // Updated Sort Order
       const order = [
         'Fresh',
         'Pantry',
@@ -400,7 +402,7 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
       var count = 0;
       for (final k in groupKeys) {
         final items = groups[k] ?? [];
-        if (k.trim().isNotEmpty) count += 1; // Header
+        if (k.trim().isNotEmpty) count += 1;
         count += items.length;
       }
       return count;
@@ -424,7 +426,7 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
           ),
         Expanded(
           child: ListView.builder(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 80), // Extra bottom pad for FAB
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
             itemCount: totalRows(),
             itemBuilder: (context, index) {
               var cursor = 0;
@@ -459,6 +461,7 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
                       itemId: d.id,
                       checked: checked,
                     ),
+                    // ✅ FIXED: Missing method added below
                     onRemove: () => _confirmRemoveItem(d, repo),
                   );
                 }
@@ -473,6 +476,7 @@ class _ShoppingListDetailScreenState extends State<ShoppingListDetailScreen> {
     );
   }
 
+  // ✅ RESTORED MISSING METHOD
   Future<void> _confirmRemoveItem(
     QueryDocumentSnapshot<Map<String, dynamic>> d,
     ShoppingRepo repo,

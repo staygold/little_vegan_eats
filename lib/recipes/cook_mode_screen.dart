@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../theme/app_theme.dart';
+
+
 class CookModeScreen extends StatefulWidget {
   const CookModeScreen({
     super.key,
@@ -65,10 +68,12 @@ class _CookModeScreenState extends State<CookModeScreen> {
 
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Cooking complete 👏')),
-    );
-
+   ScaffoldMessenger.of(context).showSnackBar(
+  SnackBar(
+    backgroundColor: AppColors.brandDark,
+    content: const Text('Cooking complete 👏'),
+  ),
+);
     Navigator.of(context).pop();
   }
 

@@ -1,7 +1,10 @@
 // lib/lists/lists_hub_screen.dart
+import 'dart:ui' show FontVariation;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import 'shopping_repo.dart';
 import 'shopping_list_detail_screen.dart';
 
@@ -14,6 +17,25 @@ class ListsHubScreen extends StatefulWidget {
 
 class _ListsHubScreenState extends State<ListsHubScreen> {
   final _repo = ShoppingRepo.instance;
+
+  static const Color _panelBg = Color(0xFFECF3F4);
+
+  // ✅ Rounded top corners for the inner panel (same vibe as meal plan hub)
+  static const BorderRadius _topRadius = BorderRadius.only(
+    topLeft: Radius.circular(20),
+    topRight: Radius.circular(20),
+  );
+
+  TextStyle _hubTitleStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    return (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w900,
+      fontVariations: const [FontVariation('wght', 900)],
+      letterSpacing: 1.0,
+      height: 1.0,
+    );
+  }
 
   Future<void> _createListDialog() async {
     final ctrl = TextEditingController();
@@ -58,7 +80,10 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
     }
   }
 
-  Future<void> _confirmDeleteList({required String listId, required String listName}) async {
+  Future<void> _confirmDeleteList({
+    required String listId,
+    required String listName,
+  }) async {
     final ok = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
@@ -94,105 +119,182 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
     }
   }
 
+  Widget _listCard({
+    required String title,
+    required VoidCallback onTap,
+    required String listId,
+  }) {
+    return Card(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: ListTile(
+        title: Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.chevron_right),
+            const SizedBox(width: 2),
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                if (value == 'delete') {
+                  _confirmDeleteList(listId: listId, listName: title);
+                }
+              },
+              itemBuilder: (ctx) => const [
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Text('Delete'),
+                ),
+              ],
+            ),
+          ],
+        ),
+        onTap: onTap,
+      ),
+    );
+  }
+
+  Widget _emptyState() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'No shopping lists yet',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              const Text('Create one to start adding items.'),
+              const SizedBox(height: 14),
+              ElevatedButton(
+                onPressed: _createListDialog,
+                child: const Text('Create your first list'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final titleStyle = _hubTitleStyle(context);
+
+    // ✅ Outer wrapper background band (same concept as meal plan hub)
+    final topBandColor = AppColors.brandDark;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Shopping Lists'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: _createListDialog,
-          ),
-        ],
-      ),
+      backgroundColor: _panelBg,
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: _repo.listsStream(),
         builder: (context, snap) {
+          // We keep the same “grey rounded panel” shell even while loading/error
+          Widget innerContent;
+
           if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          if (snap.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  'Could not load lists:\n${snap.error}',
-                  textAlign: TextAlign.center,
+            innerContent = const Padding(
+              padding: EdgeInsets.fromLTRB(16, 24, 16, 24),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          } else if (snap.hasError) {
+            innerContent = Padding(
+              padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    'Could not load lists:\n${snap.error}',
+                    textAlign: TextAlign.center,
+                  ),
                 ),
               ),
             );
-          }
+          } else {
+            final docs = snap.data?.docs ?? [];
 
-          final docs = snap.data?.docs ?? [];
+            if (docs.isEmpty) {
+              innerContent = _emptyState();
+            } else {
+              innerContent = Column(
+                children: [
+                  const SizedBox(height: 10),
+                  for (final d in docs)
+                    Builder(
+                      builder: (_) {
+                        final data = d.data();
+                        final name = (data['name'] ?? '').toString().trim();
+                        final displayName = name.isEmpty ? 'Untitled list' : name;
 
-          if (docs.isEmpty) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('No shopping lists yet'),
-                    const SizedBox(height: 12),
-                    ElevatedButton(
-                      onPressed: _createListDialog,
-                      child: const Text('Create your first list'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-
-          return ListView.separated(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-            itemCount: docs.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 10),
-            itemBuilder: (context, i) {
-              final d = docs[i];
-              final data = d.data();
-
-              final name = (data['name'] ?? '').toString().trim();
-              final displayName = name.isEmpty ? 'Untitled list' : name;
-
-              return ListTile(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                tileColor: Colors.black.withOpacity(0.04),
-                title: Text(displayName),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.chevron_right),
-                    PopupMenuButton<String>(
-                      onSelected: (value) {
-                        if (value == 'delete') {
-                          _confirmDeleteList(listId: d.id, listName: displayName);
-                        }
+                        return _listCard(
+                          title: displayName,
+                          listId: d.id,
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => ShoppingListDetailScreen(
+                                  listId: d.id,
+                                  listName: displayName,
+                                ),
+                              ),
+                            );
+                          },
+                        );
                       },
-                      itemBuilder: (ctx) => const [
-                        PopupMenuItem(
-                          value: 'delete',
-                          child: Text('Delete'),
-                        ),
-                      ],
                     ),
-                  ],
-                ),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => ShoppingListDetailScreen(
-                        listId: d.id,
-                        listName: displayName,
-                      ),
-                    ),
-                  );
-                },
+                  const SizedBox(height: 12),
+                ],
               );
-            },
+            }
+          }
+
+          return ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              // ✅ Top band + rounded grey panel
+              Container(
+                color: topBandColor,
+                padding: EdgeInsets.only(
+                  top: MediaQuery.of(context).padding.top + 12,
+                ),
+                child: Material(
+                  color: _panelBg,
+                  shape: const RoundedRectangleBorder(borderRadius: _topRadius),
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // ✅ Header row (matches meal plan hub pattern)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 18, 8, 10),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text('SHOPPING LISTS', style: titleStyle),
+                            ),
+                            IconButton(
+                              tooltip: 'Create list',
+                              icon: const Icon(Icons.add),
+                              onPressed: _createListDialog,
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // ✅ Content
+                      innerContent,
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+            ],
           );
         },
       ),

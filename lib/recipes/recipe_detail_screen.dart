@@ -5,10 +5,10 @@ import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // ✅ status bar style
+import 'package:flutter/services.dart'; 
 import 'package:dio/dio.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:cached_network_image/cached_network_image.dart'; // ✅ clean placeholder + caching
+import 'package:cached_network_image/cached_network_image.dart'; 
 
 import '../theme/app_theme.dart';
 import '../utils/text.dart';
@@ -19,10 +19,7 @@ import '../recipes/favorites_service.dart';
 import 'cook_mode_screen.dart';
 import '../app/no_bounce_scroll_behavior.dart';
 
-// ✅ NEW: shopping list picker sheet
 import '../lists/shopping_list_picker_sheet.dart';
-
-// ✅ NEW: ShoppingIngredient model (ONLY for shopping list payload)
 import '../lists/shopping_repo.dart';
 
 class _RText {
@@ -271,7 +268,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
   int _unitSystem = 1;
 
-  // ✅ Only show swaps if profile has any allergies selected
   bool _profileHasAllergies = false;
 
   StreamSubscription<User?>? _authSub;
@@ -339,7 +335,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         final kidCount =
             children.where((e) => e is Map && (e['name'] ?? '').toString().trim().isNotEmpty).length;
 
-        // ✅ Detect allergies in any member
         bool hasAllergies = false;
 
         bool memberHasAllergies(Map m) {
@@ -590,16 +585,9 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     return _termNameInt(recipe, 'items_per_person');
   }
 
-  // ===========================================================================
-  // ✅ Kids factor (0.5 default, unless explicitly set to 1)
-  // Supports:
-  // - WPRM tag group: kids_items_factor (term name "1")
-  // - Custom field fallback: kids_items_factor or wprm_kids_items_factor (string "1")
-  // ===========================================================================
   double _kidsFactor(Map<String, dynamic>? recipe) {
     if (recipe == null) return 0.5;
 
-    // Prefer your WPRM group (tags)
     final term = _termName(recipe, 'kids_items_factor').trim();
     if (term.isNotEmpty) {
       final v = double.tryParse(term);
@@ -609,7 +597,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       }
     }
 
-    // Fallback to custom field(s) if present
     final cf1 = _getField(recipe, 'kids_items_factor').trim();
     if (cf1 == '1') return 1.0;
     final cf2 = _getField(recipe, 'wprm_kids_items_factor').trim();
@@ -715,32 +702,25 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
   // ===========================================================================
   // ✅ SHOPPING LIST: convert ingredients_flat -> List<ShoppingIngredient>
-  //
-  // IMPORTANT:
-  // - metric fields ALWAYS set from current scale + current unit system data
-  // - us fields set from WPRM converted[2] if available
-  // - name stays raw (repo normalizes + merges)
-  // - notes stored separately (not baked into the name)
   // ===========================================================================
   List<ShoppingIngredient> _ingredientsToShoppingIngredients(List ingredientsFlat) {
     final out = <ShoppingIngredient>[];
 
     for (final row in ingredientsFlat) {
       if (row is! Map) continue;
-      if (row['type'] == 'group') continue;
+      
+      // ✅ FILTER OUT GROUPS/HEADERS
+      final type = (row['type'] ?? '').toString().toLowerCase();
+      if (type == 'group' || type == 'header') continue;
 
       final name = (row['name'] ?? '').toString().trim();
       if (name.isEmpty) continue;
 
       final notes = stripHtml((row['notes'] ?? '').toString()).trim();
 
-      // "Metric" fields = whatever your UI is currently showing when _unitSystem == 1
-      // but we always fill metricAmount/unit from the base row fields (amount/unit),
-      // scaled by _scale (so list can be re-rendered in either system later).
       final metricAmount = _scaledAmount((row['amount'] ?? '').toString(), _scale).trim();
       final metricUnit = (row['unit'] ?? '').toString().trim();
 
-      // US fields (system 2) if present
       String usAmount = '';
       String usUnit = '';
       if (_rowHasConverted2(row)) {
@@ -780,7 +760,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
-  // ✅ Frosted circle button (used only over the hero image)
   Widget _circleFrostButton({
     required Widget child,
     required VoidCallback onTap,
@@ -885,7 +864,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   }
 
   Widget _swapsCard(Map<String, dynamic>? recipe) {
-    // ✅ gate: only show if profile has allergies
     if (!_profileHasAllergies) return const SizedBox.shrink();
 
     final rawText = _getField(recipe, 'ingredient_swaps');
@@ -1011,14 +989,13 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   String _ctaLabel(double v) =>
       (v - 0.5).abs() < 0.0001 ? 'UPDATE TO HALF BATCH' : 'UPDATE INGREDIENTS (${_fmtMultiplier(v).toUpperCase()})';
 
-  // ✅ removed arrow consider helper (kept for compatibility)
   String _suggestMultiplierLine(double recommended, {required bool itemsMode}) => '';
 
   Widget _servingPanelCard(BuildContext context, Map<String, dynamic>? recipe) {
     final itemsMode = _isItemsMode(recipe);
     final ipp = _itemsPerPerson(recipe);
     final itemSingular = _itemLabelSingular(recipe);
-    final kFactor = _kidsFactor(recipe); // ✅ NEW
+    final kFactor = _kidsFactor(recipe); 
 
     final servingsRaw = (recipe?['servings'] ?? recipe?['servings_number'] ?? recipe?['servings_amount']);
     final servingsCount = _toInt(servingsRaw);
@@ -1043,7 +1020,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     double? recommended;
 
     if (itemsMode && itemsMade != null && itemsMade > 0 && ipp != null && ipp > 0) {
-      // ✅ NEW: kids factor used here too
       final rawItemsNeeded = (_adults * ipp) + (_kids * (ipp * kFactor));
       final itemsNeeded = rawItemsNeeded.round().clamp(0, 999999);
 
@@ -1067,6 +1043,8 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     }
 
     final showRecommended = recommended != null && (needsMore || showHalf);
+    // ✅ NEW: Check if scale is already applied
+    final isApplied = recommended != null && (recommended - _scale).abs() < 0.001;
     final showHiddenSection = showRecommended || _scale != 1.0;
 
     final perPersonSuffix = (itemsMode && ipp != null) ? '' : null;
@@ -1139,7 +1117,9 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
             Divider(color: Colors.black.withOpacity(0.08), height: 1),
             const SizedBox(height: 20),
           ],
-          if (showRecommended) ...[
+          
+          // ✅ LOGIC UPDATE: Show "Update" ONLY if not yet applied. Else show "Reset".
+          if (showRecommended && !isApplied) ...[
             Row(
               crossAxisAlignment: CrossAxisAlignment.baseline,
               textBaseline: TextBaseline.alphabetic,
@@ -1162,12 +1142,17 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               ],
             ),
             const SizedBox(height: 12),
+            
+            // ✅ UPDATE BUTTON: Uses FilledButton
             SizedBox(
               width: double.infinity,
               height: 52,
               child: FilledButton(
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.brandDark,
+                  foregroundColor: Colors.white,
+                  // Transparent border to match size of reset button
+                  side: const BorderSide(color: Colors.transparent, width: 1.5),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
                 onPressed: () => _applyScale(recommended!),
@@ -1175,16 +1160,35 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               ),
             ),
           ] else if (_scale != 1.0) ...[
+            // ✅ STATUS LINE
+            Row(
+              children: [
+                Text('Ingredients updated to:', style: _RText.servingRecLabel),
+                const SizedBox(width: 8),
+                Text(_multiplierLabel(_scale), style: _RText.servingRecStrong),
+              ],
+            ),
+            const SizedBox(height: 12),
+            
+            // ✅ RESET BUTTON: Uses FilledButton too (for identical layout)
             SizedBox(
               width: double.infinity,
               height: 52,
               child: FilledButton(
                 style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.brandDark,
+                  backgroundColor: Colors.white,
+                  foregroundColor: AppColors.brandDark, // Text color
+                  side: BorderSide(
+                    color: AppColors.brandDark.withOpacity(0.6), // Visible border
+                    width: 1.5,
+                  ),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
                 onPressed: () => _applyScale(1.0),
-                child: const Text('RESET INGREDIENTS', style: _RText.servingCta),
+                child: Text(
+                  'RESET INGREDIENTS',
+                  style: _RText.servingCta.copyWith(color: AppColors.brandDark),
+                ),
               ),
             ),
           ],
@@ -1224,7 +1228,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final n = _nutritionMap(recipe);
     if (n == null || n.isEmpty) return const SizedBox.shrink();
 
-    final kidMult = _kidsFactor(recipe); // ✅ NEW
+    final kidMult = _kidsFactor(recipe); 
 
     dynamic pick(List<String> keys) {
       for (final k in keys) {
@@ -1331,7 +1335,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
-  // ✅ Updated to scale fractions too (e.g. "2/3")
   String _scaledAmount(String rawAmount, double mult) {
     final a = rawAmount.trim();
     if (a.isEmpty || mult == 1.0) return a;
@@ -1366,7 +1369,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     return s.endsWith('.0') ? '${s.substring(0, s.length - 2)}x' : '${s}x';
   }
 
-  // ✅ Back Button (existing svg)
   Widget _heroBackButton({required Color color}) => InkWell(
         onTap: () => Navigator.of(context).pop(),
         borderRadius: BorderRadius.circular(999),
@@ -1379,7 +1381,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         ),
       );
 
-  // ✅ Star Icon (system icon)
   Widget _heroStarIcon({required bool isFav, required Color color}) =>
       Icon(isFav ? Icons.star : Icons.star_border, size: 36, color: color);
 
@@ -1525,16 +1526,10 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                       imageUrl: (heroUrl ?? imageUrl),
                       fit: BoxFit.cover,
                       filterQuality: FilterQuality.high,
-
-                      // ✅ clean (no weird icon / spinner)
                       placeholder: (context, url) => Container(color: const Color(0xFFEFEFEF)),
                       errorWidget: (context, url, error) => Container(color: const Color(0xFFEFEFEF)),
-
-                      // ✅ kill flicker / fade
                       fadeInDuration: Duration.zero,
                       fadeOutDuration: Duration.zero,
-
-                      // ✅ matches your Dio UA; helps some CDNs
                       httpHeaders: const {
                         'User-Agent': 'LittleVeganEatsApp/1.0',
                         'Accept': 'application/json',
@@ -1576,38 +1571,51 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                               _servingPanelCard(context, recipe),
                               const SizedBox(height: 40),
 
-                              // ✅ INGREDIENTS + Add to list button
                               Row(
-                                children: [
-                                  Expanded(child: Text('INGREDIENTS', style: _RText.section)),
-                                  const SizedBox(width: 10),
-                                  SizedBox(
-                                    height: 38,
-                                    child: OutlinedButton(
-                                      onPressed: () {
-                                        final u = FirebaseAuth.instance.currentUser;
-                                        if (u == null) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(content: Text('Please sign in to use shopping lists')),
-                                          );
-                                          return;
-                                        }
+  children: [
+    Expanded(child: Text('INGREDIENTS', style: _RText.section)),
+    const SizedBox(width: 18),
+    SizedBox(
+      height: 38,
+      child: OutlinedButton(
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          textStyle: const TextStyle(
+            inherit: false, // ✅ stops inheriting theme fontVariations
+            fontFamily: 'Montserrat',
+            fontSize: 14,
+            fontVariations: [FontVariation('wght', 600)], // ✅ force weight
+            letterSpacing: 0,
+          ),
+        ),
+        onPressed: () {
+          final u = FirebaseAuth.instance.currentUser;
+          if (u == null) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Please sign in to use shopping lists')),
+            );
+            return;
+          }
 
-                                        // ✅ CHANGED: pass structured ingredients (metric + US) so toggles work
-                                        final ingredients = _ingredientsToShoppingIngredients(ingredientsFlat);
+          final ingredients = _ingredientsToShoppingIngredients(ingredientsFlat);
 
-                                        ShoppingListPickerSheet.open(
-                                          context,
-                                          recipeId: widget.id,
-                                          recipeTitle: title,
-                                          ingredients: ingredients,
-                                        );
-                                      },
-                                      child: const Text('Add to shopping list'),
-                                    ),
-                                  ),
-                                ],
-                              ),
+          ShoppingListPickerSheet.open(
+            context,
+            recipeId: widget.id,
+            recipeTitle: title,
+            ingredients: ingredients,
+          );
+        },
+        child: const Text('Add to shopping list'),
+      ),
+    ),
+  ],
+),
+
+
+
+                              const SizedBox(height: 16), // 👈 KEY SPACING
+
 
                               _unitSystemToggle(show: canConvert, leftLabel: 'METRIC', rightLabel: 'US'),
                               const SizedBox(height: 2),
@@ -1684,7 +1692,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                     padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
                     child: Row(
                       children: [
-                        // ✅ Frosted circle when NOT sticky, otherwise keep original
                         if (!_showStickyHeader)
                           _circleFrostButton(
                             onTap: () => Navigator.of(context).pop(),
@@ -1694,7 +1701,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                 width: 24,
                                 height: 24,
                                 fit: BoxFit.contain,
-                                colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcIn),
+                                  colorFilter: ColorFilter.mode(iconColor, BlendMode.srcIn),
                               ),
                             ),
                           )

@@ -6,9 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../recipes/recipe_repository.dart';
-
 import '../recipes/recipe_search_screen.dart';
-
 
 // ✅ SAME weekId logic as meal plan
 import '../meal_plan/core/meal_plan_keys.dart';
@@ -26,10 +24,6 @@ import '../recipes/home_collection_rail.dart';
 // ✅ shared meal plan UI (REUSE)
 import '../meal_plan/widgets/today_meal_plan_section.dart';
 
-// ✅ Search experience
-import '../recipes/recipes_bootstrap_gate.dart';
-import '../recipes/recipe_list_page.dart';
-
 // ✅ reusable top search section
 import '../shared/home_search_section.dart';
 
@@ -37,6 +31,16 @@ import '../theme/app_theme.dart';
 
 // ✅ IMPORTANT: so HomeScreen can push MealPlanScreen without named routes
 import '../meal_plan/meal_plan_screen.dart';
+
+// ✅ Latest recipes page
+import '../recipes/latest_recipes_page.dart';
+
+// ✅ Popular recipes page
+import '../recipes/popular_recipes_page.dart';
+
+// ✅ Course page plumbing (same as RecipeHub)
+import '../recipes/recipes_bootstrap_gate.dart';
+import '../recipes/course_page.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -221,27 +225,20 @@ class _HomeScreenState extends State<HomeScreen> {
     final name = (firstAdult['name'] ?? '').toString().trim();
     if (name.isEmpty) return null;
 
-    final parts =
-        name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    final parts = name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
     return parts.isNotEmpty ? parts.first : null;
   }
 
   // ---------- NAV ----------
 
   void _openSearch(BuildContext context) {
-  Navigator.of(context).push(
-    MaterialPageRoute(
-      builder: (_) => RecipeSearchScreen(
-        recipes: _recipes,
-        favoriteIds: _favoriteIds,
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RecipeSearchScreen(
+          recipes: _recipes,
+          favoriteIds: _favoriteIds,
+        ),
       ),
-    ),
-  );
-}
-
-  void _toast(BuildContext context, String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg)),
     );
   }
 
@@ -250,7 +247,7 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(
         builder: (_) => MealPlanScreen(
           weekId: _weekId(),
-          focusDayKey: _todayKey(), // ✅ opens focused on today
+          focusDayKey: _todayKey(),
         ),
       ),
     );
@@ -260,7 +257,48 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => MealPlanScreen(
-          weekId: _weekId(), // ✅ normal week screen
+          weekId: _weekId(),
+        ),
+      ),
+    );
+  }
+
+  void _openLatest(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LatestRecipesPage(
+          title: 'Latest recipes',
+          recipes: _recipes,
+          favoriteIds: _favoriteIds,
+          limit: 20,
+        ),
+      ),
+    );
+  }
+
+  void _openPopular(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PopularRecipesPage(
+          title: 'Popular',
+          recipes: _recipes,
+          favoriteIds: _favoriteIds,
+          limit: 50,
+        ),
+      ),
+    );
+  }
+
+  // ✅ same plumbing as RecipeHubScreen
+  void _openCourse(BuildContext context, String slug, String title, String subtitle) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RecipesBootstrapGate(
+          child: CoursePage(
+            courseSlug: slug,
+            title: title,
+            subtitle: subtitle,
+          ),
         ),
       ),
     );
@@ -285,10 +323,8 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    // ✅ Page background (also behind carousels)
     const railBg = Color(0xFFECF3F4);
 
-    // ✅ Rounded top corners for the inner meal-plan panel
     const topRadius = BorderRadius.only(
       topLeft: Radius.circular(20),
       topRight: Radius.circular(20),
@@ -318,7 +354,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ? Map<String, dynamic>.from(days[todayKey] as Map)
                     : <String, dynamic>{};
 
-            // ✅ Outer wrapper background (green band)
             final mealPlanPanelBg = AppColors.brandDark;
 
             return Scaffold(
@@ -334,27 +369,36 @@ class _HomeScreenState extends State<HomeScreen> {
                       QuickActionItem(
                         label: 'Latest',
                         asset: 'assets/images/icons/latest.svg',
-                        onTap: () => _toast(context, 'Latest (TODO)'),
+                        onTap: () => _openLatest(context),
                       ),
                       QuickActionItem(
                         label: 'Popular',
                         asset: 'assets/images/icons/popular.svg',
-                        onTap: () => _toast(context, 'Popular (TODO)'),
+                        onTap: () => _openPopular(context),
                       ),
                       QuickActionItem(
                         label: 'Mains',
                         asset: 'assets/images/icons/mains.svg',
-                        onTap: () => _toast(context, 'Mains (TODO)'),
+                        onTap: () => _openCourse(
+                          context,
+                          'mains',
+                          'Mains',
+                          'Family meals that actually land',
+                        ),
                       ),
                       QuickActionItem(
                         label: 'Snacks',
                         asset: 'assets/images/icons/snacks.svg',
-                        onTap: () => _toast(context, 'Snacks (TODO)'),
+                        onTap: () => _openCourse(
+                          context,
+                          'snacks',
+                          'Snacks',
+                          'Lunchbox + between-meal favourites',
+                        ),
                       ),
                     ],
                   ),
 
-                  // ✅ 1) MEAL PLAN (green wrapper + clipped light-grey panel inside)
                   Container(
                     color: mealPlanPanelBg,
                     padding: const EdgeInsets.only(top: 12),
@@ -371,15 +415,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         heroTopText: "HERE'S SOME IDEAS",
                         heroBottomText: "FOR TODAY",
                         homeAccordion: true,
-
-                        // ✅ simple pushes, no named routes
                         onOpenToday: () => _openTodayPlan(context),
                         onOpenWeek: () => _openWeekPlan(context),
                       ),
                     ),
                   ),
 
-                  // ✅ 2) CAROUSELS = LIGHT GREY WRAPPER (NOT GREEN)
                   Container(
                     color: railBg,
                     padding: const EdgeInsets.only(top: 0, bottom: 40),

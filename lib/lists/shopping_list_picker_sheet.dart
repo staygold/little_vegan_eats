@@ -8,6 +8,21 @@ import 'shopping_list_detail_screen.dart';
 class ShoppingListPickerSheet {
   ShoppingListPickerSheet._();
 
+  /// Generic picker: Returns the [listId] selected (or created).
+  /// Does NOT add ingredients automatically.
+  static Future<String?> pick(BuildContext context) async {
+    return await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => const _Sheet(
+        pickMode: true,
+      ),
+    );
+  }
+
+  /// Legacy helper: Picks a list AND adds the specific recipe ingredients immediately.
   static Future<void> open(
     BuildContext context, {
     required int recipeId,
@@ -20,6 +35,7 @@ class ShoppingListPickerSheet {
       useSafeArea: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => _Sheet(
+        pickMode: false,
         recipeId: recipeId,
         recipeTitle: recipeTitle,
         ingredients: ingredients,
@@ -29,14 +45,16 @@ class ShoppingListPickerSheet {
 }
 
 class _Sheet extends StatefulWidget {
-  final int recipeId;
-  final String recipeTitle;
-  final List<ShoppingIngredient> ingredients;
+  final bool pickMode; // If true, return listId. If false, add items & open list.
+  final int? recipeId;
+  final String? recipeTitle;
+  final List<ShoppingIngredient>? ingredients;
 
   const _Sheet({
-    required this.recipeId,
-    required this.recipeTitle,
-    required this.ingredients,
+    this.pickMode = false,
+    this.recipeId,
+    this.recipeTitle,
+    this.ingredients,
   });
 
   @override
@@ -59,7 +77,7 @@ class _SheetState extends State<_Sheet> {
     super.dispose();
   }
 
-  Future<void> _createAndAdd() async {
+  Future<void> _createAndUse() async {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty) return;
 
@@ -67,12 +85,21 @@ class _SheetState extends State<_Sheet> {
     try {
       final ref = await _repo.createList(name);
 
-      await _repo.addIngredients(
-        listId: ref.id,
-        ingredients: widget.ingredients,
-        recipeId: widget.recipeId,
-        recipeTitle: widget.recipeTitle,
-      );
+      if (widget.pickMode) {
+        if (!mounted) return;
+        Navigator.of(context).pop(ref.id); // Return the new ID
+        return;
+      }
+
+      // Legacy "Add Single Recipe" mode
+      if (widget.ingredients != null) {
+        await _repo.addIngredients(
+          listId: ref.id,
+          ingredients: widget.ingredients!,
+          recipeId: widget.recipeId,
+          recipeTitle: widget.recipeTitle,
+        );
+      }
 
       if (!mounted) return;
       Navigator.of(context).pop(); // close sheet
@@ -96,20 +123,27 @@ class _SheetState extends State<_Sheet> {
     }
   }
 
-  Future<void> _addToExisting({
+  Future<void> _useExisting({
     required String listId,
     required String listName,
   }) async {
+    if (widget.pickMode) {
+      Navigator.of(context).pop(listId); // Return the ID
+      return;
+    }
+
     if (_adding) return;
 
     setState(() => _adding = true);
     try {
-      await _repo.addIngredients(
-        listId: listId,
-        ingredients: widget.ingredients,
-        recipeId: widget.recipeId,
-        recipeTitle: widget.recipeTitle,
-      );
+      if (widget.ingredients != null) {
+        await _repo.addIngredients(
+          listId: listId,
+          ingredients: widget.ingredients!,
+          recipeId: widget.recipeId,
+          recipeTitle: widget.recipeTitle,
+        );
+      }
 
       if (!mounted) return;
       Navigator.of(context).pop(); // close sheet
@@ -157,7 +191,7 @@ class _SheetState extends State<_Sheet> {
               children: [
                 Expanded(
                   child: Text(
-                    'Add to shopping list',
+                    widget.pickMode ? 'Select shopping list' : 'Add to shopping list',
                     style: TextStyle(
                       fontWeight: FontWeight.w800,
                       fontSize: 18,
@@ -167,7 +201,8 @@ class _SheetState extends State<_Sheet> {
                 ),
                 IconButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  icon: Icon(Icons.close_rounded, color: Colors.black.withOpacity(0.65)),
+                  icon: Icon(Icons.close_rounded,
+                      color: Colors.black.withOpacity(0.65)),
                 ),
               ],
             ),
@@ -197,23 +232,27 @@ class _SheetState extends State<_Sheet> {
                     controller: _nameCtrl,
                     focusNode: _focus,
                     textInputAction: TextInputAction.done,
-                    onSubmitted: (_) => _createAndAdd(),
+                    onSubmitted: (_) => _createAndUse(),
                     decoration: InputDecoration(
                       hintText: 'e.g. Weekly shop',
                       filled: true,
                       fillColor: Colors.white,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.black.withOpacity(0.10)),
+                        borderSide:
+                            BorderSide(color: Colors.black.withOpacity(0.10)),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.black.withOpacity(0.10)),
+                        borderSide:
+                            BorderSide(color: Colors.black.withOpacity(0.10)),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.black.withOpacity(0.22), width: 1.4),
+                        borderSide: BorderSide(
+                            color: Colors.black.withOpacity(0.22), width: 1.4),
                       ),
                     ),
                   ),
@@ -222,14 +261,14 @@ class _SheetState extends State<_Sheet> {
                     width: double.infinity,
                     height: 44,
                     child: FilledButton(
-                      onPressed: _creating ? null : _createAndAdd,
+                      onPressed: _creating ? null : _createAndUse,
                       child: _creating
                           ? const SizedBox(
                               width: 18,
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Create & add'),
+                          : Text(widget.pickMode ? 'Create & select' : 'Create & add'),
                     ),
                   ),
                 ],
@@ -257,7 +296,8 @@ class _SheetState extends State<_Sheet> {
                 builder: (context, snap) {
                   final docs = snap.data?.docs ?? const [];
 
-                  if (snap.connectionState == ConnectionState.waiting && docs.isEmpty) {
+                  if (snap.connectionState == ConnectionState.waiting &&
+                      docs.isEmpty) {
                     return const Padding(
                       padding: EdgeInsets.all(18),
                       child: Center(child: CircularProgressIndicator()),
@@ -284,7 +324,8 @@ class _SheetState extends State<_Sheet> {
                   return ListView.separated(
                     shrinkWrap: true,
                     itemCount: docs.length,
-                    separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(0.06)),
+                    separatorBuilder: (_, __) => Divider(
+                        height: 1, color: Colors.black.withOpacity(0.06)),
                     itemBuilder: (context, i) {
                       final d = docs[i];
                       final data = d.data();
@@ -296,20 +337,28 @@ class _SheetState extends State<_Sheet> {
                           name,
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
-                        subtitle: Text(
-                          widget.recipeTitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: Colors.black.withOpacity(0.55)),
-                        ),
+                        // Only show recipe title if NOT in pick mode
+                        subtitle: (!widget.pickMode && widget.recipeTitle != null)
+                            ? Text(
+                                widget.recipeTitle!,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    color: Colors.black.withOpacity(0.55)),
+                              )
+                            : null,
                         trailing: _adding
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
                               )
-                            : const Icon(Icons.add_rounded),
-                        onTap: () => _addToExisting(listId: d.id, listName: name),
+                            : (widget.pickMode 
+                                ? const Icon(Icons.chevron_right) 
+                                : const Icon(Icons.add_rounded)),
+                        onTap: () =>
+                            _useExisting(listId: d.id, listName: name),
                       );
                     },
                   );

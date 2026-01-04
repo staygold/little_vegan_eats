@@ -1,3 +1,4 @@
+// lib/meal_plan/saved_meal_plan_detail_screen.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +8,9 @@ import '../recipes/recipe_repository.dart';
 
 import 'core/meal_plan_keys.dart';
 import 'core/meal_plan_slots.dart';
+
+// ✅ Import shopping sheet
+import 'widgets/meal_plan_shopping_sheet.dart';
 
 class SavedMealPlanDetailScreen extends StatefulWidget {
   final String savedPlanId;
@@ -599,6 +603,24 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
         scrolledUnderElevation: 0,
         title: Text(title.isNotEmpty ? title : 'Saved plan'),
         actions: [
+          // ✅ NEW: Shopping List Button
+          IconButton(
+            tooltip: 'Add to Shopping List',
+            icon: const Icon(Icons.shopping_cart_outlined),
+            onPressed: () {
+              if (_plan != null) {
+                // ✅ CORRECT: Build titles map and pass 3 arguments
+                final knownTitles = <int, String>{};
+                for (final r in _recipes) {
+                  final id = _recipeIdFrom(r);
+                  final t = _titleOf(r);
+                  if (id != null) knownTitles[id] = t;
+                }
+                
+                MealPlanShoppingSheet.show(context, _plan!, knownTitles);
+              }
+            },
+          ),
           IconButton(
             tooltip: 'Delete',
             icon: const Icon(Icons.delete_outline),
