@@ -19,6 +19,12 @@ import '../recipes/favorites_service.dart';
 import 'cook_mode_screen.dart';
 import '../app/no_bounce_scroll_behavior.dart';
 
+// ✅ NEW: shopping list picker sheet
+import '../lists/shopping_list_picker_sheet.dart';
+
+// ✅ NEW: ShoppingIngredient model (ONLY for shopping list payload)
+import '../lists/shopping_repo.dart';
+
 class _RText {
   static const String font = 'Montserrat';
 
@@ -585,6 +591,34 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   }
 
   // ===========================================================================
+  // ✅ Kids factor (0.5 default, unless explicitly set to 1)
+  // Supports:
+  // - WPRM tag group: kids_items_factor (term name "1")
+  // - Custom field fallback: kids_items_factor or wprm_kids_items_factor (string "1")
+  // ===========================================================================
+  double _kidsFactor(Map<String, dynamic>? recipe) {
+    if (recipe == null) return 0.5;
+
+    // Prefer your WPRM group (tags)
+    final term = _termName(recipe, 'kids_items_factor').trim();
+    if (term.isNotEmpty) {
+      final v = double.tryParse(term);
+      if (v != null) {
+        if ((v - 1.0).abs() < 0.0001) return 1.0;
+        if ((v - 0.5).abs() < 0.0001) return 0.5;
+      }
+    }
+
+    // Fallback to custom field(s) if present
+    final cf1 = _getField(recipe, 'kids_items_factor').trim();
+    if (cf1 == '1') return 1.0;
+    final cf2 = _getField(recipe, 'wprm_kids_items_factor').trim();
+    if (cf2 == '1') return 1.0;
+
+    return 0.5;
+  }
+
+  // ===========================================================================
   // ✅ Items-mode scaling rules
   // ===========================================================================
 
@@ -677,6 +711,57 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       return u;
     }
     return (row['unit'] ?? '').toString().trim();
+  }
+
+  // ===========================================================================
+  // ✅ SHOPPING LIST: convert ingredients_flat -> List<ShoppingIngredient>
+  //
+  // IMPORTANT:
+  // - metric fields ALWAYS set from current scale + current unit system data
+  // - us fields set from WPRM converted[2] if available
+  // - name stays raw (repo normalizes + merges)
+  // - notes stored separately (not baked into the name)
+  // ===========================================================================
+  List<ShoppingIngredient> _ingredientsToShoppingIngredients(List ingredientsFlat) {
+    final out = <ShoppingIngredient>[];
+
+    for (final row in ingredientsFlat) {
+      if (row is! Map) continue;
+      if (row['type'] == 'group') continue;
+
+      final name = (row['name'] ?? '').toString().trim();
+      if (name.isEmpty) continue;
+
+      final notes = stripHtml((row['notes'] ?? '').toString()).trim();
+
+      // "Metric" fields = whatever your UI is currently showing when _unitSystem == 1
+      // but we always fill metricAmount/unit from the base row fields (amount/unit),
+      // scaled by _scale (so list can be re-rendered in either system later).
+      final metricAmount = _scaledAmount((row['amount'] ?? '').toString(), _scale).trim();
+      final metricUnit = (row['unit'] ?? '').toString().trim();
+
+      // US fields (system 2) if present
+      String usAmount = '';
+      String usUnit = '';
+      if (_rowHasConverted2(row)) {
+        final c2 = _converted2(row);
+        usAmount = _scaledAmount((c2?['amount'] ?? '').toString(), _scale).trim();
+        usUnit = (c2?['unit'] ?? '').toString().trim();
+      }
+
+      out.add(
+        ShoppingIngredient(
+          name: name,
+          notes: notes,
+          metricAmount: metricAmount,
+          metricUnit: metricUnit,
+          usAmount: usAmount,
+          usUnit: usUnit,
+        ),
+      );
+    }
+
+    return out;
   }
 
   // ===========================================================================
@@ -924,7 +1009,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   String _multiplierLabel(double v) => (v - 0.5).abs() < 0.0001 ? 'Half batch' : '${_fmtMultiplier(v)} batch';
 
   String _ctaLabel(double v) =>
-      (v - 0.5).abs() < 0.0001 ? 'MAKE HALF BATCH' : 'UPDATE INGREDIENTS (${_fmtMultiplier(v).toUpperCase()})';
+      (v - 0.5).abs() < 0.0001 ? 'UPDATE TO HALF BATCH' : 'UPDATE INGREDIENTS (${_fmtMultiplier(v).toUpperCase()})';
 
   // ✅ removed arrow consider helper (kept for compatibility)
   String _suggestMultiplierLine(double recommended, {required bool itemsMode}) => '';
@@ -933,6 +1018,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final itemsMode = _isItemsMode(recipe);
     final ipp = _itemsPerPerson(recipe);
     final itemSingular = _itemLabelSingular(recipe);
+    final kFactor = _kidsFactor(recipe); // ✅ NEW
 
     final servingsRaw = (recipe?['servings'] ?? recipe?['servings_number'] ?? recipe?['servings_amount']);
     final servingsCount = _toInt(servingsRaw);
@@ -957,7 +1043,8 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     double? recommended;
 
     if (itemsMode && itemsMade != null && itemsMade > 0 && ipp != null && ipp > 0) {
-      final rawItemsNeeded = (_adults * ipp) + (_kids * (ipp / 2));
+      // ✅ NEW: kids factor used here too
+      final rawItemsNeeded = (_adults * ipp) + (_kids * (ipp * kFactor));
       final itemsNeeded = rawItemsNeeded.round().clamp(0, 999999);
 
       final ratio = itemsNeeded / itemsMade;
@@ -990,9 +1077,10 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
     String lineText;
     if (itemsMode && ipp != null && ipp > 0) {
-      final rawItemsNeeded = (_adults * ipp) + (_kids * (ipp / 2));
+      final rawItemsNeeded = (_adults * ipp) + (_kids * (ipp * kFactor));
       final totalItemsNeeded = rawItemsNeeded.round().clamp(0, 999999);
-      lineText = 'Your family needs ~$totalItemsNeeded ${_pluralise(itemSingular, totalItemsNeeded)}';
+      lineText =
+          'Your family needs the equivalent of ~$totalItemsNeeded ${_pluralise(itemSingular, totalItemsNeeded)} adult portions';
     } else {
       lineText = (advice != null && advice.detailLine.trim().isNotEmpty) ? advice.detailLine : 'Your family needs more';
     }
@@ -1136,6 +1224,8 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final n = _nutritionMap(recipe);
     if (n == null || n.isEmpty) return const SizedBox.shrink();
 
+    final kidMult = _kidsFactor(recipe); // ✅ NEW
+
     dynamic pick(List<String> keys) {
       for (final k in keys) {
         if (n.containsKey(k) && n[k] != null && n[k].toString().trim().isNotEmpty) return n[k];
@@ -1157,6 +1247,10 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       {'l': 'Sodium', 'v': pick(['sodium', 'salt']), 's': true},
     ];
     if (rows.every((r) => r['v'] == null)) return const SizedBox.shrink();
+
+    final footer = (kidMult - 1.0).abs() < 0.0001
+        ? 'Child values are estimated at 1.0 adult serving'
+        : 'Child values are estimated at 0.5 adult serving';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1216,7 +1310,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                           SizedBox(
                             width: 86,
                             child: Text(
-                              _scaleNutritionString(r['v'], 0.5),
+                              _scaleNutritionString(r['v'], kidMult),
                               textAlign: TextAlign.right,
                               style: isSub
                                   ? _RText.body.copyWith(fontWeight: FontWeight.w500, fontSize: 14)
@@ -1229,7 +1323,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                     ]);
                   }),
               const SizedBox(height: 20),
-              Text('Child values are estimated at 0.5 adult serving', style: _RText.chip),
+              Text(footer, style: _RText.chip),
             ],
           ),
         ),
@@ -1244,7 +1338,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final mX = RegExp(r'^\s*([0-9]+(?:\.\d+)?)(\s*x\s*)$', caseSensitive: false).firstMatch(a);
     if (mX != null) return '${_fmtSmart(double.parse(mX.group(1)!) * mult)} x';
     final mPrefix = RegExp(
-      r'^\s*([0-9]+(?:\.[0-9]+)?(?:\s+[0-9]+\s*/\s*[0-9]+|(?:\s*/\s*[0-9]+)?)|[½⅓⅔¼¾⅛⅜⅝⅞])',
+      r'^\s*([0-9]+(?:\.\d+)?(?:\s+[0-9]+\s*/\s*[0-9]+|(?:\s*/\s*[0-9]+)?)|[½⅓⅔¼¾⅛⅜⅝⅞])',
     ).firstMatch(a);
     if (mPrefix != null) {
       final prefix = mPrefix.group(1)!.trim();
@@ -1481,7 +1575,40 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                               const SizedBox(height: 20),
                               _servingPanelCard(context, recipe),
                               const SizedBox(height: 40),
-                              Text('INGREDIENTS', style: _RText.section),
+
+                              // ✅ INGREDIENTS + Add to list button
+                              Row(
+                                children: [
+                                  Expanded(child: Text('INGREDIENTS', style: _RText.section)),
+                                  const SizedBox(width: 10),
+                                  SizedBox(
+                                    height: 38,
+                                    child: OutlinedButton(
+                                      onPressed: () {
+                                        final u = FirebaseAuth.instance.currentUser;
+                                        if (u == null) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text('Please sign in to use shopping lists')),
+                                          );
+                                          return;
+                                        }
+
+                                        // ✅ CHANGED: pass structured ingredients (metric + US) so toggles work
+                                        final ingredients = _ingredientsToShoppingIngredients(ingredientsFlat);
+
+                                        ShoppingListPickerSheet.open(
+                                          context,
+                                          recipeId: widget.id,
+                                          recipeTitle: title,
+                                          ingredients: ingredients,
+                                        );
+                                      },
+                                      child: const Text('Add to shopping list'),
+                                    ),
+                                  ),
+                                ],
+                              ),
+
                               _unitSystemToggle(show: canConvert, leftLabel: 'METRIC', rightLabel: 'US'),
                               const SizedBox(height: 2),
                               for (final row in ingredientsFlat)
@@ -1495,6 +1622,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                   )
                                 else if (row is Map)
                                   _ingredientRow(row),
+
                               _swapsCard(recipe),
                               const SizedBox(height: 40),
                               Text('INSTRUCTIONS', style: _RText.section),
