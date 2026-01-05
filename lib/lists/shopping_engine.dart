@@ -4,6 +4,111 @@ class ShoppingEngine {
   ShoppingEngine._();
 
   // ---------------------------------------------------------------------------
+  // Exclusions (e.g., plain water should not appear in shopping list)
+  // ---------------------------------------------------------------------------
+
+  /// Returns true if this ingredient name is "plain water" (tap/filtered/hot/cold/etc.)
+  /// and should NOT appear on shopping lists.
+  ///
+  /// IMPORTANT: We DO NOT exclude things like "coconut water", "sparkling water",
+  /// "rose water", etc.
+  static bool shouldExcludeFromShoppingName(String rawName) {
+    final n = _Norm.canonicalName(rawName);
+
+    if (n.isEmpty) return false;
+
+    // Keep common "water" products / ingredients
+    // (add more here if you find false positives)
+    const keepIfContains = <String>[
+      'coconut water',
+      'sparkling water',
+      'soda water',
+      'mineral water',
+      'rose water',
+      'orange flower water',
+      'lavender water',
+      'distilled water', // arguably a product, but keep (user might buy it)
+    ];
+    for (final k in keepIfContains) {
+      if (n.contains(k)) return false;
+    }
+
+    // If it doesn't mention water, don't exclude.
+    if (!n.contains('water')) return false;
+
+    // Strip common descriptors and punctuation around water
+    // to detect "plain water".
+    var t = n;
+
+    // Remove common adjectives/phrases that still mean plain water.
+    const plainDescriptors = <String>[
+      'tap',
+      'filtered',
+      'drinking',
+      'fresh',
+      'clean',
+      'warm',
+      'hot',
+      'cold',
+      'boiling',
+      'boiled',
+      'room temperature',
+      'room-temp',
+      'lukewarm',
+      'tepid',
+    ];
+
+    // Remove "for ..." notes that often appear: "water for boiling", "water for cooking"
+    t = t.replaceAll(RegExp(r'\bfor\b.*$'), '').trim();
+
+    for (final d in plainDescriptors) {
+      t = t.replaceAll(RegExp(r'\b' + RegExp.escape(d) + r'\b'), '').trim();
+    }
+
+    // Collapse whitespace
+    t = t.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+    // After stripping, if it's exactly "water", exclude.
+    if (t == 'water') return true;
+
+    // Also exclude common plain variants like "water to boil", "water to mix" after partial stripping
+    // (kept conservative: only if it starts with "water" and has no other meaningful noun)
+    if (t.startsWith('water ')) {
+      // If remaining words are only generic cooking verbs, treat as plain water.
+      final rest = t.substring('water'.length).trim();
+      const generic = <String>[
+        'to',
+        'boil',
+        'boiling',
+        'cook',
+        'cooking',
+        'mix',
+        'mixing',
+        'soak',
+        'soaking',
+        'steam',
+        'steaming',
+        'thin',
+        'thinning',
+        'dilute',
+        'diluting',
+      ];
+      final tokens = rest.split(' ').where((x) => x.isNotEmpty).toList();
+      if (tokens.isNotEmpty && tokens.every((x) => generic.contains(x))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /// Convenience: check a built shopping item map.
+  static bool shouldExcludeFromShoppingItem(Map<String, dynamic> item) {
+    final name = (item['name'] ?? item['text'] ?? '').toString().trim();
+    return shouldExcludeFromShoppingName(name);
+  }
+
+  // ---------------------------------------------------------------------------
   // Keys + names
   // ---------------------------------------------------------------------------
 
@@ -71,18 +176,18 @@ class ShoppingEngine {
       'beans', 'chickpeas', 'oil', 'vinegar', 'soy sauce', 'tamari', 'yeast',
       'baking powder', 'baking soda', 'chocolate', 'cacao', 'cocoa', 'syrup',
       'honey', 'coffee', 'tea',
-      
+
       // Nuts & Seeds (Added)
       'nut', 'nuts', 'walnut', 'almond', 'cashew', 'pecan', 'hazelnut',
       'pistachio', 'macadamia', 'seed', 'chia', 'flax', 'hemp', 'sesame',
       'pumpkin seed', 'sunflower',
-      
+
       // Bakery-ish staples
       'bread', 'wrap', 'tortilla', 'pita', 'bagel', 'bun', 'roll',
-      
+
       // Packaging types
       'tinned', 'canned', 'can', 'jar', 'pack',
-      
+
       // Herbs & Spices
       'spice', 'spices', 'herb', 'herbs', 'seasoning', 'condiment', 'sauce',
       'dried', 'ground', 'powder', 'flake', 'extract', 'vanilla',
@@ -253,10 +358,10 @@ class ShoppingEngine {
 
     final m = RegExp(
       r'^('
-      r'\d+\s+\d+' + slashClass + r'\d+'    // Mixed: 1 1/2
-      r'|\d+' + slashClass + r'\d+'         // Fractions: 2/3
-      r'|[½⅓⅔¼¾⅛⅜⅝⅞]'                       // Unicode
-      r'|\d+(?:\.\d+)?'                     // Int/Dec: 2 or 2.5
+      r'\d+\s+\d+' + slashClass + r'\d+' // Mixed: 1 1/2
+      r'|\d+' + slashClass + r'\d+' // Fractions: 2/3
+      r'|[½⅓⅔¼¾⅛⅜⅝⅞]' // Unicode
+      r'|\d+(?:\.\d+)?' // Int/Dec: 2 or 2.5
       r')\s*([a-zA-Z\-]+)?',
     ).firstMatch(t);
 
@@ -307,13 +412,13 @@ class ShoppingEngine {
     if (isInt) return v.round().toString();
 
     // Recover common cooking fractions
-    if ((v - 1/3).abs() < 0.02) return '1/3';
-    if ((v - 2/3).abs() < 0.02) return '2/3';
+    if ((v - 1 / 3).abs() < 0.02) return '1/3';
+    if ((v - 2 / 3).abs() < 0.02) return '2/3';
     if ((v - 0.25).abs() < 0.01) return '1/4';
     if ((v - 0.75).abs() < 0.01) return '3/4';
     if ((v - 0.5).abs() < 0.01) return '1/2';
     if ((v - 0.125).abs() < 0.01) return '1/8';
-    
+
     return v.toStringAsFixed(1).replaceAll(RegExp(r'\.0$'), '');
   }
 
@@ -369,14 +474,22 @@ class _Norm {
     s = s.replaceAll(r'\/', '/');
 
     const unicode = {
-      '½': 0.5, '⅓': 1 / 3, '⅔': 2 / 3, '¼': 0.25, '¾': 0.75,
-      '⅛': 0.125, '⅜': 0.375, '⅝': 0.625, '⅞': 0.875,
+      '½': 0.5,
+      '⅓': 1 / 3,
+      '⅔': 2 / 3,
+      '¼': 0.25,
+      '¾': 0.75,
+      '⅛': 0.125,
+      '⅜': 0.375,
+      '⅝': 0.625,
+      '⅞': 0.875,
     };
     if (unicode.containsKey(s)) return unicode[s];
 
     const slashClass = r'(?:/|⁄|∕)';
 
-    final mixed = RegExp(r'^(\d+)\s+(\d+)\s*' + slashClass + r'\s*(\d+)$').firstMatch(s);
+    final mixed =
+        RegExp(r'^(\d+)\s+(\d+)\s*' + slashClass + r'\s*(\d+)$').firstMatch(s);
     if (mixed != null) {
       final whole = double.parse(mixed.group(1)!);
       final a = double.parse(mixed.group(2)!);
@@ -385,7 +498,8 @@ class _Norm {
       return whole + (a / b);
     }
 
-    final frac = RegExp(r'^(\d+)\s*' + slashClass + r'\s*(\d+)$').firstMatch(s);
+    final frac =
+        RegExp(r'^(\d+)\s*' + slashClass + r'\s*(\d+)$').firstMatch(s);
     if (frac != null) {
       final a = double.parse(frac.group(1)!);
       final b = double.parse(frac.group(2)!);
@@ -401,21 +515,47 @@ class _Norm {
     if (u.isEmpty) return '';
 
     const map = {
-      'grams': 'g', 'gram': 'g', 'g': 'g',
-      'kilograms': 'kg', 'kilogram': 'kg', 'kg': 'kg',
-      'milliliters': 'ml', 'millilitre': 'ml', 'millilitres': 'ml',
-      'milliliter': 'ml', 'ml': 'ml',
-      'liter': 'l', 'litre': 'l', 'liters': 'l', 'litres': 'l', 'l': 'l',
-      'tsp': 'tsp', 'teaspoon': 'tsp', 'teaspoons': 'tsp',
-      'tbsp': 'tbsp', 'tablespoon': 'tbsp', 'tablespoons': 'tbsp',
-      'cup': 'cup', 'cups': 'cup',
-      'can': 'can', 'cans': 'can', 'tin': 'can', 'tins': 'can',
-      'jar': 'jar', 'jars': 'jar',
-      'pack': 'pack', 'packs': 'pack',
-      'clove': 'clove', 'cloves': 'clove',
-      'pinch': 'pinch', 'handful': 'handful', 'dash': 'dash',
-      'to taste': 'to-taste', 'to-taste': 'to-taste',
-      'bag': 'bag', 'bags': 'bag',
+      'grams': 'g',
+      'gram': 'g',
+      'g': 'g',
+      'kilograms': 'kg',
+      'kilogram': 'kg',
+      'kg': 'kg',
+      'milliliters': 'ml',
+      'millilitre': 'ml',
+      'millilitres': 'ml',
+      'milliliter': 'ml',
+      'ml': 'ml',
+      'liter': 'l',
+      'litre': 'l',
+      'liters': 'l',
+      'litres': 'l',
+      'l': 'l',
+      'tsp': 'tsp',
+      'teaspoon': 'tsp',
+      'teaspoons': 'tsp',
+      'tbsp': 'tbsp',
+      'tablespoon': 'tbsp',
+      'tablespoons': 'tbsp',
+      'cup': 'cup',
+      'cups': 'cup',
+      'can': 'can',
+      'cans': 'can',
+      'tin': 'can',
+      'tins': 'can',
+      'jar': 'jar',
+      'jars': 'jar',
+      'pack': 'pack',
+      'packs': 'pack',
+      'clove': 'clove',
+      'cloves': 'clove',
+      'pinch': 'pinch',
+      'handful': 'handful',
+      'dash': 'dash',
+      'to taste': 'to-taste',
+      'to-taste': 'to-taste',
+      'bag': 'bag',
+      'bags': 'bag',
     };
 
     return map[u] ?? u;
@@ -424,22 +564,35 @@ class _Norm {
   static bool isKnownUnit(String unit) {
     final u = normUnit(unit);
     return {
-      'g', 'kg', 'ml', 'l',
-      'tsp', 'tbsp', 'cup',
-      'can', 'jar', 'pack', 'clove',
-      'pinch', 'handful', 'dash', 'to-taste',
+      'g',
+      'kg',
+      'ml',
+      'l',
+      'tsp',
+      'tbsp',
+      'cup',
+      'can',
+      'jar',
+      'pack',
+      'clove',
+      'pinch',
+      'handful',
+      'dash',
+      'to-taste',
       'bag',
     }.contains(u);
   }
 
   static bool isSummableUnit(String unit) {
     final u = normUnit(unit);
-    return {'g', 'kg', 'ml', 'l', 'can', 'jar', 'pack', 'clove', 'bag'}.contains(u);
+    return {'g', 'kg', 'ml', 'l', 'can', 'jar', 'pack', 'clove', 'bag'}
+        .contains(u);
   }
 
   static bool isNonSummableCookingMeasure(String unit) {
     final u = normUnit(unit);
-    return {'tsp', 'tbsp', 'cup', 'pinch', 'handful', 'dash', 'to-taste'}.contains(u);
+    return {'tsp', 'tbsp', 'cup', 'pinch', 'handful', 'dash', 'to-taste'}
+        .contains(u);
   }
 
   static ({double qty, String unit}) toBase(double qty, String unit) {

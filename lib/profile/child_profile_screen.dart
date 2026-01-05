@@ -1,7 +1,11 @@
+import 'dart:ui' show FontVariation;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../app/sub_header_bar.dart';
+import '../theme/app_theme.dart';
 import '../recipes/allergy_keys.dart';
 import '../meal_plan/core/meal_plan_review_service.dart';
 import '../first_foods/first_foods_ui.dart';
@@ -15,18 +19,66 @@ class ChildProfileScreen extends StatefulWidget {
 }
 
 class _ChildProfileScreenState extends State<ChildProfileScreen> {
-  bool _saving = false;
+  // ============================================================
+  // ✅ STYLE KEYS (matches ProfileScreen language)
+  // ============================================================
+  static const Color _pageBg = Color(0xFFECF3F4);
+  static const Color _cardBg = Colors.white;
+  static const double _radius = 12;
 
-  final _nameCtrl = TextEditingController();
-  final _dobCtrl = TextEditingController();
+  static const EdgeInsets _pagePad = EdgeInsets.fromLTRB(16, 12, 16, 16);
 
-  bool _hasAllergies = false;
-  final List<String> _selectedAllergies = [];
+  static const TextStyle _hTitle = TextStyle(
+    fontFamily: 'Montserrat',
+    fontSize: 22,
+    fontWeight: FontWeight.w900,
+    fontVariations: [FontVariation('wght', 900)],
+    letterSpacing: 0.8,
+    height: 1.0,
+    color: AppColors.brandDark,
+  );
 
-  Map<String, dynamic>? _loadedSnapshot;
+  static TextStyle _labelStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    return (theme.textTheme.bodySmall ?? const TextStyle()).copyWith(
+      color: AppColors.brandDark.withOpacity(0.75),
+      fontWeight: FontWeight.w800,
+      fontVariations: const [FontVariation('wght', 800)],
+      letterSpacing: 0.8,
+      height: 1.0,
+    );
+  }
 
-  // ✅ prevents StreamBuilder → postFrame → setState loops
-  String? _lastHydratedFingerprint;
+  static const TextStyle _fieldText = TextStyle(
+    fontFamily: 'Montserrat',
+    fontSize: 16,
+    fontWeight: FontWeight.w800,
+    fontVariations: [FontVariation('wght', 800)],
+    letterSpacing: 0.2,
+    height: 1.2,
+    color: AppColors.brandDark,
+  );
+
+  static TextStyle _subText(BuildContext context) {
+    final theme = Theme.of(context);
+    return (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+      color: AppColors.brandDark.withOpacity(0.75),
+      fontWeight: FontWeight.w600,
+      height: 1.2,
+    );
+  }
+
+  static const TextStyle _btnText = TextStyle(
+    fontFamily: 'Montserrat',
+    fontSize: 14,
+    fontWeight: FontWeight.w800,
+    fontVariations: [FontVariation('wght', 800)],
+    letterSpacing: 0.9,
+    height: 1.0,
+  );
+
+  static const double _chipRadius = 10;
+  static const EdgeInsets _chipPad = EdgeInsets.symmetric(horizontal: 14, vertical: 10);
 
   static const List<String> _allergyOptions = [
     'soy',
@@ -38,12 +90,28 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     'seed',
   ];
 
+  // ============================================================
+  // STATE
+  // ============================================================
+  bool _saving = false;
+
+  final _nameCtrl = TextEditingController();
+
+  // ✅ month/year only
+  int? _dobMonth; // 1-12
+  int? _dobYear; // yyyy
+
+  bool _hasAllergies = false;
+  final List<String> _selectedAllergies = [];
+
+  Map<String, dynamic>? _loadedSnapshot;
+  String? _lastHydratedFingerprint;
+
   bool get _isCreate => widget.childIndex == null;
 
   @override
   void dispose() {
     _nameCtrl.dispose();
-    _dobCtrl.dispose();
     super.dispose();
   }
 
@@ -53,46 +121,135 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     return FirebaseFirestore.instance.collection('users').doc(user.uid);
   }
 
+  // ------------------------------------------------------------
+  // DOB helpers (new + legacy)
+  // ------------------------------------------------------------
+  String _dobFingerprint(Map<String, dynamic> child) {
+    final m = child['dobMonth'];
+    final y = child['dobYear'];
+    if (m is int && y is int) return '$y-${m.toString().padLeft(2, '0')}';
+    return (child['dob'] ?? '').toString().trim();
+  }
+
+  void _hydrateDobFields(Map<String, dynamic> child) {
+    final m = child['dobMonth'];
+    final y = child['dobYear'];
+
+    if (m is int && y is int && m >= 1 && m <= 12) {
+      _dobMonth = m;
+      _dobYear = y;
+      return;
+    }
+
+    final raw = child['dob'];
+    DateTime? dt;
+    if (raw is Timestamp) dt = raw.toDate();
+    if (raw is DateTime) dt = raw;
+
+    if (dt == null && raw is String && raw.trim().isNotEmpty) {
+      final s = raw.trim();
+
+      if (s.contains('-')) {
+        final parts = s.split('-');
+        final yy = parts.isNotEmpty ? int.tryParse(parts[0]) : null;
+        final mm = parts.length > 1 ? int.tryParse(parts[1]) : null;
+        if (yy != null && mm != null && mm >= 1 && mm <= 12) {
+          _dobYear = yy;
+          _dobMonth = mm;
+          return;
+        }
+      }
+
+      if (s.contains('/')) {
+        final parts = s.split('/');
+        if (parts.length == 2) {
+          final mm = int.tryParse(parts[0]);
+          final yy = int.tryParse(parts[1]);
+          if (yy != null && mm != null && mm >= 1 && mm <= 12) {
+            _dobYear = yy;
+            _dobMonth = mm;
+            return;
+          }
+        }
+        if (parts.length == 3) {
+          final mm = int.tryParse(parts[1]);
+          final yy = int.tryParse(parts[2]);
+          if (yy != null && mm != null && mm >= 1 && mm <= 12) {
+            _dobYear = yy;
+            _dobMonth = mm;
+            return;
+          }
+        }
+      }
+    }
+
+    if (dt != null) {
+      _dobYear = dt.year;
+      _dobMonth = dt.month;
+    }
+  }
+
+  String _dobLabel() {
+    if (_dobMonth == null || _dobYear == null) return 'Select month and year';
+    const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${names[_dobMonth! - 1]} $_dobYear';
+  }
+
+  List<DropdownMenuItem<int>> _monthItems() {
+    const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return List.generate(12, (i) {
+      final m = i + 1;
+      return DropdownMenuItem<int>(value: m, child: Text(names[i]));
+    });
+  }
+
+  List<DropdownMenuItem<int>> _yearItems() {
+    final now = DateTime.now();
+    final maxY = now.year;
+    final minY = now.year - 18;
+    return [
+      for (int y = maxY; y >= minY; y--) DropdownMenuItem<int>(value: y, child: Text('$y'))
+    ];
+  }
+
+  // ------------------------------------------------------------
+  // Fingerprint / hydration
+  // ------------------------------------------------------------
   String _fingerprintOf(Map<String, dynamic> child) {
     final name = (child['name'] ?? '').toString().trim();
-    final dob = (child['dob'] ?? '').toString().trim();
+    final dob = _dobFingerprint(child);
     final has = child['hasAllergies'] == true;
 
-    final raw = child['allergies'];
-    final allergies = <String>[];
+    final allergies = _readAllergyList(child['allergies']);
+    if (!has) allergies.clear();
+
+    final ck = (child['childKey'] ?? '').toString().trim();
+    return '$name|$dob|$has|${allergies.join(",")}|$ck';
+  }
+
+  List<String> _readAllergyList(dynamic raw) {
+    final out = <String>[];
     if (raw is List) {
       for (final a in raw) {
         final k = AllergyKeys.normalize(a.toString());
-        if (k != null) allergies.add(k);
+        if (k != null && AllergyKeys.supported.contains(k)) out.add(k);
       }
-      allergies.sort();
     }
-    if (!has) allergies.clear();
-
-    // ✅ include childKey so hydration is stable across migrations
-    final ck = (child['childKey'] ?? '').toString().trim();
-
-    return '$name|$dob|$has|${allergies.join(",")}|$ck';
+    out.sort();
+    return out;
   }
 
   void _applyToForm(Map<String, dynamic> child) {
     _loadedSnapshot = Map<String, dynamic>.from(child);
-
     _nameCtrl.text = (child['name'] ?? '').toString();
-    _dobCtrl.text = (child['dob'] ?? '').toString();
+
+    _hydrateDobFields(child);
 
     _hasAllergies = child['hasAllergies'] == true;
 
-    _selectedAllergies.clear();
-    final raw = child['allergies'];
-    if (raw is List) {
-      for (final a in raw) {
-        final k = AllergyKeys.normalize(a.toString());
-        if (k != null) _selectedAllergies.add(k);
-      }
-      _selectedAllergies.sort();
-    }
-
+    _selectedAllergies
+      ..clear()
+      ..addAll(_readAllergyList(child['allergies']));
     if (!_hasAllergies) _selectedAllergies.clear();
   }
 
@@ -108,21 +265,22 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       ..sort();
   }
 
-  /// ✅ Stable childKey for firstFoods + any per-child data
-  /// - If creating: generate now
-  /// - If editing and missing: generate and persist on save
   String _ensureChildKeyFromExisting(Map<String, dynamic> child) {
     final existing = (child['childKey'] ?? '').toString().trim();
     if (existing.isNotEmpty) return existing;
     return FirebaseFirestore.instance.collection('_').doc().id;
   }
 
+  // ------------------------------------------------------------
+  // Save / delete
+  // ------------------------------------------------------------
   Future<void> _save(List children, Map<String, dynamic> currentChild) async {
     final doc = _userDoc();
     if (doc == null) return;
 
     final name = _nameCtrl.text.trim();
-    final dob = _dobCtrl.text.trim();
+    final m = _dobMonth;
+    final y = _dobYear;
 
     if (name.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -130,37 +288,33 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       );
       return;
     }
-
-    // ---- allergy change detection (same as before) ----
-    final prevHas = _loadedSnapshot?['hasAllergies'] == true;
-    final prevRaw = _loadedSnapshot?['allergies'];
-    final prevAllergies = <String>[];
-
-    if (prevRaw is List) {
-      for (final a in prevRaw) {
-        final k = AllergyKeys.normalize(a.toString());
-        if (k != null) prevAllergies.add(k);
-      }
-      prevAllergies.sort();
+    if (m == null || y == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Birth month and year are required')),
+      );
+      return;
     }
+
+    // previous allergy state
+    final prevHas = _loadedSnapshot?['hasAllergies'] == true;
+    final prevAllergies = _readAllergyList(_loadedSnapshot?['allergies']);
     if (!prevHas) prevAllergies.clear();
 
+    // new allergy state
     final newAllergies = _canonicalizeAllergies();
-
     final didChangeAllergies =
-        prevHas != _hasAllergies ||
-            prevAllergies.join(',') != newAllergies.join(',');
+        prevHas != _hasAllergies || prevAllergies.join(',') != newAllergies.join(',');
 
-    // ✅ stable key (important)
     final childKey = _isCreate
         ? FirebaseFirestore.instance.collection('_').doc().id
         : _ensureChildKeyFromExisting(currentChild);
 
-    final updated = {
-      // ✅ persist childKey
+    final updated = <String, dynamic>{
       'childKey': childKey,
       'name': name,
-      'dob': dob,
+      'dobMonth': m,
+      'dobYear': y,
+      'dob': FieldValue.delete(), // remove legacy
       'hasAllergies': _hasAllergies,
       'allergies': newAllergies,
     };
@@ -193,7 +347,6 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       }
 
       if (!mounted) return;
-
       Navigator.of(context).pop({
         'didChangeAllergies': didChangeAllergies,
         'changedForLabel': name,
@@ -227,27 +380,21 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
         title: const Text('Delete child?'),
         content: const Text('This cannot be undone.'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
         ],
       ),
     );
 
     if (confirm != true) return;
 
-    // ✅ delete firstFoods doc for this child (by childKey)
+    // delete firstFoods doc by childKey
     final childKey = (currentChild['childKey'] ?? '').toString().trim();
     if (childKey.isNotEmpty) {
       try {
         await doc.collection('firstFoods').doc(childKey).delete();
       } catch (_) {
-        // ignore (doc might not exist)
+        // ignore
       }
     }
 
@@ -261,10 +408,7 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       }, SetOptions(merge: true));
 
       if (!mounted) return;
-
-      Navigator.of(context).pop({
-        'deleted': true,
-      });
+      Navigator.of(context).pop({'deleted': true});
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -275,25 +419,319 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     }
   }
 
+  // ------------------------------------------------------------
+  // UI bits
+  // ------------------------------------------------------------
+  Widget _card({required Widget child, EdgeInsets padding = const EdgeInsets.all(16)}) {
+    return Container(
+      width: double.infinity,
+      padding: padding,
+      decoration: BoxDecoration(
+        color: _cardBg,
+        borderRadius: BorderRadius.circular(_radius),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _fieldCard({
+    required BuildContext context,
+    required String label,
+    required Widget field,
+  }) {
+    return _card(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label.toUpperCase(), style: _labelStyle(context)),
+          const SizedBox(height: 10),
+          field,
+        ],
+      ),
+    );
+  }
+
+  Widget _nameField(BuildContext context) {
+    return Container(
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(_radius),
+        border: Border.all(color: AppColors.brandDark.withOpacity(0.12)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _nameCtrl,
+              enabled: !_saving,
+              textInputAction: TextInputAction.next,
+              style: _fieldText,
+              decoration: const InputDecoration(
+                border: InputBorder.none,
+                isCollapsed: true,
+                hintText: 'Enter name',
+              ),
+            ),
+          ),
+          Icon(Icons.edit, size: 18, color: AppColors.brandDark.withOpacity(0.75)),
+        ],
+      ),
+    );
+  }
+
+  Widget _dobField(BuildContext context) {
+    // “DD/MM/YYYY” look but actually month/year selectors.
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(_radius),
+        border: Border.all(color: AppColors.brandDark.withOpacity(0.12)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              _dobLabel(),
+              style: _fieldText.copyWith(
+                color: (_dobMonth == null || _dobYear == null)
+                    ? AppColors.brandDark.withOpacity(0.45)
+                    : AppColors.brandDark,
+              ),
+            ),
+          ),
+          Icon(Icons.edit, size: 18, color: AppColors.brandDark.withOpacity(0.75)),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openDobPicker(BuildContext context) async {
+    if (_saving) return;
+
+    int? tempMonth = _dobMonth;
+    int? tempYear = _dobYear;
+
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) {
+        return SafeArea(
+          top: false,
+          child: Container(
+            decoration: BoxDecoration(
+              color: _cardBg,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('BIRTH MONTH & YEAR', style: _hTitle.copyWith(fontSize: 18)),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: InputDecorator(
+                        decoration: const InputDecoration(labelText: 'Month'),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<int>(
+                            value: tempMonth,
+                            isExpanded: true,
+                            hint: const Text('Select month'),
+                            items: _monthItems(),
+                            onChanged: (v) => setState(() => tempMonth = v),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: InputDecorator(
+                        decoration: const InputDecoration(labelText: 'Year'),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<int>(
+                            value: tempYear,
+                            isExpanded: true,
+                            hint: const Text('Select year'),
+                            items: _yearItems(),
+                            onChanged: (v) => setState(() => tempYear = v),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  height: 52,
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      setState(() {
+                        _dobMonth = tempMonth;
+                        _dobYear = tempYear;
+                      });
+                      Navigator.of(context).pop();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.brandDark,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_radius)),
+                    ),
+                    child: Text('DONE', style: _btnText.copyWith(color: Colors.white)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _hasAllergiesRow(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(child: Text('HAS ALLERGIES', style: _labelStyle(context))),
+        Switch(
+          value: _hasAllergies,
+          onChanged: _saving
+              ? null
+              : (v) {
+                  setState(() {
+                    _hasAllergies = v;
+                    if (!v) _selectedAllergies.clear();
+                  });
+                },
+        ),
+      ],
+    );
+  }
+
+  Widget _chipSelected(String key) {
+    final label = AllergyKeys.label(key).toUpperCase();
+    return Material(
+      color: AppColors.brandDark,
+      borderRadius: BorderRadius.circular(_chipRadius),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(_chipRadius),
+        onTap: _saving ? null : () => setState(() => _selectedAllergies.remove(key)),
+        child: Padding(
+          padding: _chipPad,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: _btnText.copyWith(color: Colors.white, fontSize: 13, letterSpacing: 0.7),
+              ),
+              const SizedBox(width: 10),
+              const Icon(Icons.close, size: 16, color: Colors.white),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _chipOption(String key) {
+    final label = AllergyKeys.label(key).toUpperCase();
+    final selected = _selectedAllergies.contains(key);
+
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(_chipRadius),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(_chipRadius),
+        onTap: (_saving || selected)
+            ? null
+            : () => setState(() {
+                  _selectedAllergies.add(key);
+                  _selectedAllergies.sort();
+                }),
+        child: Container(
+          padding: _chipPad,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(_chipRadius),
+            border: Border.all(color: AppColors.brandDark.withOpacity(0.18)),
+          ),
+          child: Text(
+            label,
+            style: _btnText.copyWith(color: AppColors.brandDark, fontSize: 13, letterSpacing: 0.7),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _bigSaveButton({required VoidCallback onTap}) {
+    return SizedBox(
+      height: 56,
+      width: double.infinity,
+      child: ElevatedButton(
+        onPressed: _saving ? null : onTap,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: AppColors.brandDark,
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_radius)),
+        ),
+        child: Text(_saving ? 'SAVING…' : 'SAVE', style: _btnText.copyWith(color: Colors.white)),
+      ),
+    );
+  }
+
+  Widget _bigDeleteButton({required VoidCallback onTap}) {
+    return SizedBox(
+      height: 56,
+      width: double.infinity,
+      child: OutlinedButton(
+        onPressed: _saving ? null : onTap,
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppColors.brandDark,
+          side: BorderSide(color: AppColors.brandDark.withOpacity(0.25), width: 2),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_radius)),
+        ),
+        child: Text('DELETE CHILD', style: _btnText.copyWith(color: AppColors.brandDark)),
+      ),
+    );
+  }
+
+  // ============================================================
+  // BUILD
+  // ============================================================
   @override
   Widget build(BuildContext context) {
     final doc = _userDoc();
 
+    if (doc == null) {
+      return const Scaffold(
+        backgroundColor: _pageBg,
+        body: Center(child: Text('Not logged in')),
+      );
+    }
+
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_isCreate ? 'Add Child' : 'Child Profile'),
-      ),
-      body: doc == null
-          ? const Center(child: Text('Not logged in'))
-          : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      backgroundColor: _pageBg,
+      body: Column(
+        children: [
+          const SubHeaderBar(title: 'Child Profile'),
+          Expanded(
+            child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
               stream: doc.snapshots(),
               builder: (context, snap) {
-                if (snap.connectionState == ConnectionState.waiting) {
+                if (snap.connectionState == ConnectionState.waiting && !snap.hasData) {
                   return const Center(child: CircularProgressIndicator());
                 }
                 if (snap.hasError) {
                   return Padding(
-                    padding: const EdgeInsets.all(16),
+                    padding: _pagePad,
                     child: Text('Firestore error: ${snap.error}'),
                   );
                 }
@@ -304,9 +742,9 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                 Map<String, dynamic> child;
                 if (_isCreate) {
                   child = {
-                    // ⚠️ do NOT generate childKey here, only on Save
                     'name': '',
-                    'dob': '',
+                    'dobMonth': null,
+                    'dobYear': null,
                     'hasAllergies': false,
                     'allergies': <String>[],
                   };
@@ -316,9 +754,7 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                     return const Center(child: Text('Child not found'));
                   }
                   final raw = children[idx];
-                  if (raw is! Map) {
-                    return const Center(child: Text('Invalid record'));
-                  }
+                  if (raw is! Map) return const Center(child: Text('Invalid record'));
                   child = Map<String, dynamic>.from(raw);
                 }
 
@@ -331,85 +767,79 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                   });
                 }
 
-                // ✅ stable id for First Foods (only if exists)
                 final childKey = (child['childKey'] ?? '').toString().trim();
-
                 final childName = (_nameCtrl.text.trim().isEmpty)
                     ? (child['name'] ?? 'Child').toString()
                     : _nameCtrl.text.trim();
 
+                final canSave = !_saving &&
+                    _nameCtrl.text.trim().isNotEmpty &&
+                    _dobMonth != null &&
+                    _dobYear != null;
+
                 return ListView(
-                  padding: const EdgeInsets.all(16),
+                  padding: _pagePad,
                   children: [
-                    TextField(
-                      controller: _nameCtrl,
-                      decoration: const InputDecoration(labelText: 'Name'),
-                      textInputAction: TextInputAction.next,
+                    Text('CHILD PROFILE', style: _hTitle),
+                    const SizedBox(height: 12),
+
+                    _fieldCard(
+                      context: context,
+                      label: 'First name',
+                      field: _nameField(context),
                     ),
                     const SizedBox(height: 12),
-                    TextField(
-                      controller: _dobCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'DOB',
-                        hintText: 'e.g. 2021-06-14 or 14/06/2021',
-                      ),
-                      textInputAction: TextInputAction.done,
-                    ),
-                    const SizedBox(height: 18),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Has allergies'),
-                      value: _hasAllergies,
-                      onChanged: _saving
-                          ? null
-                          : (v) {
-                              setState(() {
-                                _hasAllergies = v;
-                                if (!v) _selectedAllergies.clear();
-                              });
-                            },
-                    ),
-                    if (_hasAllergies) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        'Allergies',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      ..._allergyOptions.map((a) {
-                        final selected = _selectedAllergies.contains(a);
-                        return CheckboxListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(AllergyKeys.label(a)),
-                          value: selected,
-                          onChanged: _saving
-                              ? null
-                              : (v) {
-                                  setState(() {
-                                    if (v == true) {
-                                      if (!selected) _selectedAllergies.add(a);
-                                    } else {
-                                      _selectedAllergies.remove(a);
-                                    }
-                                    _selectedAllergies.sort();
-                                  });
-                                },
-                        );
-                      }),
-                    ],
-                    const SizedBox(height: 24),
-                    SizedBox(
-                      height: 48,
-                      child: ElevatedButton(
-                        onPressed: _saving ? null : () => _save(children, child),
-                        child: Text(
-                          _saving ? 'SAVING…' : (_isCreate ? 'ADD' : 'SAVE'),
-                        ),
+
+                    GestureDetector(
+                      onTap: () => _openDobPicker(context),
+                      child: _fieldCard(
+                        context: context,
+                        label: 'Date of birth',
+                        field: _dobField(context),
                       ),
                     ),
 
-                    // ✅ moved under "Save"
-                    // ✅ use childKey (stable) instead of child_{index}
+                    const SizedBox(height: 16),
+
+                    _card(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _hasAllergiesRow(context),
+
+                          if (_hasAllergies) ...[
+                            const SizedBox(height: 10),
+
+                            if (_selectedAllergies.isNotEmpty) ...[
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 10,
+                                children: _selectedAllergies.map(_chipSelected).toList(),
+                              ),
+                              const SizedBox(height: 12),
+                            ],
+
+                            Wrap(
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: _allergyOptions.map(_chipOption).toList(),
+                            ),
+
+                            const SizedBox(height: 8),
+                            Text('Tap to add/remove allergies.', style: _subText(context)),
+                          ],
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 18),
+
+                    _bigSaveButton(
+                      onTap: canSave ? () => _save(children, child) : () {},
+                    ),
+
+                    // First Foods tile under Save (only when editing)
                     if (!_isCreate) ...[
                       const SizedBox(height: 12),
                       if (childKey.isNotEmpty)
@@ -418,26 +848,25 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                           childName: childName,
                         )
                       else
-                        const Text(
+                        Text(
                           'Save once to set up First Foods tracking.',
+                          style: _subText(context),
                         ),
                     ],
 
                     if (!_isCreate) ...[
                       const SizedBox(height: 12),
-                      SizedBox(
-                        height: 48,
-                        child: OutlinedButton(
-                          onPressed:
-                              _saving ? null : () => _delete(children, child),
-                          child: const Text('DELETE CHILD'),
-                        ),
-                      ),
+                      _bigDeleteButton(onTap: () => _delete(children, child)),
                     ],
+
+                    const SizedBox(height: 24),
                   ],
                 );
               },
             ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -121,7 +121,7 @@ ServingAdvice _sharedAdvice({
   final multiplier = adultEquivalentNeeded / base;
 
   // ✅ UI requested: ONLY the “Your family needs…” line (no family breakdown, no base recipe sentence)
-  final detailLine = 'Your family needs ~${_fmt1(adultEquivalentNeeded)}';
+  final detailLine = 'You need the equivalent of ~${_fmt1(adultEquivalentNeeded)} adult portions';
 
   // Half-batch rule (shared dishes only):
   // show if you need <= 65% of base (i.e. base is clearly too big)
@@ -178,7 +178,7 @@ ServingAdvice _countableAdvice({
   final multiplier = itemsNeeded / makes;
 
   // ✅ UI requested: ONLY the “Your family needs…” line
-  final detailLine = 'Your family needs the equivalent of ~${_fmt0(itemsNeeded.toDouble())} adult portions';
+  final detailLine = 'You need the equivalent of ~${_fmt0(itemsNeeded.toDouble())} adult portions';
 
   if (multiplier <= 1.0) {
     return ServingAdvice(

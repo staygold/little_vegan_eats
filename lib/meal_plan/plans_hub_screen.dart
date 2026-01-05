@@ -16,7 +16,7 @@ import 'core/meal_plan_keys.dart';
 import 'core/meal_plan_repository.dart';
 import 'core/meal_plan_controller.dart';
 
-// ✅ shared UI (you already updated this)
+// ✅ shared UI
 import 'widgets/today_meal_plan_section.dart';
 
 // ✅ screens
@@ -64,7 +64,7 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
     super.dispose();
   }
 
-  // ---------- DATE HELPERS (CLONE HOME) ----------
+  // ---------- DATE HELPERS ----------
 
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
@@ -78,7 +78,7 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
 
   String _weekId() => MealPlanKeys.currentWeekId();
 
-  // ---------- RECIPES + BOOTSTRAP (CLONE HOME) ----------
+  // ---------- RECIPES + BOOTSTRAP ----------
 
   Future<void> _loadRecipesAndBootstrap() async {
     try {
@@ -99,7 +99,6 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-
     if (_recipes.isEmpty) return;
 
     _mealCtrl ??= MealPlanController(
@@ -114,11 +113,11 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
     try {
       await _mealCtrl!.ensurePlanPopulated(recipes: _recipes);
     } catch (_) {
-      // silent fail
+      // silent
     }
   }
 
-  // ---------- ✅ FAVORITES (read-only) ----------
+  // ---------- FAVORITES ----------
 
   void _listenToFavorites() {
     _authFavSub?.cancel();
@@ -175,13 +174,12 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
     });
   }
 
-  // ---------- FIRESTORE STREAM (CLONE HOME PATH) ----------
+  // ---------- FIRESTORE STREAM ----------
 
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _weekStream() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return null;
 
-    // ✅ IMPORTANT: this matches Home exactly
     return FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -190,16 +188,16 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
         .snapshots();
   }
 
-  // ---------- SAVED PLANS QUERY (CLONE SavedMealPlansScreen) ----------
+  // ---------- FAVOURITE PLANS QUERY ----------
 
-  Query<Map<String, dynamic>>? _savedPlansQuery() {
+  Query<Map<String, dynamic>>? _favouritePlansQuery() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return null;
 
     return FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
-        .collection('savedMealPlans')
+        .collection('savedMealPlans') // backend unchanged
         .orderBy('savedAt', descending: true)
         .limit(3);
   }
@@ -220,23 +218,21 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
   void _openWeekPlan() {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => MealPlanScreen(
-          weekId: _weekId(),
-        ),
+        builder: (_) => MealPlanScreen(weekId: _weekId()),
       ),
     );
   }
 
-  void _openSavedPlans() {
+  void _openFavouritePlans() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const SavedMealPlansScreen()),
     );
   }
 
-  void _openSavedPlanDetail(String savedPlanId) {
+  void _openFavouritePlanDetail(String id) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => SavedMealPlanDetailScreen(savedPlanId: savedPlanId),
+        builder: (_) => SavedMealPlanDetailScreen(savedPlanId: id),
       ),
     );
   }
@@ -252,54 +248,91 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
     );
   }
 
-  Widget _savedPlansPreview(BuildContext context) {
-    final q = _savedPlansQuery();
+  // ---------- FAVOURITE PLANS SECTION ----------
+
+  Widget _favouritePlansSection(
+    BuildContext context,
+    TextStyle titleStyle,
+    ThemeData theme,
+  ) {
+    final q = _favouritePlansQuery();
     if (q == null) return const SizedBox.shrink();
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: q.snapshots(),
       builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: SizedBox(
-              height: 18,
-              width: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          );
-        }
+        final waiting = snap.connectionState == ConnectionState.waiting;
+        final hasError = snap.hasError;
+        final docs = snap.data?.docs ?? const [];
 
-        if (snap.hasError) {
-          return const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Text('Could not load saved meal plans'),
-          );
-        }
-
-        final docs = snap.data?.docs ?? [];
-
-        // ✅ Placeholder when none saved
-        if (docs.isEmpty) {
-          return Card(
-            margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: const ListTile(
-              leading: Icon(Icons.bookmark_outline),
-              title: Text(
-                'No saved meal plans yet',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text('Save a day or week plan to see it here.'),
-            ),
-          );
-        }
+        final hasAny = docs.isNotEmpty;
 
         return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            for (final doc in docs)
-              _SavedPlanCard(
-                doc: doc,
-                onTap: () => _openSavedPlanDetail(doc.id),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 18, 4, 20),
+              child: Row(
+                children: [
+                  Expanded(
+                    child:
+                        Text('FAVOURITE MEAL PLANS', style: titleStyle),
+                  ),
+                  if (hasAny)
+                    TextButton(
+                      onPressed: _openFavouritePlans,
+                      child: Text(
+                        'VIEW ALL',
+                        style:
+                            (theme.textTheme.titleMedium ?? const TextStyle())
+                                .copyWith(
+                          color: AppColors.brandDark,
+                          fontWeight: FontWeight.w700,
+                          fontVariations: const [FontVariation('wght', 700)],
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (waiting)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else if (hasError)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: Text('Could not load favourite meal plans'),
+              )
+            else if (!hasAny)
+              Card(
+                margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: const ListTile(
+                  leading: Icon(Icons.favorite_border),
+                  title: Text(
+                    'No favourite meal plans yet',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: Text(
+                    'Favourite a day or week plan to see it here.',
+                  ),
+                ),
+              )
+            else
+              Column(
+                children: [
+                  for (final doc in docs)
+                    _FavouritePlanCard(
+                      doc: doc,
+                      onTap: () => _openFavouritePlanDetail(doc.id),
+                    ),
+                ],
               ),
           ],
         );
@@ -326,13 +359,11 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
       );
     }
 
-    // ✅ Rounded top corners for the inner panel (same as Home)
     const topRadius = BorderRadius.only(
       topLeft: Radius.circular(20),
       topRight: Radius.circular(20),
     );
 
-    // ✅ Outer wrapper background (green band like Home)
     final mealPlanPanelBg = AppColors.brandDark;
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -349,7 +380,6 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
         final days = data['days'];
         final todayKey = _todayKey();
 
-        // ✅ EXACT same extraction as Home
         final Map<String, dynamic> todayRaw =
             (days is Map && days[todayKey] is Map)
                 ? Map<String, dynamic>.from(days[todayKey] as Map)
@@ -360,28 +390,23 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
           body: ListView(
             padding: EdgeInsets.zero,
             children: [
-              // ✅ 1) TODAY MEAL PLAN (same path + extraction as Home)
               Container(
                 color: mealPlanPanelBg,
                 padding: const EdgeInsets.only(top: 12),
                 child: Material(
                   color: _panelBg,
-                  shape: const RoundedRectangleBorder(borderRadius: topRadius),
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: topRadius,
+                  ),
                   clipBehavior: Clip.antiAlias,
                   child: TodayMealPlanSection(
                     todayRaw: todayRaw,
                     recipes: _recipes,
                     favoriteIds: _favoriteIds,
-
                     heroTopText: "TODAY'S",
                     heroBottomText: "MEAL PLAN",
-
-                    // ✅ same Home accordion styling
                     homeAccordion: true,
-
-                    // ✅ Plans hub: keep all sections expanded
                     homeAlwaysExpanded: true,
-
                     onOpenToday: _openTodayPlan,
                     onOpenWeek: _openWeekPlan,
                   ),
@@ -390,31 +415,7 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
 
               const SizedBox(height: 6),
 
-              // ✅ 2) SAVED MEAL PLANS (use same cards as SavedMealPlansScreen, show 3)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 18, 4, 10),
-                child: Row(
-                  children: [
-                    Expanded(child: Text('SAVED MEAL PLANS', style: titleStyle)),
-                    TextButton(
-                      onPressed: _openSavedPlans,
-                      child: Text(
-                        'VIEW ALL',
-                        style:
-                            (theme.textTheme.titleMedium ?? const TextStyle())
-                                .copyWith(
-                          color: AppColors.brandDark,
-                          fontWeight: FontWeight.w700,
-                          fontVariations: const [FontVariation('wght', 700)],
-                          letterSpacing: 0.2,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              _savedPlansPreview(context),
+              _favouritePlansSection(context, titleStyle, theme),
 
               const SizedBox(height: 24),
             ],
@@ -425,8 +426,8 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
   }
 }
 
-class _SavedPlanCard extends StatelessWidget {
-  const _SavedPlanCard({
+class _FavouritePlanCard extends StatelessWidget {
+  const _FavouritePlanCard({
     required this.doc,
     required this.onTap,
   });
@@ -439,9 +440,9 @@ class _SavedPlanCard extends StatelessWidget {
     final data = doc.data();
 
     final title = (data['title'] ?? '').toString().trim();
-    final type = (data['type'] ?? '').toString().trim(); // day|week
+    final type = (data['type'] ?? '').toString().trim();
 
-    final display = title.isNotEmpty ? title : 'Saved meal plan';
+    final display = title.isNotEmpty ? title : 'Favourite meal plan';
 
     return Card(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),

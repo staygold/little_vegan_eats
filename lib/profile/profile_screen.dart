@@ -182,10 +182,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final updated = [...children];
     final childKey = FirebaseFirestore.instance.collection('_').doc().id;
 
+    // ✅ NEW: store month/year (null initially), not full DOB
     updated.add({
       'childKey': childKey,
       'name': '',
-      'dob': '',
+      'dobMonth': null, // int? 1-12
+      'dobYear': null, // int? yyyy
+      // legacy field intentionally NOT written
       'hasAllergies': false,
       'allergies': <String>[],
     });
@@ -576,7 +579,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     ),
                   ),
-
                   Container(
                     color: AppColors.brandDark,
                     child: Container(
@@ -593,7 +595,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         children: [
                           Text('ADULTS', style: _sectionHeading(context)),
                           const SizedBox(height: headingToCardsGap),
-
                           if (visibleAdults.isNotEmpty)
                             ...List.generate(visibleAdults.length, (idx) {
                               final raw = visibleAdults[idx] as Map;
@@ -631,18 +632,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 ),
                               ),
                             ),
-
                           const SizedBox(height: cardsToButtonGap),
                           _bigFilledButton(
                             label: 'ADD AN ADULT',
                             onTap: () => _addAdult(docRef, adults),
                           ),
-
                           const SizedBox(height: sectionGap),
-
                           Text('CHILDREN', style: _sectionHeading(context)),
                           const SizedBox(height: headingToCardsGap),
-
                           if (visibleChildren.isNotEmpty)
                             ...List.generate(visibleChildren.length, (idx) {
                               final raw = visibleChildren[idx] as Map;
@@ -689,15 +686,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 ),
                               ),
                             ),
-
                           const SizedBox(height: cardsToButtonGap),
                           _bigFilledButton(
                             label: 'ADD A CHILD',
                             onTap: () => _addChild(docRef, children),
                           ),
-
                           const SizedBox(height: 18),
-
                           _bigOutlineButton(
                             label: 'RESOURCES',
                             onTap: () {
@@ -708,9 +702,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               );
                             },
                           ),
-
                           const SizedBox(height: 12),
-
                           _bigOutlineButton(
                             label: 'SETTINGS',
                             onTap: () {

@@ -4,7 +4,6 @@ import 'dart:math';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
-import 'allergy_keys.dart';
 import 'meal_plan_keys.dart';
 import 'meal_plan_repository.dart';
 import 'meal_plan_slots.dart';
@@ -27,6 +26,7 @@ class MealPlanController extends ChangeNotifier {
   String weekId;
   Map<String, dynamic>? weekData;
 
+  /// dayKey -> slot -> entryMap
   final Map<String, Map<String, Map<String, dynamic>>> _draft = {};
 
   StreamSubscription<Map<String, dynamic>?>? _sub;
@@ -170,6 +170,29 @@ class MealPlanController extends ChangeNotifier {
     return null;
   }
 
+  // ✅ ROBUST SLOT LOOKUP
+  dynamic _lookupSlot(Map<String, dynamic>? container, String slot) {
+    if (container == null) return null;
+    if (container.containsKey(slot)) return container[slot];
+
+    // Try underscore version
+    if (slot == 'snack1' && container.containsKey('snack_1')) return container['snack_1'];
+    if (slot == 'snack2' && container.containsKey('snack_2')) return container['snack_2'];
+
+    // Try clean version
+    if (slot == 'snack_1' && container.containsKey('snack1')) return container['snack1'];
+    if (slot == 'snack_2' && container.containsKey('snack2')) return container['snack2'];
+
+    return null;
+  }
+
+  String _normSlot(String slot) {
+    final s = slot.trim().toLowerCase();
+    if (s == 'snack1' || s == 'snacks1' || s == 'snack 1') return 'snack_1';
+    if (s == 'snack2' || s == 'snacks2' || s == 'snack 2') return 'snack_2';
+    return s;
+  }
+
   static Map<String, dynamic>? _parseEntry(dynamic raw) {
     if (raw is int) {
       return {'type': 'recipe', 'recipeId': raw, 'source': 'auto'};
@@ -186,16 +209,36 @@ class MealPlanController extends ChangeNotifier {
         if (text.isEmpty) return null;
         return {'type': 'note', 'text': text};
       }
+
       if (type == 'recipe') {
         final rid = m['recipeId'];
-        final recipeId =
-            (rid is int) ? rid : (rid is num ? rid.toInt() : null);
+        final recipeId = (rid is int) ? rid : (rid is num ? rid.toInt() : null);
         if (recipeId == null) return null;
         return {
           'type': 'recipe',
           'recipeId': recipeId,
           'source': (m['source'] ?? 'auto').toString(),
         };
+      }
+
+      if (type == 'reuse') {
+        final fromDayKey = (m['fromDayKey'] ?? '').toString().trim();
+        final fromSlot = (m['fromSlot'] ?? '').toString().trim();
+        if (fromDayKey.isEmpty || fromSlot.isEmpty) return null;
+        return {
+          'type': 'reuse',
+          'fromDayKey': fromDayKey,
+          'fromSlot': fromSlot,
+        };
+      }
+
+      // ✅ FIX: Handle persistent 'cleared' state
+      if (type == 'cleared') {
+        return {'type': 'clear'};
+      }
+
+      if (type == 'clear') {
+        return {'type': 'clear'};
       }
     }
     return null;
@@ -205,8 +248,7 @@ class MealPlanController extends ChangeNotifier {
     final data = weekData;
     if (data == null) return null;
     final day = MealPlanRepository.dayMapFromWeek(data, dayKey);
-    if (day == null) return null;
-    return _parseEntry(day[slot]);
+    return _parseEntry(_lookupSlot(day, slot));
   }
 
   Map<String, dynamic>? draftEntry(String dayKey, String slot) {
@@ -214,7 +256,10 @@ class MealPlanController extends ChangeNotifier {
   }
 
   Map<String, dynamic>? effectiveEntry(String dayKey, String slot) {
-    return draftEntry(dayKey, slot) ?? firestoreEntry(dayKey, slot);
+    final d = _draft[dayKey];
+    final draftItem = _lookupSlot(d, slot);
+    if (draftItem != null) return draftItem;
+    return firestoreEntry(dayKey, slot);
   }
 
   int? entryRecipeId(Map<String, dynamic>? e) {
@@ -224,7 +269,67 @@ class MealPlanController extends ChangeNotifier {
 
   String? entryNoteText(Map<String, dynamic>? e) {
     if (e == null || e['type'] != 'note') return null;
-    return (e['text'] ?? '').toString().trim();
+    final t = (e['text'] ?? '').toString().trim();
+    return t.isEmpty ? null : t;
+  }
+
+  Map<String, String>? entryReuseFrom(Map<String, dynamic>? e) {
+    if (e == null || e['type'] != 'reuse') return null;
+    final d = (e['fromDayKey'] ?? '').toString().trim();
+    final s = (e['fromSlot'] ?? '').toString().trim();
+    if (d.isEmpty || s.isEmpty) return null;
+    return {'dayKey': d, 'slot': s};
+  }
+
+  // -------------------------------------------------------
+  // Reuse resolution
+  // -------------------------------------------------------
+
+  Map<String, dynamic>? effectiveResolvedEntry(
+    String dayKey,
+    String slot, {
+    Set<String>? visiting,
+  }) {
+    visiting ??= <String>{};
+    final key = '$dayKey|$slot';
+    if (visiting.contains(key)) return null;
+    visiting.add(key);
+
+    final e = effectiveEntry(dayKey, slot);
+    if (e == null) return null;
+
+    final type = (e['type'] ?? '').toString();
+    if (type == 'recipe' || type == 'note') return e;
+    
+    // ✅ Handle clear/cleared as "return entry" so UI sees it's explicitly cleared
+    if (type == 'clear' || type == 'cleared') return {'type': 'clear'};
+
+    if (type == 'reuse') {
+      final from = entryReuseFrom(e);
+      if (from == null) return null;
+
+      final fromDay = from['dayKey']!;
+      final fromSlot = from['slot']!;
+
+      final resolved = effectiveResolvedEntry(
+        fromDay,
+        fromSlot,
+        visiting: visiting,
+      );
+
+      if (resolved == null) return null;
+
+      return {
+        ...resolved,
+        '_reuseFrom': {'dayKey': fromDay, 'slot': fromSlot},
+      };
+    }
+
+    return null;
+  }
+
+  Map<String, dynamic>? effectiveEntryForUI(String dayKey, String slot) {
+    return effectiveResolvedEntry(dayKey, slot);
   }
 
   // -------------------------------------------------------
@@ -243,8 +348,34 @@ class MealPlanController extends ChangeNotifier {
   }
 
   void setDraftNote(String dayKey, String slot, String text) {
+    final trimmed = text.trim();
     final dayDraft = _draft.putIfAbsent(dayKey, () => {});
-    dayDraft[slot] = {'type': 'note', 'text': text.trim()};
+    if (trimmed.isEmpty) {
+      dayDraft[slot] = {'type': 'clear'};
+    } else {
+      dayDraft[slot] = {'type': 'note', 'text': trimmed};
+    }
+    notifyListeners();
+  }
+
+  void setDraftClear(String dayKey, String slot) {
+    final dayDraft = _draft.putIfAbsent(dayKey, () => {});
+    dayDraft[slot] = {'type': 'clear'};
+    notifyListeners();
+  }
+
+  void setDraftReuseFrom({
+    required String targetDayKey,
+    required String targetSlot,
+    required String fromDayKey,
+    required String fromSlot,
+  }) {
+    final dayDraft = _draft.putIfAbsent(targetDayKey, () => {});
+    dayDraft[targetSlot] = {
+      'type': 'reuse',
+      'fromDayKey': fromDayKey.trim(),
+      'fromSlot': fromSlot.trim(),
+    };
     notifyListeners();
   }
 
@@ -263,14 +394,35 @@ class MealPlanController extends ChangeNotifier {
 
   bool _entryEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
     if (a == null && b == null) return true;
-    if (a == null || b == null) return false;
-    if (a['type'] != b['type']) return false;
-    if (a['type'] == 'recipe') {
-      return entryRecipeId(a) == entryRecipeId(b);
+    if (a == null || b == null) {
+      final bt = b?['type'];
+      final at = a?['type'];
+      // Treat clear, cleared, and null as equivalent for equality checks
+      final aEmpty = (a == null || at == 'clear' || at == 'cleared');
+      final bEmpty = (b == null || bt == 'clear' || bt == 'cleared');
+      return aEmpty == bEmpty;
     }
-    if (a['type'] == 'note') {
-      return entryNoteText(a) == entryNoteText(b);
+
+    final ta = (a['type'] ?? '').toString();
+    final tb = (b['type'] ?? '').toString();
+    
+    // Normalize 'cleared' -> 'clear'
+    final taNorm = (ta == 'cleared') ? 'clear' : ta;
+    final tbNorm = (tb == 'cleared') ? 'clear' : tb;
+    
+    if (taNorm != tbNorm) return false;
+
+    if (taNorm == 'recipe') return entryRecipeId(a) == entryRecipeId(b);
+    if (taNorm == 'note') return entryNoteText(a) == entryNoteText(b);
+    if (taNorm == 'reuse') {
+      final ra = entryReuseFrom(a);
+      final rb = entryReuseFrom(b);
+      if (ra == null && rb == null) return true;
+      if (ra == null || rb == null) return false;
+      return ra['dayKey'] == rb['dayKey'] && _normSlot(ra['slot']!) == _normSlot(rb['slot']!);
     }
+    if (taNorm == 'clear') return true;
+
     return false;
   }
 
@@ -281,18 +433,74 @@ class MealPlanController extends ChangeNotifier {
     final existing =
         MealPlanRepository.dayMapFromWeek(weekData ?? {}, dayKey) ?? {};
 
+    final merged = <String, dynamic>{...existing};
+    for (final e in dayDraft.entries) {
+      final type = (e.value['type'] ?? '').toString();
+      if (type == 'clear') {
+        // ✅ FIX: Save explicit 'cleared' object to overwrite existing data in Firestore
+        // This prevents the old recipe from reappearing after a merge.
+        merged[e.key] = {'type': 'cleared'};
+      } else {
+        merged[e.key] = e.value;
+      }
+    }
+
     await _repo.saveDay(
       uid: uid,
       weekId: weekId,
       dayKey: dayKey,
-      daySlots: {...existing, ...dayDraft},
+      daySlots: merged,
     );
+
     _draft.remove(dayKey);
     notifyListeners();
   }
 
   // -------------------------------------------------------
-  // COURSE EXTRACTION
+  // Reuse dependents
+  // -------------------------------------------------------
+
+  List<Map<String, String>> reuseDependents({
+    required String fromDayKey,
+    required String fromSlot,
+  }) {
+    final fromSlotNorm = _normSlot(fromSlot);
+    final out = <Map<String, String>>[];
+
+    final dayKeys = MealPlanKeys.weekDayKeys(weekId);
+
+    for (final dk in dayKeys) {
+      for (final slot in MealPlanSlots.order) {
+        final e = effectiveEntry(dk, slot);
+        final from = entryReuseFrom(e);
+        if (from == null) continue;
+
+        if (from['dayKey'] == fromDayKey &&
+            _normSlot(from['slot']!) == fromSlotNorm) {
+          out.add({'dayKey': dk, 'slot': slot});
+        }
+      }
+    }
+
+    return out;
+  }
+
+  void clearSlotCascade({
+    required String fromDayKey,
+    required String fromSlot,
+  }) {
+    setDraftClear(fromDayKey, fromSlot);
+    final deps = reuseDependents(fromDayKey: fromDayKey, fromSlot: fromSlot);
+    for (final d in deps) {
+      final dk = d['dayKey']!;
+      final sl = d['slot']!;
+      setDraftClear(dk, sl);
+    }
+    notifyListeners();
+  }
+
+  // -------------------------------------------------------
+  // Generator Logic
   // -------------------------------------------------------
 
   String? _extractCourse(Map<String, dynamic> recipe) {
@@ -356,7 +564,6 @@ class MealPlanController extends ChangeNotifier {
     return false;
   }
 
-  // Only these 4 exist in your dataset
   bool _isBreakfastCourseTokens(List<String> tokens) {
     return _anyTokenContains(tokens, const ['breakfast']);
   }
@@ -369,14 +576,6 @@ class MealPlanController extends ChangeNotifier {
     return _anyTokenContains(tokens, const ['snacks']);
   }
 
-  bool _isSweetsCourseTokens(List<String> tokens) {
-    return _anyTokenContains(tokens, const ['sweets']);
-  }
-
-  // -------------------------------------------------------
-  // CANDIDATE FILTERING
-  // -------------------------------------------------------
-
   List<int> getCandidatesForSlot(
     String slot,
     List<Map<String, dynamic>> recipes,
@@ -388,29 +587,19 @@ class MealPlanController extends ChangeNotifier {
       final tokens = _courseTokens(courseRaw);
       if (tokens.isEmpty) return false;
 
-      if (slot == 'breakfast') {
-        // breakfast if breakfast appears anywhere in the course list
-        return _isBreakfastCourseTokens(tokens);
-      }
+      final norm = _normSlot(slot);
 
-      if (slot == 'lunch' || slot == 'dinner') {
-        // mains only
-        return _isMainsCourseTokens(tokens);
-      }
+      if (norm.contains('breakfast')) return _isBreakfastCourseTokens(tokens);
 
-      if (slot == 'snack1' || slot == 'snack2') {
-        // ✅ STRICT: snacks only if "snacks" appears anywhere
-        // (Breakfast can be a snack ONLY if it ALSO has snacks)
+      if (norm.contains('lunch') || norm.contains('dinner')) return _isMainsCourseTokens(tokens);
+
+      if (norm.contains('snack')) {
         return _isSnacksCourseTokens(tokens);
       }
 
       return false;
     }).map((r) => recipeIdFromAny(r['id'])).whereType<int>().toList();
   }
-
-  // -------------------------------------------------------
-  // GENERATOR
-  // -------------------------------------------------------
 
   Future<void> ensurePlanPopulated({
     required List<Map<String, dynamic>> recipes,
@@ -436,8 +625,8 @@ class MealPlanController extends ChangeNotifier {
       'breakfast': getCandidatesForSlot('breakfast', recipes),
       'lunch': getCandidatesForSlot('lunch', recipes),
       'dinner': getCandidatesForSlot('dinner', recipes),
-      'snack1': getCandidatesForSlot('snack1', recipes),
-      'snack2': getCandidatesForSlot('snack2', recipes),
+      'snack_1': getCandidatesForSlot('snack_1', recipes),
+      'snack_2': getCandidatesForSlot('snack_2', recipes),
     };
 
     final usedInWeek = <int>{};
@@ -445,9 +634,12 @@ class MealPlanController extends ChangeNotifier {
 
     for (final dayKey in dayKeys) {
       final rawExisting = existingDays[dayKey];
-      final dayMap = (rawExisting is Map) ? rawExisting : {};
+      final dayMap = (rawExisting is Map) 
+          ? Map<String, dynamic>.from(rawExisting) 
+          : <String, dynamic>{};
+
       for (final slot in MealPlanSlots.order) {
-        final rid1 = entryRecipeId(_parseEntry(dayMap[slot]));
+        final rid1 = entryRecipeId(_parseEntry(_lookupSlot(dayMap, slot)));
         if (rid1 != null) usedInWeek.add(rid1);
         final rid2 = entryRecipeId(_draft[dayKey]?[slot]);
         if (rid2 != null) usedInWeek.add(rid2);
@@ -469,30 +661,25 @@ class MealPlanController extends ChangeNotifier {
         bool changed = false;
 
         for (final slot in MealPlanSlots.order) {
-          if (_parseEntry(existingDay[slot]) != null) continue;
-          if (_draft[dayKey]?[slot] != null) continue;
+          // ✅ FIX: _parseEntry returns {'type':'clear'} for cleared slots.
+          // Since it is NOT null, the generator sees it as "occupied" and skips it.
+          if (_parseEntry(_lookupSlot(existingDay, slot)) != null) continue;
+          if (_lookupSlot(_draft[dayKey], slot) != null) continue;
 
           var candidates = buckets[slot] ?? [];
 
           if (candidates.isEmpty && (slot == 'lunch' || slot == 'dinner')) {
-            candidates = (slot == 'lunch')
-                ? (buckets['dinner'] ?? [])
-                : (buckets['lunch'] ?? []);
+            candidates = (slot == 'lunch') ? (buckets['dinner'] ?? []) : (buckets['lunch'] ?? []);
           }
-          if (candidates.isEmpty && (slot == 'snack1' || slot == 'snack2')) {
-            candidates = (slot == 'snack1')
-                ? (buckets['snack2'] ?? [])
-                : (buckets['snack1'] ?? []);
+
+          if (candidates.isEmpty && (slot == 'snack_1' || slot == 'snack_2')) {
+            candidates = (slot == 'snack_1') ? (buckets['snack_2'] ?? []) : (buckets['snack_1'] ?? []);
           }
 
           final picked = _pickId(rng, candidates, usedInWeek);
 
           if (picked != null) {
-            updatedDay[slot] = {
-              'type': 'recipe',
-              'recipeId': picked,
-              'source': 'auto',
-            };
+            updatedDay[slot] = {'type': 'recipe', 'recipeId': picked, 'source': 'auto'};
             usedInWeek.add(picked);
             changed = true;
           }

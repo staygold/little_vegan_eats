@@ -1257,46 +1257,85 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         : 'Child values are estimated at 0.5 adult serving';
 
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('ESTIMATED NUTRITION', style: _RText.section),
-        const SizedBox(height: 12),
-        _card(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                Expanded(child: Text('Per serving', style: _RText.chip)),
-                SizedBox(width: 86, child: Text('Adult', textAlign: TextAlign.right, style: _RText.chip)),
-                const SizedBox(width: 12),
-                SizedBox(width: 86, child: Text('Child', textAlign: TextAlign.right, style: _RText.chip)),
-              ]),
-              const SizedBox(height: 12),
-              Divider(height: 1, thickness: 1, color: Colors.black.withOpacity(0.06)),
-              const SizedBox(height: 8),
-              for (int i = 0; i < rows.length; i++)
-                if (rows[i]['v'] != null)
-                  Builder(builder: (context) {
-                    final r = rows[i];
-                    final isSub = r['sub'] == true;
-                    bool nextIsSub = false;
-                    for (int j = i + 1; j < rows.length; j++) {
-                      if (rows[j]['v'] == null) continue;
-                      nextIsSub = rows[j]['sub'] == true;
-                      break;
-                    }
-                    final showDivider = isSub || !nextIsSub;
-                    return Column(children: [
-                      Padding(
-                        padding: EdgeInsets.only(top: 4, bottom: 4, left: isSub ? 16 : 0),
+  crossAxisAlignment: CrossAxisAlignment.start,
+  children: [
+    Text('ESTIMATED NUTRITION', style: _RText.section),
+    const SizedBox(height: 12),
+    _card(
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Expanded(child: Text('Per serving', style: _RText.chip)),
+            SizedBox(
+              width: 86,
+              child: Text('Adult',
+                  textAlign: TextAlign.right, style: _RText.chip),
+            ),
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 86,
+              child: Text('Child',
+                  textAlign: TextAlign.right, style: _RText.chip),
+            ),
+          ]),
+          const SizedBox(height: 12),
+          Divider(height: 1, thickness: 1, color: Colors.black.withOpacity(0.06)),
+          const SizedBox(height: 8),
+
+          // --------------------------------------------------
+          // Rows
+          // --------------------------------------------------
+          for (int i = 0, visualIndex = 0; i < rows.length; i++)
+            if (rows[i]['v'] != null)
+              Builder(builder: (context) {
+                final r = rows[i];
+                final isSub = r['sub'] == true;
+
+                bool nextIsSub = false;
+                for (int j = i + 1; j < rows.length; j++) {
+                  if (rows[j]['v'] == null) continue;
+                  nextIsSub = rows[j]['sub'] == true;
+                  break;
+                }
+
+                final showDivider = isSub || !nextIsSub;
+
+                // Candy stripe: alternate by *visual* row index
+                final isStriped = visualIndex.isOdd;
+                visualIndex++;
+
+                final bgColor = isStriped
+                    ? Colors.black.withOpacity(0.035)
+                    : Colors.transparent;
+
+                final topPadding = isSub ? 4.0 : 12.0;
+                final bottomPadding = isSub ? 8.0 : 12.0;
+
+                return Column(
+                  children: [
+                    Container(
+                      color: bgColor,
+                      child: Padding(
+                        padding: EdgeInsets.only(
+                          top: topPadding,
+                          bottom: bottomPadding,
+                          left: isSub ? 16 : 0,
+                          right: 0,
+                        ),
                         child: Row(children: [
                           Expanded(
                             child: Text(
                               isSub ? ' - ${r['l']}' : r['l'] as String,
                               style: isSub
-                                  ? _RText.bodySoft.copyWith(fontWeight: FontWeight.w500, fontSize: 14)
-                                  : _RText.bodySoft.copyWith(fontWeight: FontWeight.w700),
+                                  ? _RText.bodySoft.copyWith(
+                                      fontWeight: FontWeight.w500,
+                                      fontSize: 14,
+                                    )
+                                  : _RText.bodySoft.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -1306,8 +1345,13 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                               _scaleNutritionString(r['v'], 1.0),
                               textAlign: TextAlign.right,
                               style: isSub
-                                  ? _RText.body.copyWith(fontWeight: FontWeight.w500, fontSize: 14)
-                                  : _RText.body.copyWith(fontWeight: FontWeight.w700),
+                                  ? _RText.body.copyWith(
+                                      fontWeight: FontWeight.w500,
+                                      fontSize: 14,
+                                    )
+                                  : _RText.body.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
                             ),
                           ),
                           const SizedBox(width: 12),
@@ -1317,22 +1361,36 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                               _scaleNutritionString(r['v'], kidMult),
                               textAlign: TextAlign.right,
                               style: isSub
-                                  ? _RText.body.copyWith(fontWeight: FontWeight.w500, fontSize: 14)
-                                  : _RText.body.copyWith(fontWeight: FontWeight.w700),
+                                  ? _RText.body.copyWith(
+                                      fontWeight: FontWeight.w500,
+                                      fontSize: 14,
+                                    )
+                                  : _RText.body.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
                             ),
                           ),
                         ]),
                       ),
-                      if (showDivider) Divider(height: 1, thickness: 1, color: Colors.black.withOpacity(0.06)),
-                    ]);
-                  }),
-              const SizedBox(height: 20),
-              Text(footer, style: _RText.chip),
-            ],
-          ),
-        ),
-      ],
-    );
+                    ),
+                    if (showDivider)
+                      Divider(
+                        height: 1,
+                        thickness: 1,
+                        color: Colors.black.withOpacity(0.06),
+                      ),
+                  ],
+                );
+              }),
+
+          const SizedBox(height: 20),
+          Text(footer, style: _RText.chip),
+        ],
+      ),
+    ),
+  ],
+);
+
   }
 
   String _scaledAmount(String rawAmount, double mult) {

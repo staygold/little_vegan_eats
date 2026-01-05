@@ -90,13 +90,35 @@ class ShoppingRepo {
     return _listsCol().doc(listId).snapshots(includeMetadataChanges: true);
   }
 
-  Future<DocumentReference<Map<String, dynamic>>> createList(String name) {
+  // ---------------------------------------------------------------------------
+  // LIST CREATION (CAPPED: L01..L20)
+  // ---------------------------------------------------------------------------
+
+  static const List<String> _listSlots = [
+    'L01', 'L02', 'L03', 'L04', 'L05',
+    'L06', 'L07', 'L08', 'L09', 'L10',
+    'L11', 'L12', 'L13', 'L14', 'L15',
+    'L16', 'L17', 'L18', 'L19', 'L20',
+  ];
+
+  /// Create a new list using the first free slot docId (L01..L20).
+  /// Rules must allow only these IDs (enforced cap).
+  Future<DocumentReference<Map<String, dynamic>>> createList(String name) async {
     final trimmed = name.trim();
     if (trimmed.isEmpty) throw Exception('List name required');
 
     final now = Timestamp.now();
 
-    return _listsCol().add({
+    final slotId = await _findFreeListSlotId();
+    if (slotId == null) {
+      throw Exception(
+        'You already have 20 shopping lists. Delete one to create another.',
+      );
+    }
+
+    final ref = _listsCol().doc(slotId);
+
+    await ref.set({
       'name': trimmed,
       'unitSystem': 'metric', // metric|us
       'grouping': 'section',
@@ -104,7 +126,21 @@ class ShoppingRepo {
       'updatedAtLocal': now,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true));
+
+    return ref;
+  }
+
+  /// Returns the first available slot id (L01..L20), or null if full.
+  /// Uses server to avoid offline "looks empty" creation.
+  Future<String?> _findFreeListSlotId() async {
+    final snap = await _listsCol().get(const GetOptions(source: Source.server));
+    final used = snap.docs.map((d) => d.id).toSet();
+
+    for (final slot in _listSlots) {
+      if (!used.contains(slot)) return slot;
+    }
+    return null;
   }
 
   Future<void> setListPrefs({
@@ -150,12 +186,13 @@ class ShoppingRepo {
     batch.set(itemRef, {'checked': checked}, SetOptions(merge: true));
 
     batch.set(
-        listRef,
-        {
-          'updatedAtLocal': now,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true));
+      listRef,
+      {
+        'updatedAtLocal': now,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
 
     await batch.commit();
   }
@@ -170,12 +207,13 @@ class ShoppingRepo {
     final batch = _db.batch();
     batch.delete(_itemsCol(listId).doc(itemId));
     batch.set(
-        listRef,
-        {
-          'updatedAtLocal': now,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true));
+      listRef,
+      {
+        'updatedAtLocal': now,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
     await batch.commit();
   }
 
@@ -231,13 +269,16 @@ class ShoppingRepo {
     final key = ShoppingEngine.normalizeKey(name);
     final itemRef = _itemsCol(listId).doc(key);
 
-    await itemRef.set({
-      'section': section,
-      // Tag it as manual in sources if not already there
-      'sources': FieldValue.arrayUnion([
-        {'recipeTitle': 'Manual'}
-      ]),
-    }, SetOptions(merge: true));
+    await itemRef.set(
+      {
+        'section': section,
+        // Tag it as manual in sources if not already there
+        'sources': FieldValue.arrayUnion([
+          {'recipeTitle': 'Manual'}
+        ]),
+      },
+      SetOptions(merge: true),
+    );
   }
 
   // ===========================================================================
@@ -273,6 +314,12 @@ class ShoppingRepo {
     final Map<String, _Agg> agg = {};
 
     for (final ing in cleaned) {
+      // ✅ EXCLUDE plain water from shopping lists (tap/filtered/boiling/etc.)
+      // Keeps "coconut water", "sparkling water", etc. (engine handles that)
+      if (ShoppingEngine.shouldExcludeFromShoppingName(ing.name)) {
+        continue;
+      }
+
       final key = ShoppingEngine.normalizeKey(ing.name);
       final canonical = ShoppingEngine.canonicalDisplayName(ing.name);
       final nameForDisplay =
@@ -341,12 +388,13 @@ class ShoppingRepo {
       }
 
       tx.set(
-          listRef,
-          {
-            'updatedAtLocal': now,
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true));
+        listRef,
+        {
+          'updatedAtLocal': now,
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
 
       for (final entry in agg.values) {
         final ref = itemsCol.doc(entry.key);
@@ -375,28 +423,29 @@ class ShoppingRepo {
           }
 
           tx.set(
-              ref,
-              {
-                'key': entry.key,
-                'name': entry.name,
-                'nameLower': entry.name.toLowerCase(),
-                'checked': false,
-                'section': entry.section,
-                'examples': _dedupeTake(entry.examples, 8),
-                'examplesMetric': _dedupeTake(entry.examplesMetric, 8),
-                'examplesUs': _dedupeTake(entry.examplesUs, 8),
-                'sources': initialSources,
-                'sumQtyMetric': entry.sumQtyMetric,
-                'sumUnitMetric': entry.sumUnitMetric,
-                'sumQtyUs': entry.sumQtyUs,
-                'sumUnitUs': entry.sumUnitUs,
-                'usedCount': entry.usedCount ?? 1,
-                'addedAtLocal': now,
-                'addedAt': FieldValue.serverTimestamp(),
-                'updatedAtLocal': now,
-                'updatedAt': FieldValue.serverTimestamp(),
-              },
-              SetOptions(merge: true));
+            ref,
+            {
+              'key': entry.key,
+              'name': entry.name,
+              'nameLower': entry.name.toLowerCase(),
+              'checked': false,
+              'section': entry.section,
+              'examples': _dedupeTake(entry.examples, 8),
+              'examplesMetric': _dedupeTake(entry.examplesMetric, 8),
+              'examplesUs': _dedupeTake(entry.examplesUs, 8),
+              'sources': initialSources,
+              'sumQtyMetric': entry.sumQtyMetric,
+              'sumUnitMetric': entry.sumUnitMetric,
+              'sumQtyUs': entry.sumQtyUs,
+              'sumUnitUs': entry.sumUnitUs,
+              'usedCount': entry.usedCount ?? 1,
+              'addedAtLocal': now,
+              'addedAt': FieldValue.serverTimestamp(),
+              'updatedAtLocal': now,
+              'updatedAt': FieldValue.serverTimestamp(),
+            },
+            SetOptions(merge: true),
+          );
           continue;
         }
 
@@ -404,13 +453,16 @@ class ShoppingRepo {
         final data = snap.data() ?? <String, dynamic>{};
         final existingChecked = (data['checked'] ?? false) == true;
 
-        final mergedExamples = _dedupeTake(
-            [..._stringList(data['examples']), ...entry.examples], 8);
+        final mergedExamples =
+            _dedupeTake([..._stringList(data['examples']), ...entry.examples], 8);
         final mergedExamplesMetric = _dedupeTake(
-            [..._stringList(data['examplesMetric']), ...entry.examplesMetric],
-            8);
+          [..._stringList(data['examplesMetric']), ...entry.examplesMetric],
+          8,
+        );
         final mergedExamplesUs = _dedupeTake(
-            [..._stringList(data['examplesUs']), ...entry.examplesUs], 8);
+          [..._stringList(data['examplesUs']), ...entry.examplesUs],
+          8,
+        );
 
         // Merge sources
         final currentSources = _mapList(data['sources']);
@@ -441,33 +493,34 @@ class ShoppingRepo {
         );
 
         tx.set(
-            ref,
-            {
-              'checked': existingChecked,
-              'name': (data['name'] ?? '').toString().trim().isNotEmpty
-                  ? data['name']
-                  : entry.name,
-              'nameLower':
-                  ((data['nameLower'] ?? '').toString().trim().isNotEmpty
-                          ? data['nameLower']
-                          : entry.name.toLowerCase())
-                      .toString(),
-              'section': (data['section'] ?? '').toString().trim().isNotEmpty
-                  ? data['section']
-                  : entry.section,
-              'examples': mergedExamples,
-              'examplesMetric': mergedExamplesMetric,
-              'examplesUs': mergedExamplesUs,
-              'sources': mergedSources,
-              'sumQtyMetric': nextMetric.qty,
-              'sumUnitMetric': nextMetric.unit,
-              'sumQtyUs': nextUs.qty,
-              'sumUnitUs': nextUs.unit,
-              'usedCount': nextUsed,
-              'updatedAtLocal': now,
-              'updatedAt': FieldValue.serverTimestamp(),
-            },
-            SetOptions(merge: true));
+          ref,
+          {
+            'checked': existingChecked,
+            'name': (data['name'] ?? '').toString().trim().isNotEmpty
+                ? data['name']
+                : entry.name,
+            'nameLower':
+                ((data['nameLower'] ?? '').toString().trim().isNotEmpty
+                            ? data['nameLower']
+                            : entry.name.toLowerCase())
+                        .toString(),
+            'section': (data['section'] ?? '').toString().trim().isNotEmpty
+                ? data['section']
+                : entry.section,
+            'examples': mergedExamples,
+            'examplesMetric': mergedExamplesMetric,
+            'examplesUs': mergedExamplesUs,
+            'sources': mergedSources,
+            'sumQtyMetric': nextMetric.qty,
+            'sumUnitMetric': nextMetric.unit,
+            'sumQtyUs': nextUs.qty,
+            'sumUnitUs': nextUs.unit,
+            'usedCount': nextUsed,
+            'updatedAtLocal': now,
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
       }
     });
   }
@@ -546,12 +599,13 @@ class ShoppingRepo {
 
     if (touched) {
       batch.set(
-          listRef,
-          {
-            'updatedAtLocal': Timestamp.now(),
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true));
+        listRef,
+        {
+          'updatedAtLocal': Timestamp.now(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
 
       await batch.commit();
     }
@@ -627,7 +681,10 @@ class ShoppingRepo {
 
   static List<Map<String, dynamic>> _mapList(dynamic v) {
     if (v is List) {
-      return v.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList();
+      return v
+          .whereType<Map>()
+          .map((m) => Map<String, dynamic>.from(m))
+          .toList();
     }
     return const [];
   }

@@ -37,6 +37,38 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
     );
   }
 
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _errorModal({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _looksLikeLimitError(Object e) {
+    final msg = e.toString();
+    return msg.contains('20 shopping lists') ||
+        msg.contains('Delete one to create another') ||
+        msg.contains('already have 20');
+  }
+
   Future<void> _createListDialog() async {
     final ctrl = TextEditingController();
 
@@ -72,10 +104,24 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
 
     try {
       await _repo.createList(trimmed);
+
+      // ✅ success only
+      _snack('Created "$trimmed"');
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not create list: $e')),
+      // ✅ limit reached -> modal
+      if (_looksLikeLimitError(e)) {
+        await _errorModal(
+          title: 'Limit reached',
+          message:
+              'You’ve reached the limit of 20 saved shopping lists.\n\nDelete one to create another.',
+        );
+        return;
+      }
+
+      // ✅ all other errors -> modal
+      await _errorModal(
+        title: 'Could not create list',
+        message: e.toString(),
       );
     }
   }
@@ -108,13 +154,12 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
     try {
       await _repo.deleteList(listId);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('List deleted')),
-      );
+      _snack('List deleted');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not delete list: $e')),
+      await _errorModal(
+        title: 'Could not delete list',
+        message: e.toString(),
       );
     }
   }
@@ -195,7 +240,6 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: _repo.listsStream(),
         builder: (context, snap) {
-          // We keep the same “grey rounded panel” shell even while loading/error
           Widget innerContent;
 
           if (snap.connectionState == ConnectionState.waiting) {
@@ -230,7 +274,8 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
                       builder: (_) {
                         final data = d.data();
                         final name = (data['name'] ?? '').toString().trim();
-                        final displayName = name.isEmpty ? 'Untitled list' : name;
+                        final displayName =
+                            name.isEmpty ? 'Untitled list' : name;
 
                         return _listCard(
                           title: displayName,
@@ -257,7 +302,6 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
           return ListView(
             padding: EdgeInsets.zero,
             children: [
-              // ✅ Top band + rounded grey panel
               Container(
                 color: topBandColor,
                 padding: EdgeInsets.only(
@@ -270,7 +314,6 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      // ✅ Header row (matches meal plan hub pattern)
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 18, 8, 10),
                         child: Row(
@@ -286,8 +329,6 @@ class _ListsHubScreenState extends State<ListsHubScreen> {
                           ],
                         ),
                       ),
-
-                      // ✅ Content
                       innerContent,
                     ],
                   ),

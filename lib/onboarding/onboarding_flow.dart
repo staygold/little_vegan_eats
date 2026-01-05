@@ -1,3 +1,4 @@
+// lib/onboarding/onboarding_flow.dart
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -9,7 +10,7 @@ import 'steps/step_email.dart';
 import 'steps/step_password.dart';
 
 import 'steps/step_child_name.dart';
-import 'steps/step_child_dob.dart';
+import 'steps/step_child_dob.dart'; // ✅ now Month+Year picker
 import 'steps/step_child_allergies_yes_no.dart';
 import 'steps/step_child_allergies.dart';
 import 'steps/step_another_child.dart';
@@ -105,10 +106,21 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       case OnboardingStep.childDob:
         return StepChildDob(
           childName: (currentChild["name"] ?? "").toString(),
-          onNext: (dob) {
-            currentChild["dob"] = dob;
+          onBack: () => next(OnboardingStep.childName),
+          // ✅ StepChildDob now returns (month, year)
+          onNext: (month, year) {
+            currentChild["dobMonth"] = month; // int 1-12
+            currentChild["dobYear"] = year; // int yyyy
+            currentChild.remove("dob"); // ✅ remove legacy field if present
             next(OnboardingStep.childHasAllergies);
           },
+          // Optional: if you support editing within onboarding later
+          initialMonth: currentChild["dobMonth"] is int
+              ? currentChild["dobMonth"] as int
+              : null,
+          initialYear: currentChild["dobYear"] is int
+              ? currentChild["dobYear"] as int
+              : null,
         );
 
       case OnboardingStep.childHasAllergies:
