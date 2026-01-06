@@ -1,6 +1,7 @@
+// lib/meal_plan/core/meal_plan_controller.dart
 import 'dart:async';
-import 'dart:math';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
@@ -26,13 +27,69 @@ class MealPlanController extends ChangeNotifier {
   String weekId;
   Map<String, dynamic>? weekData;
 
+  bool isLoading = true;
+
   /// dayKey -> slot -> entryMap
   final Map<String, Map<String, Map<String, dynamic>>> _draft = {};
 
   StreamSubscription<Map<String, dynamic>?>? _sub;
 
-  bool _populateInFlight = false;
-  String? _lastPopulatedWeekId;
+  // -------------------------------------------------------
+  // ✅ GENERATE PLAN STRUCTURE
+  // -------------------------------------------------------
+
+  /// Builds a complete week or day structure based on user preferences.
+  /// If a slot is unselected, it's saved as 'clear' so the UI displays the
+  /// "Add Recipe" placeholder instead of skipping the slot.
+  Map<String, dynamic> generatePlanData({
+    required bool wantsBreakfast,
+    required bool wantsLunch,
+    required bool wantsDinner,
+    required int snackCount, // 0, 1, or 2
+    required String? planName,
+    required bool isWeek,
+  }) {
+    final Map<String, dynamic> dayStructure = {};
+
+    dayStructure['breakfast'] = wantsBreakfast ? null : {'type': 'clear'};
+    dayStructure['lunch'] = wantsLunch ? null : {'type': 'clear'};
+    dayStructure['dinner'] = wantsDinner ? null : {'type': 'clear'};
+
+    if (snackCount == 0) {
+      dayStructure['snack1'] = {'type': 'clear'};
+      dayStructure['snack2'] = {'type': 'clear'};
+    } else if (snackCount == 1) {
+      dayStructure['snack1'] = null;
+      dayStructure['snack2'] = {'type': 'clear'};
+    } else {
+      dayStructure['snack1'] = null;
+      dayStructure['snack2'] = null;
+    }
+
+    final timestamp = FieldValue.serverTimestamp();
+
+    if (!isWeek) {
+      return {
+        'title': (planName?.trim().isNotEmpty == true) ? planName : 'My Day Plan',
+        'type': 'day',
+        'savedAt': timestamp,
+        'updatedAt': timestamp,
+        'day': dayStructure,
+      };
+    } else {
+      final Map<String, dynamic> weekDays = {};
+      for (int i = 0; i < 7; i++) {
+        weekDays[i.toString()] = dayStructure;
+      }
+      return {
+        'title': (planName?.trim().isNotEmpty == true) ? planName : 'My Week Plan',
+        'type': 'week',
+        'savedAt': timestamp,
+        'updatedAt': timestamp,
+        'days': weekDays,
+      };
+    }
+  }
 
   // -------------------------------------------------------
   // Allergies
@@ -128,10 +185,16 @@ class MealPlanController extends ChangeNotifier {
     return u.uid;
   }
 
+  bool get hasActivePlan {
+    if (weekData == null) return false;
+    return MealPlanRepository.hasAnyPlannedEntries(weekData);
+  }
+
   void start() {
     _sub?.cancel();
     _sub = _repo.watchWeek(uid: uid, weekId: weekId).listen((data) {
       weekData = data;
+      isLoading = false;
       notifyListeners();
     });
   }
@@ -151,12 +214,132 @@ class MealPlanController extends ChangeNotifier {
 
     weekId = cleaned;
     weekData = null;
+    isLoading = true;
     _draft.clear();
-    _lastPopulatedWeekId = null;
 
     notifyListeners();
     start();
     await ensureWeek();
+  }
+
+  // -------------------------------------------------------
+  // Activation / Deletion Logic
+  // -------------------------------------------------------
+
+  /// ✅ FIXED:
+  /// - Day plan activates ONLY the target day (config.targetDayKey)
+  /// - Week plan maps template days (0..6) onto the current horizon date keys
+  /// - Always persists config.daysToPlan so Home/MealPlanScreen can route correctly
+  Future<void> activateSavedPlan({
+    required Map<String, dynamic> savedPlan,
+  }) async {
+    final targetDates = MealPlanKeys.weekDayKeys(weekId);
+
+    final rawConfig = savedPlan['config'];
+    final config = (rawConfig is Map) ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
+
+    final v = config['daysToPlan'];
+    final daysToPlan = (v is int) ? v : int.tryParse(v?.toString() ?? '');
+    final isDayPlan = (daysToPlan ?? 0) == 1;
+
+    final sourceDays = savedPlan['days'] as Map<String, dynamic>? ?? {};
+    final Map<String, Map<String, dynamic>> newActiveDays = {};
+
+    if (isDayPlan) {
+      // pick intended dayKey if present, else default to first day in horizon (today)
+      final tk = (config['targetDayKey'] ?? '').toString().trim();
+      final targetDayKey = tk.isNotEmpty ? tk : targetDates.first;
+
+      // clamp to horizon
+      final finalDayKey = targetDates.contains(targetDayKey) ? targetDayKey : targetDates.first;
+
+      // use template day "0" (or first available map) for the single-day data
+      Map<String, dynamic>? dayData;
+      if (sourceDays['0'] is Map) {
+        dayData = Map<String, dynamic>.from(sourceDays['0'] as Map);
+      } else {
+        for (final v in sourceDays.values) {
+          if (v is Map) {
+            dayData = Map<String, dynamic>.from(v);
+            break;
+          }
+        }
+      }
+
+      if (dayData != null) {
+        newActiveDays[finalDayKey] = dayData;
+      }
+
+      if (newActiveDays.isEmpty) return;
+
+      final cfg = <String, dynamic>{
+        ...config,
+        'daysToPlan': 1,
+        'targetDayKey': finalDayKey,
+      };
+
+      final sourcePlanId = (cfg['sourcePlanId'] ?? '').toString().trim();
+
+      await _repo.overrideWeekPlan(
+        uid: uid,
+        weekId: weekId,
+        newDays: newActiveDays,
+        config: cfg,
+        sourcePlanId: sourcePlanId.isEmpty ? null : sourcePlanId,
+      );
+
+      notifyListeners();
+      return;
+    }
+
+    // WEEK PLAN
+    int index = 0;
+
+    final sortedKeys = sourceDays.keys.map((k) => k.toString()).toList();
+    sortedKeys.sort((a, b) {
+      final ai = int.tryParse(a);
+      final bi = int.tryParse(b);
+      if (ai != null && bi != null) return ai.compareTo(bi);
+      return a.compareTo(b);
+    });
+
+    for (final dateKey in targetDates) {
+      if (index >= sortedKeys.length) break;
+
+      final sourceKey = sortedKeys[index];
+      final sourceDayData = sourceDays[sourceKey];
+
+      if (sourceDayData is Map) {
+        newActiveDays[dateKey] = Map<String, dynamic>.from(sourceDayData);
+      }
+      index++;
+    }
+
+    if (newActiveDays.isEmpty) return;
+
+    final cfg = <String, dynamic>{
+      ...config,
+      'daysToPlan': 7,
+    };
+
+    final sourcePlanId = (cfg['sourcePlanId'] ?? '').toString().trim();
+
+    await _repo.overrideWeekPlan(
+      uid: uid,
+      weekId: weekId,
+      newDays: newActiveDays,
+      config: cfg,
+      sourcePlanId: sourcePlanId.isEmpty ? null : sourcePlanId,
+    );
+
+    notifyListeners();
+  }
+
+  Future<void> clearPlan() async {
+    await _repo.deleteWeek(uid: uid, weekId: weekId);
+    weekData = null;
+    _draft.clear();
+    notifyListeners();
   }
 
   // -------------------------------------------------------
@@ -170,36 +353,29 @@ class MealPlanController extends ChangeNotifier {
     return null;
   }
 
-  // ✅ ROBUST SLOT LOOKUP
   dynamic _lookupSlot(Map<String, dynamic>? container, String slot) {
     if (container == null) return null;
     if (container.containsKey(slot)) return container[slot];
 
-    // Try underscore version
     if (slot == 'snack1' && container.containsKey('snack_1')) return container['snack_1'];
     if (slot == 'snack2' && container.containsKey('snack_2')) return container['snack_2'];
-
-    // Try clean version
-    if (slot == 'snack_1' && container.containsKey('snack1')) return container['snack1'];
-    if (slot == 'snack_2' && container.containsKey('snack2')) return container['snack2'];
 
     return null;
   }
 
   String _normSlot(String slot) {
     final s = slot.trim().toLowerCase();
-    if (s == 'snack1' || s == 'snacks1' || s == 'snack 1') return 'snack_1';
-    if (s == 'snack2' || s == 'snacks2' || s == 'snack 2') return 'snack_2';
+    if (s == 'snack_1' || s == 'snacks_1' || s == 'snack 1') return 'snack1';
+    if (s == 'snack1' || s == 'snacks1') return 'snack1';
+    if (s == 'snack_2' || s == 'snacks_2' || s == 'snack 2') return 'snack2';
+    if (s == 'snack2' || s == 'snacks2') return 'snack2';
     return s;
   }
 
   static Map<String, dynamic>? _parseEntry(dynamic raw) {
-    if (raw is int) {
-      return {'type': 'recipe', 'recipeId': raw, 'source': 'auto'};
-    }
-    if (raw is num) {
-      return {'type': 'recipe', 'recipeId': raw.toInt(), 'source': 'auto'};
-    }
+    if (raw is int) return {'type': 'recipe', 'recipeId': raw, 'source': 'auto'};
+    if (raw is num) return {'type': 'recipe', 'recipeId': raw.toInt(), 'source': 'auto'};
+
     if (raw is Map) {
       final m = Map<String, dynamic>.from(raw);
       final type = (m['type'] ?? '').toString();
@@ -225,22 +401,12 @@ class MealPlanController extends ChangeNotifier {
         final fromDayKey = (m['fromDayKey'] ?? '').toString().trim();
         final fromSlot = (m['fromSlot'] ?? '').toString().trim();
         if (fromDayKey.isEmpty || fromSlot.isEmpty) return null;
-        return {
-          'type': 'reuse',
-          'fromDayKey': fromDayKey,
-          'fromSlot': fromSlot,
-        };
+        return {'type': 'reuse', 'fromDayKey': fromDayKey, 'fromSlot': fromSlot};
       }
 
-      // ✅ FIX: Handle persistent 'cleared' state
-      if (type == 'cleared') {
-        return {'type': 'clear'};
-      }
-
-      if (type == 'clear') {
-        return {'type': 'clear'};
-      }
+      if (type == 'cleared' || type == 'clear') return {'type': 'clear'};
     }
+
     return null;
   }
 
@@ -251,9 +417,7 @@ class MealPlanController extends ChangeNotifier {
     return _parseEntry(_lookupSlot(day, slot));
   }
 
-  Map<String, dynamic>? draftEntry(String dayKey, String slot) {
-    return _draft[dayKey]?[slot];
-  }
+  Map<String, dynamic>? draftEntry(String dayKey, String slot) => _draft[dayKey]?[slot];
 
   Map<String, dynamic>? effectiveEntry(String dayKey, String slot) {
     final d = _draft[dayKey];
@@ -299,9 +463,9 @@ class MealPlanController extends ChangeNotifier {
     if (e == null) return null;
 
     final type = (e['type'] ?? '').toString();
+
     if (type == 'recipe' || type == 'note') return e;
-    
-    // ✅ Handle clear/cleared as "return entry" so UI sees it's explicitly cleared
+
     if (type == 'clear' || type == 'cleared') return {'type': 'clear'};
 
     if (type == 'reuse') {
@@ -394,10 +558,10 @@ class MealPlanController extends ChangeNotifier {
 
   bool _entryEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
     if (a == null && b == null) return true;
+
     if (a == null || b == null) {
-      final bt = b?['type'];
-      final at = a?['type'];
-      // Treat clear, cleared, and null as equivalent for equality checks
+      final at = (a?['type'] ?? '').toString();
+      final bt = (b?['type'] ?? '').toString();
       final aEmpty = (a == null || at == 'clear' || at == 'cleared');
       final bEmpty = (b == null || bt == 'clear' || bt == 'cleared');
       return aEmpty == bEmpty;
@@ -405,11 +569,10 @@ class MealPlanController extends ChangeNotifier {
 
     final ta = (a['type'] ?? '').toString();
     final tb = (b['type'] ?? '').toString();
-    
-    // Normalize 'cleared' -> 'clear'
+
     final taNorm = (ta == 'cleared') ? 'clear' : ta;
     final tbNorm = (tb == 'cleared') ? 'clear' : tb;
-    
+
     if (taNorm != tbNorm) return false;
 
     if (taNorm == 'recipe') return entryRecipeId(a) == entryRecipeId(b);
@@ -430,15 +593,12 @@ class MealPlanController extends ChangeNotifier {
     final dayDraft = _draft[dayKey];
     if (dayDraft == null || dayDraft.isEmpty) return;
 
-    final existing =
-        MealPlanRepository.dayMapFromWeek(weekData ?? {}, dayKey) ?? {};
+    final existing = MealPlanRepository.dayMapFromWeek(weekData ?? {}, dayKey) ?? {};
 
     final merged = <String, dynamic>{...existing};
     for (final e in dayDraft.entries) {
       final type = (e.value['type'] ?? '').toString();
       if (type == 'clear') {
-        // ✅ FIX: Save explicit 'cleared' object to overwrite existing data in Firestore
-        // This prevents the old recipe from reappearing after a merge.
         merged[e.key] = {'type': 'cleared'};
       } else {
         merged[e.key] = e.value;
@@ -456,10 +616,6 @@ class MealPlanController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // -------------------------------------------------------
-  // Reuse dependents
-  // -------------------------------------------------------
-
   List<Map<String, String>> reuseDependents({
     required String fromDayKey,
     required String fromSlot,
@@ -475,8 +631,7 @@ class MealPlanController extends ChangeNotifier {
         final from = entryReuseFrom(e);
         if (from == null) continue;
 
-        if (from['dayKey'] == fromDayKey &&
-            _normSlot(from['slot']!) == fromSlotNorm) {
+        if (from['dayKey'] == fromDayKey && _normSlot(from['slot']!) == fromSlotNorm) {
           out.add({'dayKey': dk, 'slot': slot});
         }
       }
@@ -500,8 +655,39 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // Generator Logic
+  // Candidate selection (courses)
   // -------------------------------------------------------
+
+  List<int> getCandidatesForSlot(
+    String slot,
+    List<Map<String, dynamic>> recipes,
+  ) {
+    return recipes
+        .where((r) {
+          if (!recipeAllowed(r)) return false;
+
+          final courseRaw = _extractCourse(r);
+          final tokens = _courseTokens(courseRaw);
+          if (tokens.isEmpty) return false;
+
+          final norm = _normSlot(slot);
+
+          if (norm.contains('breakfast')) return _isBreakfastCourseTokens(tokens);
+
+          if (norm.contains('lunch') || norm.contains('dinner')) {
+            return _isMainsCourseTokens(tokens);
+          }
+
+          if (norm.contains('snack')) {
+            return _isSnacksCourseTokens(tokens);
+          }
+
+          return false;
+        })
+        .map((r) => recipeIdFromAny(r['id']))
+        .whereType<int>()
+        .toList();
+  }
 
   String? _extractCourse(Map<String, dynamic> recipe) {
     final r = recipe['recipe'] is Map ? (recipe['recipe'] as Map) : recipe;
@@ -518,10 +704,7 @@ class MealPlanController extends ChangeNotifier {
 
     if (v == null && r['taxonomies'] is Map) {
       final tax = r['taxonomies'];
-      v = tax['course'] ??
-          tax['recipe_course'] ??
-          tax['wprm_course'] ??
-          tax['category'];
+      v = tax['course'] ?? tax['recipe_course'] ?? tax['wprm_course'] ?? tax['category'];
     }
 
     if (v == null) return null;
@@ -569,139 +752,10 @@ class MealPlanController extends ChangeNotifier {
   }
 
   bool _isMainsCourseTokens(List<String> tokens) {
-    return _anyTokenContains(tokens, const ['mains']);
+    return _anyTokenContains(tokens, const ['mains', 'lunch', 'dinner', 'main']);
   }
 
   bool _isSnacksCourseTokens(List<String> tokens) {
-    return _anyTokenContains(tokens, const ['snacks']);
-  }
-
-  List<int> getCandidatesForSlot(
-    String slot,
-    List<Map<String, dynamic>> recipes,
-  ) {
-    return recipes.where((r) {
-      if (!recipeAllowed(r)) return false;
-
-      final courseRaw = _extractCourse(r);
-      final tokens = _courseTokens(courseRaw);
-      if (tokens.isEmpty) return false;
-
-      final norm = _normSlot(slot);
-
-      if (norm.contains('breakfast')) return _isBreakfastCourseTokens(tokens);
-
-      if (norm.contains('lunch') || norm.contains('dinner')) return _isMainsCourseTokens(tokens);
-
-      if (norm.contains('snack')) {
-        return _isSnacksCourseTokens(tokens);
-      }
-
-      return false;
-    }).map((r) => recipeIdFromAny(r['id'])).whereType<int>().toList();
-  }
-
-  Future<void> ensurePlanPopulated({
-    required List<Map<String, dynamic>> recipes,
-  }) async {
-    if (_populateInFlight) return;
-    if (_lastPopulatedWeekId == weekId) return;
-
-    await ensureWeek();
-
-    Map<String, dynamic> data;
-    if (weekData != null) {
-      data = weekData!;
-    } else {
-      final loaded = await _repo.loadWeek(uid: uid, weekId: weekId);
-      data = loaded ?? <String, dynamic>{};
-      weekData = data;
-      notifyListeners();
-    }
-
-    final existingDays = data['days'] is Map ? (data['days'] as Map) : const {};
-
-    final buckets = <String, List<int>>{
-      'breakfast': getCandidatesForSlot('breakfast', recipes),
-      'lunch': getCandidatesForSlot('lunch', recipes),
-      'dinner': getCandidatesForSlot('dinner', recipes),
-      'snack_1': getCandidatesForSlot('snack_1', recipes),
-      'snack_2': getCandidatesForSlot('snack_2', recipes),
-    };
-
-    final usedInWeek = <int>{};
-    final dayKeys = MealPlanKeys.weekDayKeys(weekId);
-
-    for (final dayKey in dayKeys) {
-      final rawExisting = existingDays[dayKey];
-      final dayMap = (rawExisting is Map) 
-          ? Map<String, dynamic>.from(rawExisting) 
-          : <String, dynamic>{};
-
-      for (final slot in MealPlanSlots.order) {
-        final rid1 = entryRecipeId(_parseEntry(_lookupSlot(dayMap, slot)));
-        if (rid1 != null) usedInWeek.add(rid1);
-        final rid2 = entryRecipeId(_draft[dayKey]?[slot]);
-        if (rid2 != null) usedInWeek.add(rid2);
-      }
-    }
-
-    final rng = Random(weekId.hashCode);
-    final toUpsert = <String, Map<String, dynamic>>{};
-    _populateInFlight = true;
-
-    try {
-      for (final dayKey in dayKeys) {
-        Map<String, dynamic> existingDay = {};
-        if (existingDays[dayKey] is Map) {
-          existingDay = Map<String, dynamic>.from(existingDays[dayKey]);
-        }
-
-        final updatedDay = <String, dynamic>{...existingDay};
-        bool changed = false;
-
-        for (final slot in MealPlanSlots.order) {
-          // ✅ FIX: _parseEntry returns {'type':'clear'} for cleared slots.
-          // Since it is NOT null, the generator sees it as "occupied" and skips it.
-          if (_parseEntry(_lookupSlot(existingDay, slot)) != null) continue;
-          if (_lookupSlot(_draft[dayKey], slot) != null) continue;
-
-          var candidates = buckets[slot] ?? [];
-
-          if (candidates.isEmpty && (slot == 'lunch' || slot == 'dinner')) {
-            candidates = (slot == 'lunch') ? (buckets['dinner'] ?? []) : (buckets['lunch'] ?? []);
-          }
-
-          if (candidates.isEmpty && (slot == 'snack_1' || slot == 'snack_2')) {
-            candidates = (slot == 'snack_1') ? (buckets['snack_2'] ?? []) : (buckets['snack_1'] ?? []);
-          }
-
-          final picked = _pickId(rng, candidates, usedInWeek);
-
-          if (picked != null) {
-            updatedDay[slot] = {'type': 'recipe', 'recipeId': picked, 'source': 'auto'};
-            usedInWeek.add(picked);
-            changed = true;
-          }
-        }
-
-        if (changed) toUpsert[dayKey] = updatedDay;
-      }
-
-      if (toUpsert.isNotEmpty) {
-        await _repo.upsertDays(uid: uid, weekId: weekId, days: toUpsert);
-      }
-
-      _lastPopulatedWeekId = weekId;
-    } finally {
-      _populateInFlight = false;
-    }
-  }
-
-  int? _pickId(Random rng, List<int> candidates, Set<int> avoid) {
-    if (candidates.isEmpty) return null;
-    final fresh = candidates.where((id) => !avoid.contains(id)).toList();
-    if (fresh.isNotEmpty) return fresh[rng.nextInt(fresh.length)];
-    return candidates[rng.nextInt(candidates.length)];
+    return _anyTokenContains(tokens, const ['snacks', 'snack']);
   }
 }

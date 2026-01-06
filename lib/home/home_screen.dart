@@ -8,37 +8,18 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../recipes/recipe_repository.dart';
 import '../recipes/recipe_search_screen.dart';
 
-// ✅ SAME weekId logic as meal plan
 import '../meal_plan/core/meal_plan_keys.dart';
-
-// ✅ Centralised review prompt
 import '../meal_plan/core/meal_plan_review_service.dart';
-
-// ✅ use the centralised meal plan repo + controller to auto-populate
 import '../meal_plan/core/meal_plan_repository.dart';
 import '../meal_plan/core/meal_plan_controller.dart';
-
-// ✅ home recipe rail for WPRM collections
+import '../meal_plan/builder/meal_plan_builder_screen.dart';
 import '../recipes/home_collection_rail.dart';
-
-// ✅ shared meal plan UI (REUSE)
 import '../meal_plan/widgets/today_meal_plan_section.dart';
-
-// ✅ reusable top search section
 import '../shared/home_search_section.dart';
-
 import '../theme/app_theme.dart';
-
-// ✅ IMPORTANT: so HomeScreen can push MealPlanScreen without named routes
 import '../meal_plan/meal_plan_screen.dart';
-
-// ✅ Latest recipes page
 import '../recipes/latest_recipes_page.dart';
-
-// ✅ Popular recipes page
 import '../recipes/popular_recipes_page.dart';
-
-// ✅ Course page plumbing (same as RecipeHub)
 import '../recipes/recipes_bootstrap_gate.dart';
 import '../recipes/course_page.dart';
 
@@ -56,7 +37,7 @@ class _HomeScreenState extends State<HomeScreen> {
   MealPlanController? _mealCtrl;
   bool _bootstrappedWeek = false;
 
-  // ✅ Favourites (read-only, matches RecipeListScreen)
+  // Favourites
   StreamSubscription<User?>? _authFavSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
   bool _loadingFavs = true;
@@ -78,7 +59,6 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _authFavSub?.cancel();
     _favSub?.cancel();
-
     _mealCtrl?.stop();
     _mealCtrl = null;
     super.dispose();
@@ -119,8 +99,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    if (_recipes.isEmpty) return;
-
     _mealCtrl ??= MealPlanController(
       auth: FirebaseAuth.instance,
       repo: MealPlanRepository(FirebaseFirestore.instance),
@@ -131,13 +109,13 @@ class _HomeScreenState extends State<HomeScreen> {
     _bootstrappedWeek = true;
 
     try {
-      await _mealCtrl!.ensurePlanPopulated(recipes: _recipes);
+      await _mealCtrl!.ensureWeek();
     } catch (_) {
       // Silent fail
     }
   }
 
-  // ---------- ✅ FAVORITES (read-only) ----------
+  // ---------- FAVORITES ----------
 
   void _listenToFavorites() {
     _authFavSub?.cancel();
@@ -214,7 +192,6 @@ class _HomeScreenState extends State<HomeScreen> {
         .snapshots();
   }
 
-  /// users/{uid}.adults[0].name → "Cat Dean" → "Cat"
   String? _extractFirstName(Map<String, dynamic> data) {
     final adults = data['adults'];
     if (adults is! List || adults.isEmpty) return null;
@@ -242,23 +219,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _openTodayPlan(BuildContext context) {
+  void _openBuilder(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => MealPlanScreen(
-          weekId: _weekId(),
-          focusDayKey: _todayKey(),
-        ),
-      ),
-    );
-  }
-
-  void _openWeekPlan(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => MealPlanScreen(
-          weekId: _weekId(),
-        ),
+        builder: (_) => const MealPlanBuilderScreen(),
       ),
     );
   }
@@ -289,7 +253,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ✅ same plumbing as RecipeHubScreen
   void _openCourse(BuildContext context, String slug, String title, String subtitle) {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -312,15 +275,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final weekStream = _weekStream();
 
     if (_recipesLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     if (userDoc == null || weekStream == null) {
-      return const Scaffold(
-        body: Center(child: Text('Log in to see your home feed')),
-      );
+      return const Scaffold(body: Center(child: Text('Log in to see your home feed')));
     }
 
     const railBg = Color(0xFFECF3F4);
@@ -340,9 +299,7 @@ class _HomeScreenState extends State<HomeScreen> {
           stream: weekStream,
           builder: (context, snap) {
             if (snap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(
-                body: Center(child: CircularProgressIndicator()),
-              );
+              return const Scaffold(body: Center(child: CircularProgressIndicator()));
             }
 
             final data = snap.data?.data() ?? <String, dynamic>{};
@@ -355,6 +312,38 @@ class _HomeScreenState extends State<HomeScreen> {
                     : <String, dynamic>{};
 
             final mealPlanPanelBg = AppColors.brandDark;
+
+            final config = data['config'];
+
+            int? _asInt(dynamic v) {
+              if (v is int) return v;
+              if (v is double) return v.toInt();
+              return int.tryParse(v?.toString() ?? '');
+            }
+
+            final daysToPlan = (config is Map) ? _asInt(config['daysToPlan']) : null;
+            final isDayPlan = (daysToPlan ?? 0) == 1;
+
+            // ✅ FIXED: explicitly force which mode MealPlanScreen opens in
+            final VoidCallback onOpenFullPlan = isDayPlan
+                ? () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => MealPlanScreen(
+                          weekId: _weekId(),
+                          focusDayKey: todayKey,
+                          initialViewMode: MealPlanViewMode.today,
+                        ),
+                      ),
+                    )
+                : () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => MealPlanScreen(
+                          weekId: _weekId(),
+                          focusDayKey: todayKey,
+                          initialViewMode: MealPlanViewMode.week,
+                        ),
+                      ),
+                    );
 
             return Scaffold(
               backgroundColor: railBg,
@@ -398,15 +387,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ],
                   ),
-
                   Container(
                     color: mealPlanPanelBg,
                     padding: const EdgeInsets.only(top: 12),
                     child: Material(
                       color: railBg,
-                      shape: const RoundedRectangleBorder(
-                        borderRadius: topRadius,
-                      ),
+                      shape: const RoundedRectangleBorder(borderRadius: topRadius),
                       clipBehavior: Clip.antiAlias,
                       child: TodayMealPlanSection(
                         todayRaw: todayRaw,
@@ -415,12 +401,13 @@ class _HomeScreenState extends State<HomeScreen> {
                         heroTopText: "HERE'S SOME IDEAS",
                         heroBottomText: "FOR TODAY",
                         homeAccordion: true,
-                        onOpenToday: () => _openTodayPlan(context),
-                        onOpenWeek: () => _openWeekPlan(context),
+                        onOpenMealPlan: onOpenFullPlan,
+                        onOpenToday: null,
+                        onOpenWeek: null,
+                        onBuildMealPlan: () => _openBuilder(context),
                       ),
                     ),
                   ),
-
                   Container(
                     color: railBg,
                     padding: const EdgeInsets.only(top: 0, bottom: 40),
@@ -443,7 +430,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                   ),
-
                   const SizedBox(height: 12),
                 ],
               ),

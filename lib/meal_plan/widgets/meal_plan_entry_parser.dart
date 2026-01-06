@@ -1,3 +1,5 @@
+// lib/meal_plan/widgets/meal_plan_entry_parser.dart
+
 class MealPlanEntryParser {
   MealPlanEntryParser._();
 
@@ -36,7 +38,8 @@ class MealPlanEntryParser {
           'type': 'recipe',
           'recipeId': rid,
           'source': (m['source'] ?? 'auto').toString(),
-          if (m['_reuseFrom'] is Map) '_reuseFrom': Map<String, dynamic>.from(m['_reuseFrom']),
+          if (m['_reuseFrom'] is Map)
+            '_reuseFrom': Map<String, dynamic>.from(m['_reuseFrom']),
         };
       }
 
@@ -47,8 +50,17 @@ class MealPlanEntryParser {
         return {'type': 'reuse', 'fromDayKey': fromDayKey, 'fromSlot': fromSlot};
       }
 
+      // ✅ Explicit empty states
+      //
+      // `clear` is an in-memory UI intent (treat as empty).
       if (type == 'clear') {
-        return null;
+        return {'type': 'clear'};
+      }
+
+      // ✅ `cleared` is the persisted "locked empty" state (treat as empty for UI,
+      // but keep it explicit so screens *can* distinguish it if needed).
+      if (type == 'cleared') {
+        return {'type': 'clear'};
       }
 
       // Sometimes controller gives us already-resolved entries with _reuseFrom attached

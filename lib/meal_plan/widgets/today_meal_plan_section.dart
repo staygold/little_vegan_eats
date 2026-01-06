@@ -1,3 +1,4 @@
+// lib/meal_plan/widgets/today_meal_plan_section.dart
 import 'dart:async';
 import 'dart:ui' show FontVariation;
 
@@ -13,30 +14,41 @@ class TodayMealPlanSection extends StatelessWidget {
     required this.todayRaw,
     required this.recipes,
     required this.favoriteIds,
-
     this.onOpenMealPlan,
     this.onOpenToday,
     this.onOpenWeek,
 
+    // ✅ used when there is no plan yet
+    this.onBuildMealPlan,
     this.heroTopText = "TODAY’S",
     this.heroBottomText = "MEAL PLAN",
 
+    // ✅ Optional plan title
+    // ✅ IMPORTANT: We now show this in BOTH home + non-home headers when provided
+    this.planTitle,
+
+    // ✅ controls whether we render the "home accordion" version
     this.homeAccordion = false,
     this.homeAlwaysExpanded = false,
 
     this.onInspireSlot,
     this.onChooseSlot,
-
     this.onReuseSlot,
-
     this.onNoteSlot,
     this.onClearSlot,
 
+    // ✅ Add another snack flow (MealPlanScreen controls whether snack2 exists)
+    this.onAddAnotherSnack,
     this.canSave = false,
     this.onSaveChanges,
-
     this.homeSectionTitleSize,
     this.homeSectionTitleWeight,
+
+    // ✅ copy for empty state
+    this.emptyTitle = 'Build your first meal plan',
+    this.emptyBody =
+        'Choose what you want to include and we’ll generate a plan for you.',
+    this.emptyButtonText = 'BUILD MEAL PLAN',
   });
 
   final Map<String, dynamic> todayRaw;
@@ -47,25 +59,36 @@ class TodayMealPlanSection extends StatelessWidget {
   final VoidCallback? onOpenToday;
   final VoidCallback? onOpenWeek;
 
+  /// When there is no plan yet, show CTA that calls this
+  final VoidCallback? onBuildMealPlan;
+
   final String heroTopText;
   final String heroBottomText;
+
+  final String? planTitle;
 
   final bool homeAccordion;
   final bool homeAlwaysExpanded;
 
   final Future<void> Function(String slot)? onInspireSlot;
   final Future<void> Function(String slot)? onChooseSlot;
-
   final Future<void> Function(String slot)? onReuseSlot;
-
   final Future<void> Function(String slot)? onNoteSlot;
   final Future<void> Function(String slot)? onClearSlot;
+
+  /// ✅ Called when user taps "ADD ANOTHER SNACK".
+  /// MealPlanScreen should open the Choose flow for snack2.
+  final Future<void> Function()? onAddAnotherSnack;
 
   final bool canSave;
   final Future<void> Function()? onSaveChanges;
 
   final double? homeSectionTitleSize;
   final int? homeSectionTitleWeight;
+
+  final String emptyTitle;
+  final String emptyBody;
+  final String emptyButtonText;
 
   bool get _editable =>
       onInspireSlot != null ||
@@ -75,10 +98,8 @@ class TodayMealPlanSection extends StatelessWidget {
       onClearSlot != null ||
       onSaveChanges != null;
 
-  VoidCallback? get _openToday => onOpenToday ?? onOpenMealPlan;
-  VoidCallback? get _openWeek => onOpenWeek ?? onOpenMealPlan;
-
-  bool get _showFooterButtons => _openToday != null || _openWeek != null;
+  // Helper to get the main action
+  VoidCallback? get _mainAction => onOpenMealPlan ?? onOpenWeek ?? onOpenToday;
 
   int _clampWght(int v) => v.clamp(100, 900);
 
@@ -109,15 +130,11 @@ class TodayMealPlanSection extends StatelessWidget {
   // -----------------------------
   // THEME TOKENS (SSoT)
   // -----------------------------
-  Color get _heroBg => AppColors.brandDark;
-  Color get _heroAccent => AppColors.brandActive;
-
   Color get _breakfastBg => AppColors.breakfast;
   Color get _lunchBg => AppColors.lunch;
   Color get _dinnerBg => AppColors.dinner;
   Color get _snacksBg => AppColors.snacks;
 
-  Color get _onDark => AppColors.white;
   Color get _primaryText => AppColors.textPrimary;
 
   static const Color _homePanelBgConst = Color(0xFFECF3F4);
@@ -160,12 +177,19 @@ class TodayMealPlanSection extends StatelessWidget {
     return favoriteIds.contains(recipeId);
   }
 
+  /// Accepts older/alt keys, normalizes to snack1/snack2 (and leaves others alone).
   String _normaliseSlotKey(String key) {
     final k = key.trim().toLowerCase();
-    if (k == 'snack_1' || k == 'snacks_1' || k == 'snack 1' || k == 'snacks 1') {
+    if (k == 'snack_1' ||
+        k == 'snacks_1' ||
+        k == 'snack 1' ||
+        k == 'snacks 1') {
       return 'snack1';
     }
-    if (k == 'snack_2' || k == 'snacks_2' || k == 'snack 2' || k == 'snacks 2') {
+    if (k == 'snack_2' ||
+        k == 'snacks_2' ||
+        k == 'snack 2' ||
+        k == 'snacks 2') {
       return 'snack2';
     }
     return k;
@@ -180,6 +204,27 @@ class TodayMealPlanSection extends StatelessWidget {
       parsedBySlot[slotKey] = parsed;
     }
     return parsedBySlot;
+  }
+
+  bool _hasAnyPlannedEntry(Map<String, Map<String, dynamic>> parsedBySlot) {
+    if (parsedBySlot.isEmpty) return false;
+    for (final e in parsedBySlot.values) {
+      final type = (e['type'] ?? '').toString();
+      if (type == 'recipe' || type == 'note' || type == 'reuse') return true;
+    }
+    return false;
+  }
+
+  bool _isPlannedEntry(Map<String, dynamic>? entry) {
+    if (entry == null) return false;
+    final type = (entry['type'] ?? '').toString();
+    return type == 'recipe' || type == 'note' || type == 'reuse';
+  }
+
+  bool _isEmptyOrClear(Map<String, dynamic>? entry) {
+    if (entry == null) return true;
+    final type = (entry['type'] ?? '').toString().trim();
+    return type.isEmpty || type == 'clear';
   }
 
   // -----------------------------
@@ -254,9 +299,9 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   // -----------------------------
-  // HOME ACCORDION UI
+  // HEADER (shared)
   // -----------------------------
-  Widget _homeHero(BuildContext context) {
+  Widget _heroHeader(BuildContext context) {
     final theme = Theme.of(context);
 
     final heroStyle =
@@ -269,12 +314,615 @@ class TodayMealPlanSection extends StatelessWidget {
       height: 1.2,
     );
 
+    final planTitleStyle =
+        (theme.textTheme.headlineSmall ?? const TextStyle()).copyWith(
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w900,
+      fontVariations: const [FontVariation('wght', 900)],
+      height: 1.05,
+    );
+
+    final showPlanTitle = (planTitle?.trim().isNotEmpty == true);
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(AppSpace.s16, 18, AppSpace.s16, 14),
-      child: Text(
-        '${heroTopText.trim()} ${heroBottomText.trim()}'.trim(),
-        style: heroStyle,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (showPlanTitle) ...[
+            Text(
+              planTitle!.trim(),
+              style: planTitleStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 6),
+          ],
+          Text(
+            '${heroTopText.trim()} ${heroBottomText.trim()}'.trim(),
+            style: heroStyle,
+          ),
+        ],
       ),
+    );
+  }
+
+  // -----------------------------
+  // CARDS
+  // -----------------------------
+  String _slotLabel(String slotKey) {
+    switch (slotKey) {
+      case 'breakfast':
+        return 'Breakfast';
+      case 'lunch':
+        return 'Lunch';
+      case 'dinner':
+        return 'Dinner';
+      case 'snack1':
+        return 'Snack 1';
+      case 'snack2':
+        return 'Snack 2';
+      default:
+        return slotKey;
+    }
+  }
+
+  Widget _mealCard({
+    required BuildContext context,
+    required String slotKey,
+    required Map<String, dynamic>? entry,
+    String? displaySlotLabel,
+  }) {
+    final theme = Theme.of(context);
+
+    // 1. NOTES
+    final note = MealPlanEntryParser.entryNoteText(entry);
+    if (note != null) {
+      return Container(
+        height: 86,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(width: 12),
+            Icon(Icons.sticky_note_2_outlined, color: _primaryText),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                note,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+                  color: _primaryText,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            _slotActions(
+              context: context,
+              slotKey: slotKey,
+              hasEntry: true,
+              iconColor: _primaryText,
+            ),
+            const SizedBox(width: 6),
+          ],
+        ),
+      );
+    }
+
+    // 2. EMPTY STATE
+    if (_isEmptyOrClear(entry)) {
+      return Container(
+        height: 86,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: Row(
+          children: [
+            Icon(Icons.restaurant_menu, color: _primaryText),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Not planned yet',
+                style:
+                    (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+                  color: _primaryText,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            _slotActions(
+              context: context,
+              slotKey: slotKey,
+              hasEntry: false,
+              iconColor: _primaryText,
+            ),
+          ],
+        ),
+      );
+    }
+
+    // 3. RECIPE
+    final rid = MealPlanEntryParser.entryRecipeId(entry);
+    if (rid != null) {
+      final r = _byId(rid);
+      if (r != null) {
+        final displayTitle = _titleOf(r);
+        final thumb = _thumbOf(r);
+        final fav = _isFavorited(rid);
+
+        final reuseMeta = MealPlanEntryParser.entryReuseFrom(entry);
+
+        String labelText = displaySlotLabel ?? _slotLabel(slotKey);
+        if (reuseMeta != null) {
+          final dk = reuseMeta['dayKey'] ?? reuseMeta['fromDayKey'];
+          if (dk != null) labelText = 'Reused from $dk';
+        }
+
+        return InkWell(
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
+          ),
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            height: 86,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 110,
+                  height: double.infinity,
+                  child: thumb == null
+                      ? Center(
+                          child:
+                              Icon(Icons.restaurant_menu, color: _primaryText),
+                        )
+                      : Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Image.network(
+                              thumb,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => Center(
+                                child: Icon(Icons.restaurant_menu,
+                                    color: _primaryText),
+                              ),
+                            ),
+                            if (fav)
+                              Positioned(
+                                top: 8,
+                                left: 8,
+                                child: Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.92),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(
+                                    Icons.star_rounded,
+                                    size: 16,
+                                    color: Colors.amber,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          displayTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              (theme.textTheme.titleMedium ?? const TextStyle())
+                                  .copyWith(
+                            color: AppColors.brandDark,
+                            fontWeight: FontWeight.w700,
+                            fontVariations: const [FontVariation('wght', 700)],
+                            fontSize: 18,
+                            height: 1.1,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          labelText,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              (theme.textTheme.bodyMedium ?? const TextStyle())
+                                  .copyWith(
+                            color: _primaryText.withOpacity(0.85),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_editable)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: _slotActions(
+                      context: context,
+                      slotKey: slotKey,
+                      hasEntry: true,
+                      iconColor: _primaryText,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      }
+    }
+
+    // 4. FALLBACK
+    final reuseMeta = MealPlanEntryParser.entryReuseFrom(entry);
+    if (reuseMeta != null) {
+      final dk = reuseMeta['dayKey'] ?? reuseMeta['fromDayKey'] ?? '?';
+      final sl = reuseMeta['slot'] ?? reuseMeta['fromSlot'] ?? '';
+      final label = 'Reused from $dk • ${displaySlotLabel ?? _slotLabel(sl)}';
+
+      return Container(
+        height: 86,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+        child: Row(
+          children: [
+            Icon(Icons.content_copy_rounded, color: _primaryText),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Reuse link',
+                    style:
+                        (theme.textTheme.titleMedium ?? const TextStyle())
+                            .copyWith(
+                      color: AppColors.brandDark,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        (theme.textTheme.bodyMedium ?? const TextStyle())
+                            .copyWith(
+                      color: _primaryText.withOpacity(0.85),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            _slotActions(
+              context: context,
+              slotKey: slotKey,
+              hasEntry: true,
+              iconColor: _primaryText,
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      height: 86,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline, color: Colors.red),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Unknown item',
+              style:
+                  (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+                color: _primaryText,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          _slotActions(
+            context: context,
+            slotKey: slotKey,
+            hasEntry: true,
+            iconColor: _primaryText,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _addAnotherSnackButton(BuildContext context) {
+    if (!_editable) return const SizedBox.shrink();
+    if (onAddAnotherSnack == null) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    final labelStyle =
+    (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
+  color: Colors.white,
+  fontWeight: FontWeight.w900,
+  fontVariations: const [FontVariation('wght', 900)],
+  letterSpacing: 0.2,
+);
+
+    return SizedBox(
+      height: 44,
+      width: double.infinity,
+      child: OutlinedButton(
+        onPressed: () => onAddAnotherSnack!.call(),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppColors.white,
+          side: BorderSide(
+            color: AppColors.white.withOpacity(0.35),
+            width: 2,
+          ),
+          shape: const StadiumBorder(),
+        ),
+        child: Text('ADD ANOTHER SNACK', style: labelStyle),
+      ),
+    );
+  }
+
+  Widget _homeButtons(BuildContext context) {
+    if (_mainAction == null) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    final labelStyle =
+        (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w800,
+      fontSize: 14,
+      fontVariations: const [FontVariation('wght', 800)],
+      letterSpacing: 0,
+    );
+
+    final btnStyle = OutlinedButton.styleFrom(
+      foregroundColor: AppColors.brandDark,
+      side: BorderSide(
+        color: AppColors.brandDark.withOpacity(0.35),
+        width: 2,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(AppSpace.s16, 16, AppSpace.s16, 18),
+      child: SizedBox(
+        height: 52,
+        width: double.infinity,
+        child: OutlinedButton(
+          onPressed: _mainAction,
+          style: btnStyle,
+          child: Text('VIEW FULL PLAN', style: labelStyle),
+        ),
+      ),
+    );
+  }
+
+  // ✅ snack lane collapsing helper
+  List<MapEntry<String, Map<String, dynamic>>> _plannedSnacks(
+    Map<String, Map<String, dynamic>> parsed,
+  ) {
+    final s1 = parsed['snack1'];
+    final s2 = parsed['snack2'];
+
+    final out = <MapEntry<String, Map<String, dynamic>>>[];
+    if (_isPlannedEntry(s1)) out.add(MapEntry('snack1', s1!));
+    if (_isPlannedEntry(s2)) out.add(MapEntry('snack2', s2!));
+    return out;
+  }
+
+  // -----------------------------
+  // EMPTY CTA
+  // -----------------------------
+  Widget _emptyState(BuildContext context) {
+    return Container(
+      color: _homePanelBgConst,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _heroHeader(context),
+          Padding(
+            padding:
+                const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
+            child: _EmptyCtaCard(
+              title: emptyTitle,
+              body: emptyBody,
+              buttonText: emptyButtonText,
+              onPressed: onBuildMealPlan,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // -----------------------------
+  // NON-HOME UI (simple list)
+  // -----------------------------
+  Widget _nonHomeSection(BuildContext context) {
+    final parsed = _parsedBySlot();
+
+    if (!_hasAnyPlannedEntry(parsed) && onBuildMealPlan != null) {
+      return _emptyState(context);
+    }
+
+    final breakfast = parsed['breakfast'];
+    final lunch = parsed['lunch'];
+    final dinner = parsed['dinner'];
+
+    final planned = _plannedSnacks(parsed);
+    final hasTwoSnacks = planned.length >= 2;
+
+    final primarySnackKey = planned.isNotEmpty ? planned[0].key : 'snack1';
+    final primarySnackEntry =
+        planned.isNotEmpty ? planned[0].value : parsed['snack1'];
+
+    final secondarySnackKey = hasTwoSnacks ? planned[1].key : null;
+    final secondarySnackEntry = hasTwoSnacks ? planned[1].value : null;
+
+    return Container(
+      color: _homePanelBgConst,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _heroHeader(context),
+          Padding(
+            padding:
+                const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 12),
+            child: Column(
+              children: [
+                _mealCard(context: context, slotKey: 'breakfast', entry: breakfast),
+                const SizedBox(height: 10),
+                _mealCard(context: context, slotKey: 'lunch', entry: lunch),
+                const SizedBox(height: 10),
+                _mealCard(context: context, slotKey: 'dinner', entry: dinner),
+                const SizedBox(height: 10),
+                _mealCard(
+                  context: context,
+                  slotKey: primarySnackKey,
+                  entry: primarySnackEntry,
+                  displaySlotLabel: 'Snack 1',
+                ),
+                if (onAddAnotherSnack != null && planned.length == 1) ...[
+                  const SizedBox(height: 10),
+                  _addAnotherSnackButton(context),
+                ],
+                if (secondarySnackKey != null && secondarySnackEntry != null) ...[
+                  const SizedBox(height: 10),
+                  _mealCard(
+                    context: context,
+                    slotKey: secondarySnackKey,
+                    entry: secondarySnackEntry,
+                    displaySlotLabel: 'Snack 2',
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // -----------------------------
+  // HOME UI (Accordion)
+  // -----------------------------
+  Widget _homeSection(BuildContext context) {
+    final parsed = _parsedBySlot();
+
+    if (!_hasAnyPlannedEntry(parsed) && onBuildMealPlan != null) {
+      return _emptyState(context);
+    }
+
+    final breakfast = parsed['breakfast'];
+    final lunch = parsed['lunch'];
+    final dinner = parsed['dinner'];
+
+    final planned = _plannedSnacks(parsed);
+
+    final hasOneSnack = planned.length == 1;
+    final hasTwoSnacks = planned.length >= 2;
+
+    final showAddAnotherSnack = onAddAnotherSnack != null && hasOneSnack;
+
+    final primarySnackKey =
+        (hasOneSnack || hasTwoSnacks) ? planned[0].key : 'snack1';
+    final primarySnackEntry =
+        (hasOneSnack || hasTwoSnacks) ? planned[0].value : parsed['snack1'];
+
+    final secondarySnackKey = hasTwoSnacks ? planned[1].key : null;
+    final secondarySnackEntry = hasTwoSnacks ? planned[1].value : null;
+
+    return _HomeAccordionScaffold(
+      panelBg: _homePanelBgConst,
+      hero: _heroHeader(context), // ✅ includes planTitle when provided
+      breakfastBg: _breakfastBg,
+      lunchBg: _lunchBg,
+      dinnerBg: _dinnerBg,
+      snacksBg: _snacksBg,
+      alwaysExpanded: homeAlwaysExpanded,
+      buildItem: ({
+        required String title,
+        required Color bg,
+        required bool expanded,
+        required VoidCallback onToggle,
+        required List<Widget> children,
+        required bool showChevron,
+      }) {
+        return _homeAccordionItem(
+          context: context,
+          title: title,
+          bg: bg,
+          expanded: expanded,
+          onToggle: onToggle,
+          expandedChildren: children,
+          showChevron: showChevron,
+        );
+      },
+      buildBreakfast: (_) => [
+        _mealCard(context: context, slotKey: 'breakfast', entry: breakfast),
+      ],
+      buildLunch: (_) => [
+        _mealCard(context: context, slotKey: 'lunch', entry: lunch),
+      ],
+      buildDinner: (_) => [
+        _mealCard(context: context, slotKey: 'dinner', entry: dinner),
+      ],
+      buildSnacks: (_) => [
+        _mealCard(
+          context: context,
+          slotKey: primarySnackKey,
+          entry: primarySnackEntry,
+          displaySlotLabel: 'Snack 1',
+        ),
+        if (showAddAnotherSnack) ...[
+          const SizedBox(height: 10),
+          _addAnotherSnackButton(context),
+        ],
+        if (secondarySnackKey != null && secondarySnackEntry != null) ...[
+          const SizedBox(height: 10),
+          _mealCard(
+            context: context,
+            slotKey: secondarySnackKey,
+            entry: secondarySnackEntry,
+            displaySlotLabel: 'Snack 2',
+          ),
+        ],
+      ],
+      footer: _homeButtons(context),
     );
   }
 
@@ -351,418 +999,91 @@ class TodayMealPlanSection extends StatelessWidget {
     );
   }
 
-  String _slotLabel(String slotKey) {
-    switch (slotKey) {
-      case 'breakfast':
-        return 'Breakfast';
-      case 'lunch':
-        return 'Lunch';
-      case 'dinner':
-        return 'Dinner';
-      case 'snack1':
-        return 'Snack 1';
-      case 'snack2':
-        return 'Snack 2';
-      default:
-        return slotKey;
-    }
+  @override
+  Widget build(BuildContext context) {
+    // ✅ CRITICAL: actually switch based on the flag.
+    // If this isn't here (or you always return _homeSection),
+    // your non-home title behaviour won't ever render.
+    if (homeAccordion) return _homeSection(context);
+    return _nonHomeSection(context);
   }
+}
 
-  Widget _homeMealCard({
-    required BuildContext context,
-    required String slotKey,
-    required Map<String, dynamic>? entry,
-    required Color titleTint,
-  }) {
-    final theme = Theme.of(context);
+class _EmptyCtaCard extends StatelessWidget {
+  const _EmptyCtaCard({
+    required this.title,
+    required this.body,
+    required this.buttonText,
+    required this.onPressed,
+  });
 
-    // 1. NOTES
-    final note = MealPlanEntryParser.entryNoteText(entry);
-    if (note != null) {
-      return Container(
-        height: 86,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          children: [
-            const SizedBox(width: 12),
-            Icon(Icons.sticky_note_2_outlined, color: _primaryText),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                note,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
-                  color: _primaryText,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            _slotActions(
-              context: context,
-              slotKey: slotKey,
-              hasEntry: true,
-              iconColor: _primaryText,
-            ),
-            const SizedBox(width: 6),
-          ],
-        ),
-      );
-    }
-
-    // 2. EMPTY STATE
-    // ✅ FIX: Also treat explicit 'clear' type as empty
-    if (entry == null || entry['type'] == 'clear') {
-      return Container(
-        height: 86,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        child: Row(
-          children: [
-            Icon(Icons.restaurant_menu, color: _primaryText),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'Not planned yet',
-                style: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-                  color: _primaryText,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            _slotActions(
-              context: context,
-              slotKey: slotKey,
-              hasEntry: false,
-              iconColor: _primaryText,
-            ),
-          ],
-        ),
-      );
-    }
-
-    // 3. RECIPE (Standard or Reused)
-    final rid = MealPlanEntryParser.entryRecipeId(entry);
-    if (rid != null) {
-      final r = _byId(rid);
-      if (r != null) {
-        final displayTitle = _titleOf(r);
-        final thumb = _thumbOf(r);
-        final fav = _isFavorited(rid);
-
-        final reuseMeta = MealPlanEntryParser.entryReuseFrom(entry);
-        String labelText = _slotLabel(slotKey);
-        
-        if (reuseMeta != null) {
-           final dk = reuseMeta['dayKey'] ?? reuseMeta['fromDayKey'];
-           if (dk != null) {
-             labelText = 'Reused from $dk'; 
-           }
-        }
-
-        return InkWell(
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
-          ),
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            height: 86,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 110,
-                  height: double.infinity,
-                  child: thumb == null
-                      ? Center(child: Icon(Icons.restaurant_menu, color: _primaryText))
-                      : Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            Image.network(
-                              thumb,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) =>
-                                  Center(child: Icon(Icons.restaurant_menu, color: _primaryText)),
-                            ),
-                            if (fav)
-                              Positioned(
-                                top: 8,
-                                left: 8,
-                                child: Container(
-                                  padding: const EdgeInsets.all(6),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.92),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(
-                                    Icons.star_rounded,
-                                    size: 16,
-                                    color: Colors.amber,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          displayTitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
-                            color: AppColors.brandDark,
-                            fontWeight: FontWeight.w700,
-                            fontVariations: const [FontVariation('wght', 700)],
-                            fontSize: 18,
-                            height: 1.1,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          labelText,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-                            color: _primaryText.withOpacity(0.85),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (_editable)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 6),
-                    child: _slotActions(
-                      context: context,
-                      slotKey: slotKey,
-                      hasEntry: true,
-                      iconColor: _primaryText,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        );
-      }
-    }
-
-    // 4. FALLBACK: RAW REUSE LINK
-    final reuseMeta = MealPlanEntryParser.entryReuseFrom(entry);
-    if (reuseMeta != null) {
-      final dk = reuseMeta['dayKey'] ?? reuseMeta['fromDayKey'] ?? '?';
-      final sl = reuseMeta['slot'] ?? reuseMeta['fromSlot'] ?? '';
-      
-      final label = 'Reused from $dk • ${_slotLabel(sl)}';
-
-      return Container(
-        height: 86,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
-        child: Row(
-          children: [
-            Icon(Icons.content_copy_rounded, color: _primaryText),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Reuse link',
-                    style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
-                      color: AppColors.brandDark,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-                      color: _primaryText.withOpacity(0.85),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            _slotActions(
-              context: context,
-              slotKey: slotKey,
-              hasEntry: true,
-              iconColor: _primaryText,
-            ),
-          ],
-        ),
-      );
-    }
-
-    // 5. UNKNOWN ITEM
-    return Container(
-      height: 86,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      child: Row(
-        children: [
-          Icon(Icons.error_outline, color: Colors.red),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              'Unknown item',
-              style: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-                color: _primaryText,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          _slotActions(
-            context: context,
-            slotKey: slotKey,
-            hasEntry: true,
-            iconColor: _primaryText,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _homeButtons(BuildContext context) {
-    if (!_showFooterButtons) return const SizedBox.shrink();
-
-    final theme = Theme.of(context);
-
-    final labelStyle =
-        (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
-      color: AppColors.brandDark,
-      fontWeight: FontWeight.w800,
-      fontSize: 14,
-      fontVariations: const [FontVariation('wght', 800)],
-      letterSpacing: 0,
-    );
-
-    final btnStyle = OutlinedButton.styleFrom(
-      foregroundColor: AppColors.brandDark,
-      side: BorderSide(
-        color: AppColors.brandDark.withOpacity(0.35),
-        width: 2,
-      ),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-    );
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpace.s16, 16, AppSpace.s16, 18),
-      child: Row(
-        children: [
-          Expanded(
-            child: SizedBox(
-              height: 52,
-              child: OutlinedButton(
-                onPressed: _openToday,
-                style: btnStyle,
-                child: Text('CUSTOMISE PLAN', style: labelStyle),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: SizedBox(
-              height: 52,
-              child: OutlinedButton(
-                onPressed: _openWeek,
-                style: btnStyle,
-                child: Text('VIEW FULL WEEK', style: labelStyle),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _homeSection(BuildContext context) {
-    final parsed = _parsedBySlot();
-
-    final breakfast = parsed['breakfast'];
-    final lunch = parsed['lunch'];
-    final dinner = parsed['dinner'];
-    final snack1 = parsed['snack1'];
-    final snack2 = parsed['snack2'];
-
-    return _HomeAccordionScaffold(
-      panelBg: _homePanelBgConst,
-      hero: _homeHero(context),
-      breakfastBg: _breakfastBg,
-      lunchBg: _lunchBg,
-      dinnerBg: _dinnerBg,
-      snacksBg: _snacksBg,
-      alwaysExpanded: homeAlwaysExpanded,
-      buildItem: ({
-        required String title,
-        required Color bg,
-        required bool expanded,
-        required VoidCallback onToggle,
-        required List<Widget> children,
-        required bool showChevron,
-      }) {
-        return _homeAccordionItem(
-          context: context,
-          title: title,
-          bg: bg,
-          expanded: expanded,
-          onToggle: onToggle,
-          expandedChildren: children,
-          showChevron: showChevron,
-        );
-      },
-      buildBreakfast: (_) => [
-        _homeMealCard(context: context, slotKey: 'breakfast', entry: breakfast, titleTint: _breakfastBg),
-      ],
-      buildLunch: (_) => [
-        _homeMealCard(context: context, slotKey: 'lunch', entry: lunch, titleTint: _lunchBg),
-      ],
-      buildDinner: (_) => [
-        _homeMealCard(context: context, slotKey: 'dinner', entry: dinner, titleTint: _dinnerBg),
-      ],
-      buildSnacks: (_) => [
-        _homeMealCard(context: context, slotKey: 'snack1', entry: snack1, titleTint: _snacksBg),
-        const SizedBox(height: 10),
-        _homeMealCard(context: context, slotKey: 'snack2', entry: snack2, titleTint: _snacksBg),
-      ],
-      footer: _homeButtons(context),
-    );
-  }
+  final String title;
+  final String body;
+  final String buttonText;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return _homeSection(context);
+    final theme = Theme.of(context);
+
+    final titleStyle =
+        (theme.textTheme.titleLarge ?? const TextStyle()).copyWith(
+      color: AppColors.brandDark,
+      fontWeight: FontWeight.w900,
+      fontSize: 18,
+      fontVariations: const [FontVariation('wght', 900)],
+      height: 1.15,
+    );
+
+    final bodyStyle =
+        (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+      color: AppColors.textPrimary.withOpacity(0.80),
+      fontWeight: FontWeight.w600,
+      height: 1.25,
+    );
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: const [
+          BoxShadow(
+            offset: Offset(0, 10),
+            blurRadius: 24,
+            color: Color.fromRGBO(0, 0, 0, 0.08),
+          )
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: titleStyle),
+          const SizedBox(height: 8),
+          Text(body, style: bodyStyle),
+          const SizedBox(height: 14),
+          SizedBox(
+            height: 52,
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: onPressed,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.brandActive,
+                shape: const StadiumBorder(),
+              ),
+              child: Text(
+                buttonText,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

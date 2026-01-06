@@ -1,16 +1,11 @@
-// lib/meal_plan/saved_meal_plan_detail_screen.dart
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import '../recipes/recipe_detail_screen.dart';
 import '../recipes/recipe_repository.dart';
-
 import 'core/meal_plan_keys.dart';
-import 'core/meal_plan_slots.dart';
-
-// ✅ Import shopping sheet
-import 'widgets/meal_plan_shopping_sheet.dart';
 
 class SavedMealPlanDetailScreen extends StatefulWidget {
   final String savedPlanId;
@@ -21,15 +16,22 @@ class SavedMealPlanDetailScreen extends StatefulWidget {
   });
 
   @override
-  State<SavedMealPlanDetailScreen> createState() => _SavedMealPlanDetailScreenState();
+  State<SavedMealPlanDetailScreen> createState() =>
+      _SavedMealPlanDetailScreenState();
 }
 
 class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
   bool _loading = true;
   String? _error;
 
-  Map<String, dynamic>? _plan; // saved plan doc data
+  Map<String, dynamic>? _plan;
   List<Map<String, dynamic>> _recipes = [];
+
+  String? _activeSavedMealPlanId;
+  Map<String, dynamic>? _currentActiveWeekConfig;
+
+  // ✅ live listener so title updates immediately
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _planSub;
 
   @override
   void initState() {
@@ -37,26 +39,40 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
     _load();
   }
 
-  DocumentReference<Map<String, dynamic>>? _savedDoc() {
-    final u = FirebaseAuth.instance.currentUser;
-    if (u == null) return null;
+  @override
+  void dispose() {
+    _planSub?.cancel();
+    super.dispose();
+  }
 
+  String? _uid() => FirebaseAuth.instance.currentUser?.uid;
+
+  DocumentReference<Map<String, dynamic>> _savedPlanRef(String uid) {
     return FirebaseFirestore.instance
         .collection('users')
-        .doc(u.uid)
+        .doc(uid)
         .collection('savedMealPlans')
         .doc(widget.savedPlanId);
   }
 
-  DocumentReference<Map<String, dynamic>>? _activeWeekDoc(String weekId) {
-    final u = FirebaseAuth.instance.currentUser;
-    if (u == null) return null;
+  void _startSavedPlanListener(String uid) {
+    _planSub?.cancel();
+    _planSub = _savedPlanRef(uid).snapshots().listen((snap) {
+      final data = snap.data();
+      if (!mounted) return;
 
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(u.uid)
-        .collection('mealPlansWeeks')
-        .doc(weekId);
+      if (data == null) {
+        setState(() {
+          _plan = null;
+          _error = 'Saved plan not found.';
+        });
+        return;
+      }
+
+      setState(() {
+        _plan = data;
+      });
+    });
   }
 
   Future<void> _load() async {
@@ -66,37 +82,46 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
     });
 
     try {
-      final doc = _savedDoc();
-      if (doc == null) {
-        setState(() {
-          _error = 'Not logged in.';
-          _loading = false;
-        });
-        return;
-      }
+      final uid = _uid();
+      if (uid == null) throw Exception('Not logged in');
 
-      final snap = await doc.get();
-      final data = snap.data();
-      if (data == null) {
-        setState(() {
-          _error = 'Saved plan not found.';
-          _loading = false;
-        });
-        return;
-      }
+      // ✅ Start live listener immediately (so title updates)
+      _startSavedPlanListener(uid);
 
-      // Load recipes for title/thumb lookup
-      List<Map<String, dynamic>> recipes;
+      // 1) Load saved plan once (for initial render)
+      final savedSnap =
+          await _savedPlanRef(uid).get(const GetOptions(source: Source.serverAndCache));
+      final data = savedSnap.data();
+      if (data == null) throw Exception('Saved plan not found.');
+
+      // 2) Load user profile (active plan id)
+      final userSnap =
+          await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      final userData = userSnap.data() ?? {};
+      final activeId = userData['activeSavedMealPlanId']?.toString();
+
+      // 3) Load current active schedule (week config)
+      final currentWeekId = MealPlanKeys.currentWeekId();
+      final weekSnap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('mealPlansWeeks')
+          .doc(currentWeekId)
+          .get();
+      final weekConfig = weekSnap.data()?['config'] as Map<String, dynamic>?;
+
+      // 4) Load recipes
+      List<Map<String, dynamic>> recipes = [];
       try {
         recipes = await RecipeRepository.ensureRecipesLoaded();
-      } catch (_) {
-        recipes = [];
-      }
+      } catch (_) {}
 
       if (!mounted) return;
       setState(() {
         _plan = data;
         _recipes = recipes;
+        _activeSavedMealPlanId = activeId;
+        _currentActiveWeekConfig = weekConfig;
         _loading = false;
       });
     } catch (e) {
@@ -108,229 +133,292 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
     }
   }
 
-  // ----------------------------
-  // Recipe helpers
-  // ----------------------------
-
-  int? _recipeIdFrom(Map<String, dynamic> r) {
-    final raw = r['id'];
-    if (raw is int) return raw;
-    if (raw is num) return raw.toInt();
-    if (raw is String) return int.tryParse(raw.trim());
-    return int.tryParse(raw?.toString() ?? '');
-  }
-
-  Map<String, dynamic>? _byId(int? id) {
-    if (id == null) return null;
-    for (final r in _recipes) {
-      final rid = _recipeIdFrom(r);
-      if (rid == id) return r;
-    }
-    return null;
-  }
-
-  String _decodeHtmlLite(String s) {
-    return s
-        .replaceAll('&#038;', '&')
-        .replaceAll('&amp;', '&')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'")
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>');
-  }
-
-  String _titleOf(Map<String, dynamic> r) {
-    final t = r['title'];
-    if (t is Map && (t['rendered'] is String)) {
-      final s = (t['rendered'] as String).trim();
-      if (s.isNotEmpty) return _decodeHtmlLite(s);
-    }
-    return 'Untitled';
-  }
-
-  String? _thumbOf(Map<String, dynamic> r) {
-    final recipe = r['recipe'];
-    if (recipe is Map<String, dynamic>) {
-      final url = recipe['image_url'];
-      if (url is String && url.trim().isNotEmpty) return url.trim();
-    }
-    return null;
-  }
-
-  // ----------------------------
-  // Date formatting
-  // ----------------------------
-
-  String _prettyDayKey(String dayKey) {
-    final dt = MealPlanKeys.parseDayKey(dayKey);
-    if (dt == null) return dayKey;
-
-    const weekdays = [
-      'Monday',
-      'Tuesday',
-      'Wednesday',
-      'Thursday',
-      'Friday',
-      'Saturday',
-      'Sunday'
-    ];
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec'
-    ];
-
-    final weekday = weekdays[dt.weekday - 1];
-    final mon = months[dt.month - 1];
-    return '$weekday, ${dt.day} $mon';
-  }
-
-  // ----------------------------
-  // Saved plan entry parsing
-  // ----------------------------
-
-  bool _entryIsRecipe(dynamic entry) {
-    if (entry is Map) {
-      final kind = entry['kind']?.toString();
-      return kind == 'recipe' || entry.containsKey('recipeId');
+  bool get _isActive {
+    if (_activeSavedMealPlanId == widget.savedPlanId) return true;
+    if (_currentActiveWeekConfig != null) {
+      final sourceId = _currentActiveWeekConfig!['sourcePlanId'];
+      if (sourceId.toString() == widget.savedPlanId) return true;
     }
     return false;
   }
 
-  int? _entryRecipeId(dynamic entry) {
-    if (entry is! Map) return null;
-    final raw = entry['recipeId'] ?? entry['id'];
-    if (raw is int) return raw;
-    if (raw is num) return raw.toInt();
-    return int.tryParse(raw?.toString() ?? '');
-  }
-
-  String? _entryNoteText(dynamic entry) {
-    if (entry is! Map) return null;
-    final kind = entry['kind']?.toString();
-    if (kind == 'note') {
-      final t = entry['text'] ?? entry['note'] ?? entry['value'];
-      final s = (t ?? '').toString().trim();
-      return s.isEmpty ? null : s;
-    }
-    final t = entry['text'];
-    final s = (t ?? '').toString().trim();
-    return s.isEmpty ? null : s;
+  String _planTitle() {
+    final s = (_plan?['title'] ?? '').toString().trim();
+    return s.isNotEmpty ? s : 'Meal plan';
   }
 
   // ----------------------------
-  // USE (apply saved -> active plan)
+  // ✅ DATA NORMALIZATION (YOUR EXISTING FIX)
   // ----------------------------
+  Map<String, dynamic> _normalizeForActivation(Map<String, dynamic> rawDayData) {
+    final processed = <String, dynamic>{};
+    processed.addAll(rawDayData);
 
-  Future<bool> _confirmUse() async {
-    final plan = _plan ?? {};
-    final type = (plan['type'] ?? 'week').toString(); // 'week' | 'day'
+    for (final slot in ['breakfast', 'lunch', 'dinner', 'snack1', 'snack2']) {
+      if (rawDayData[slot] is Map) {
+        final entry = Map<String, dynamic>.from(rawDayData[slot]);
 
-    final msg = type == 'day'
-        ? "This will replace today's meal plan."
-        : "This will replace your meal plan for the rest of this week (starting today).";
+        final kind = entry['kind'] ?? entry['type'];
+        if (kind != null) {
+          entry['kind'] = kind;
+          entry['type'] = kind;
+        }
 
-    return (await showDialog<bool>(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('Use this plan?'),
-            content: Text(msg),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Use plan'),
-              ),
-            ],
-          ),
-        )) ??
-        false;
-  }
+        final id = entry['id'] ?? entry['recipeId'];
+        if (id != null) {
+          entry['id'] = id;
+          entry['recipeId'] = id;
+        }
 
-  Map<String, dynamic> _remapSavedWeekDaysFromToday(Map savedDays) {
-    final todayKey = MealPlanKeys.todayKey();
-    final currentWeekId = MealPlanKeys.currentWeekId();
-
-    final targetKeys = MealPlanKeys.weekDayKeys(currentWeekId);
-    final startIndex = targetKeys.indexOf(todayKey);
-    final start = startIndex >= 0 ? startIndex : (DateTime.now().weekday - 1);
-
-    final sourceKeys = savedDays.keys.map((k) => k.toString()).toList()..sort();
-
-    final out = <String, dynamic>{};
-
-    int src = 0;
-    for (int i = start; i < targetKeys.length; i++) {
-      if (src >= sourceKeys.length) break;
-
-      final srcKey = sourceKeys[src];
-      final srcDay = savedDays[srcKey];
-
-      if (srcDay is Map) {
-        out[targetKeys[i]] = srcDay;
+        processed[slot] = entry;
       }
-
-      src += 1;
     }
-
-    return out;
+    return processed;
   }
 
   Future<void> _usePlan() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+    if (_isActive) return;
 
-    final plan = _plan;
-    if (plan == null) return;
+    final plan = _plan!;
+    Map<String, dynamic>? dayData;
+    Map<String, dynamic>? daysData;
+    bool isDayPlan = false;
 
-    final ok = await _confirmUse();
-    if (!ok) return;
+    if (plan['day'] is Map) {
+      isDayPlan = true;
+      dayData = Map<String, dynamic>.from(plan['day']);
+    } else if (plan['days'] is Map) {
+      final map = plan['days'] as Map<String, dynamic>;
+      if (map.length == 1) {
+        isDayPlan = true;
+        dayData = Map<String, dynamic>.from(map.values.first);
+      } else {
+        daysData = map;
+      }
+    }
 
-    final type = (plan['type'] ?? 'week').toString(); // 'week' | 'day'
-    final currentWeekId = MealPlanKeys.currentWeekId();
-    final activeDoc = _activeWeekDoc(currentWeekId);
-    if (activeDoc == null) return;
+    if (isDayPlan && dayData != null) {
+      if (dayData.containsKey('day') && dayData['day'] is Map) {
+        dayData = Map<String, dynamic>.from(dayData['day']);
+      }
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Activate Plan?'),
+        content: Text(
+          isDayPlan
+              ? "This will replace your meal plan for TODAY."
+              : "This will replace your current weekly schedule.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Activate'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
 
     try {
+      final uid = _uid();
+      if (uid == null) throw Exception('Not logged in');
+
+      final currentWeekId = MealPlanKeys.currentWeekId();
       final batch = FirebaseFirestore.instance.batch();
 
-      if (type == 'day') {
-        final todayKey = MealPlanKeys.todayKey();
-        final day = plan['day'];
+      final weekRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('mealPlansWeeks')
+          .doc(currentWeekId);
 
-        if (day is Map) {
+      final todayKey = MealPlanKeys.todayKey();
+      final targetDateKeys = MealPlanKeys.weekDayKeys(currentWeekId);
+
+      if (isDayPlan && dayData != null) {
+        final safeDayData = _normalizeForActivation(dayData);
+
+        batch.set(
+          weekRef,
+          {
+            'uid': uid,
+            'weekId': currentWeekId,
+            'days': {todayKey: safeDayData},
+            'config': {
+              'sourcePlanId': widget.savedPlanId,
+              'updatedAt': FieldValue.serverTimestamp(),
+              'daysToPlan': 1,
+              'startDate': todayKey,
+            }
+          },
+          SetOptions(merge: true),
+        );
+      } else if (daysData != null) {
+        final sourceKeys = daysData.keys.toList()..sort();
+        final remapped = <String, dynamic>{};
+
+        for (int i = 0; i < targetDateKeys.length; i++) {
+          if (i < sourceKeys.length) {
+            final rawDay = daysData[sourceKeys[i]];
+            if (rawDay is Map<String, dynamic>) {
+              remapped[targetDateKeys[i]] = _normalizeForActivation(rawDay);
+            } else {
+              remapped[targetDateKeys[i]] = rawDay;
+            }
+          }
+        }
+
+        batch.set(
+          weekRef,
+          {
+            'uid': uid,
+            'weekId': currentWeekId,
+            'days': remapped,
+            'config': {
+              'sourcePlanId': widget.savedPlanId,
+              'updatedAt': FieldValue.serverTimestamp(),
+              'daysToPlan': 7,
+              'startDate': targetDateKeys.first,
+            }
+          },
+          SetOptions(merge: true),
+        );
+      }
+
+      final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+      batch.set(
+        userRef,
+        {'activeSavedMealPlanId': widget.savedPlanId},
+        SetOptions(merge: true),
+      );
+
+      await batch.commit();
+
+      if (!mounted) return;
+
+      setState(() {
+        _activeSavedMealPlanId = widget.savedPlanId;
+        _currentActiveWeekConfig = {'sourcePlanId': widget.savedPlanId};
+      });
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Plan Activated!')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
+  /// ✅ FULL DELETE (prevents ghost plans):
+  /// - delete savedMealPlans/{id}
+  /// - if active: clear users.activeSavedMealPlanId
+  /// - if current week points at it: detach config.sourcePlanId
+  /// - clear schedule days (today only for day-plan; whole week for week-plan)
+  /// - pop back to root (Home)
+  Future<void> _deletePlan() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Plan?'),
+        content: const Text('This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    final uid = _uid();
+    if (uid == null) return;
+
+    final fs = FirebaseFirestore.instance;
+    final currentWeekId = MealPlanKeys.currentWeekId();
+    final todayKey = MealPlanKeys.todayKey();
+
+    // Determine day vs week using loaded plan (fallback to week if unknown)
+    final plan = _plan;
+    bool isDayPlan = false;
+    if (plan != null) {
+      if (plan['day'] is Map) {
+        isDayPlan = true;
+      } else if (plan['days'] is Map) {
+        final map = plan['days'] as Map;
+        if (map.length == 1) isDayPlan = true;
+      }
+    }
+
+    try {
+      // stop listener so it doesn't flash "not found" mid-delete
+      _planSub?.cancel();
+      _planSub = null;
+
+      final batch = fs.batch();
+
+      final savedRef = fs
+          .collection('users')
+          .doc(uid)
+          .collection('savedMealPlans')
+          .doc(widget.savedPlanId);
+
+      final userRef = fs.collection('users').doc(uid);
+
+      final weekRef = fs
+          .collection('users')
+          .doc(uid)
+          .collection('mealPlansWeeks')
+          .doc(currentWeekId);
+
+      // 1) Delete the saved plan doc
+      batch.delete(savedRef);
+
+      // 2) If user points to it as active, clear pointer
+      if ((_activeSavedMealPlanId ?? '') == widget.savedPlanId) {
+        batch.set(
+          userRef,
+          {'activeSavedMealPlanId': FieldValue.delete()},
+          SetOptions(merge: true),
+        );
+      }
+
+      // 3) If week config points to it, detach + clear schedule
+      final weekSourceId = _currentActiveWeekConfig?['sourcePlanId']?.toString();
+      if ((weekSourceId ?? '') == widget.savedPlanId) {
+        if (isDayPlan) {
+          // Clear only today (day plan)
           batch.set(
-            activeDoc,
+            weekRef,
             {
-              'days': {todayKey: day},
-              'appliedFromSavedPlanId': widget.savedPlanId,
+              'config': {'sourcePlanId': FieldValue.delete()},
+              'days': {todayKey: FieldValue.delete()},
               'updatedAt': FieldValue.serverTimestamp(),
             },
             SetOptions(merge: true),
           );
-        }
-      } else {
-        final days = plan['days'];
-        if (days is Map) {
-          final remapped = _remapSavedWeekDaysFromToday(days);
-
+        } else {
+          // Clear whole week plan
           batch.set(
-            activeDoc,
+            weekRef,
             {
-              'days': remapped,
-              'appliedFromSavedPlanId': widget.savedPlanId,
+              'config': FieldValue.delete(),
+              'days': <String, dynamic>{},
               'updatedAt': FieldValue.serverTimestamp(),
             },
             SetOptions(merge: true),
@@ -341,363 +429,250 @@ class _SavedMealPlanDetailScreenState extends State<SavedMealPlanDetailScreen> {
       await batch.commit();
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Plan applied.')),
-      );
+
+      // ✅ go back to home so hub refreshes cleanly
+      Navigator.of(context).popUntil((r) => r.isFirst);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not apply plan: $e')),
-      );
-    }
-  }
+      // reattach listener on failure
+      final uid2 = _uid();
+      if (uid2 != null) _startSavedPlanListener(uid2);
 
-  // ---- DELETE ----
-
-  Future<bool> _confirmDelete() async {
-    return (await showDialog<bool>(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('Delete saved plan?'),
-            content: const Text('This cannot be undone.'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.error,
-                  foregroundColor: Theme.of(context).colorScheme.onError,
-                ),
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Delete'),
-              ),
-            ],
-          ),
-        )) ??
-        false;
-  }
-
-  Future<void> _deletePlan() async {
-    final doc = _savedDoc();
-    if (doc == null) return;
-
-    final ok = await _confirmDelete();
-    if (!ok) return;
-
-    try {
-      await doc.delete();
-
-      if (!mounted) return;
-      Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Saved plan deleted.')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not delete: $e')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
     }
   }
 
   // ----------------------------
-  // Card UI bits
+  // Widget Builders
   // ----------------------------
 
-  static const _bg = Color(0xFFECF3F4);
-  static const _headerBg = Color(0xFFE7EFF0);
+  int? _recipeIdFrom(Map r) {
+    final raw = r['id'] ?? r['recipeId'];
+    if (raw is int) return raw;
+    return int.tryParse(raw?.toString() ?? '');
+  }
 
-  Widget _thumbSmall(String? url) {
-    const size = 38.0;
+  String _decodeHtmlLite(String s) {
+    return s.replaceAll('&#038;', '&').replaceAll('&amp;', '&');
+  }
 
-    if (url == null || url.trim().isEmpty) {
-      return Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        ),
-        child: const Icon(Icons.restaurant_menu, size: 16),
-      );
+  String _getRecipeTitle(int id) {
+    final r = _recipes.firstWhere((e) => _recipeIdFrom(e) == id, orElse: () => {});
+    if (r.isNotEmpty && r['title'] is Map) {
+      final t = r['title']['rendered']?.toString() ?? 'Recipe #$id';
+      return _decodeHtmlLite(t);
+    }
+    return 'Recipe #$id';
+  }
+
+  String? _getRecipeImage(int id) {
+    final r = _recipes.firstWhere((e) => _recipeIdFrom(e) == id, orElse: () => {});
+    if (r.isNotEmpty && r['recipe'] is Map) {
+      return r['recipe']['image_url']?.toString();
+    }
+    return null;
+  }
+
+  Widget _buildSlot(String slotName, dynamic entry) {
+    if (entry is! Map) return const SizedBox.shrink();
+
+    final type = entry['kind'] ?? entry['type'];
+    if (type == 'clear') return const SizedBox.shrink();
+
+    String title = 'Item';
+    String? img;
+
+    if (type == 'recipe' || entry.containsKey('id') || entry.containsKey('recipeId')) {
+      final rid = _recipeIdFrom(entry);
+      if (rid != null) {
+        title = _getRecipeTitle(rid);
+        img = _getRecipeImage(rid);
+      }
+    } else if (type == 'note') {
+      title = (entry['text'] ?? 'Note').toString();
     }
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: Image.network(
-        url,
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          ),
-          child: const Icon(Icons.restaurant_menu, size: 16),
-        ),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
       ),
-    );
-  }
-
-  String _slotLabel(String slot) => slot.toUpperCase();
-
-  Widget _slotMiniCard({
-    required String slot,
-    required dynamic entry,
-  }) {
-    final theme = Theme.of(context);
-    final label = _slotLabel(slot);
-
-    // resolve row content
-    final bool isRecipe = _entryIsRecipe(entry);
-    final int? rid = isRecipe ? _entryRecipeId(entry) : null;
-    final Map<String, dynamic>? r = isRecipe ? _byId(rid) : null;
-    final String title = isRecipe ? ((r == null) ? 'Recipe #$rid' : _titleOf(r)) : 'Not set';
-    final String? thumb = isRecipe ? ((r == null) ? null : _thumbOf(r)) : null;
-
-    final String? note = !isRecipe ? _entryNoteText(entry) : null;
-    final bool isNote = note != null && note.trim().isNotEmpty;
-
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(16),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: isRecipe && rid != null
-            ? () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
-                )
-            : null,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-          child: Row(
-            children: [
-              if (isRecipe)
-                _thumbSmall(thumb)
-              else
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    color: theme.colorScheme.surfaceContainerHighest,
-                  ),
-                  child: Icon(
-                    isNote ? Icons.sticky_note_2_outlined : Icons.remove_circle_outline,
-                    size: 16,
-                  ),
-                ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isNote ? note! : title,
-                      maxLines: isNote ? 2 : 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        height: 1.1,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      label,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        letterSpacing: 0.6,
-                        fontWeight: FontWeight.w800,
-                        height: 1.0,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (isRecipe)
-                const Padding(
-                  padding: EdgeInsets.only(left: 8),
-                  child: Icon(Icons.chevron_right, size: 20),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _daySectionCard({
-    required String title,
-    required Map day,
-  }) {
-    final theme = Theme.of(context);
-
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(22),
-      clipBehavior: Clip.antiAlias,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w900,
-              ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(8),
+              image: img != null
+                  ? DecorationImage(image: NetworkImage(img), fit: BoxFit.cover)
+                  : null,
             ),
-            const SizedBox(height: 10),
-
-            // ✅ mini cards per slot
-            for (final slot in MealPlanSlots.order) ...[
-              _slotMiniCard(slot: slot, entry: day[slot]),
-              const SizedBox(height: 10),
-            ]
-          ],
-        ),
+            child: img == null
+                ? const Icon(Icons.restaurant, size: 20, color: Colors.grey)
+                : null,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text(
+                  slotName.toUpperCase(),
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          )
+        ],
       ),
     );
   }
 
-  // ----------------------------
-  // Build
-  // ----------------------------
+  Widget _buildDaySection(String label, Map data) {
+    final slots = ['breakfast', 'lunch', 'dinner', 'snack1', 'snack2'];
+    final hasData = slots.any((s) => data[s] != null);
+
+    if (!hasData) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (label.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ...slots.map((s) => _buildSlot(s, data[s])),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final u = FirebaseAuth.instance.currentUser;
-    if (u == null) {
-      return const Scaffold(
-        body: Center(child: Text('Log in to view saved meal plans')),
-      );
-    }
-
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-
     if (_error != null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Saved plan')),
-        body: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Text('Error: $_error'),
-        ),
+      return Scaffold(appBar: AppBar(), body: Center(child: Text(_error!)));
+    }
+    if (_plan == null) {
+      return const Scaffold(
+        body: Center(child: Text('Saved plan not found.')),
       );
     }
 
-    final plan = _plan ?? {};
-    final title = (plan['title'] ?? '').toString().trim();
-    final type = (plan['type'] ?? 'week').toString(); // 'week' | 'day'
+    final plan = _plan!;
+    final title = _planTitle();
+    final isActive = _isActive;
+
+    bool isDay = false;
+    if (plan['day'] is Map) {
+      isDay = true;
+    } else if (plan['days'] is Map) {
+      final map = plan['days'] as Map;
+      if (map.length == 1) isDay = true;
+    }
 
     return Scaffold(
-      backgroundColor: _bg,
+      backgroundColor: const Color(0xFFECF3F4),
       appBar: AppBar(
-        backgroundColor: _bg,
+        title: Text(title),
+        backgroundColor: Colors.transparent,
         elevation: 0,
-        scrolledUnderElevation: 0,
-        title: Text(title.isNotEmpty ? title : 'Saved plan'),
         actions: [
-          // ✅ NEW: Shopping List Button
           IconButton(
-            tooltip: 'Add to Shopping List',
-            icon: const Icon(Icons.shopping_cart_outlined),
-            onPressed: () {
-              if (_plan != null) {
-                // ✅ CORRECT: Build titles map and pass 3 arguments
-                final knownTitles = <int, String>{};
-                for (final r in _recipes) {
-                  final id = _recipeIdFrom(r);
-                  final t = _titleOf(r);
-                  if (id != null) knownTitles[id] = t;
-                }
-                
-                MealPlanShoppingSheet.show(context, _plan!, knownTitles);
-              }
-            },
-          ),
-          IconButton(
-            tooltip: 'Delete',
             icon: const Icon(Icons.delete_outline),
             onPressed: _deletePlan,
           ),
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+        padding: const EdgeInsets.all(16),
         children: [
-          // header bar
           Container(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
-              color: _headerBg,
-              borderRadius: BorderRadius.circular(22),
+              color: const Color(0xFFE0F2F1),
+              borderRadius: BorderRadius.circular(16),
+              border: isActive
+                  ? Border.all(color: const Color(0xFF32998D), width: 2)
+                  : null,
             ),
             child: Row(
               children: [
                 Expanded(
                   child: Text(
-                    type == 'day' ? 'Saved day plan' : 'Saved week plan',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w900,
-                        ),
+                    isActive ? 'Currently Active' : 'Not Active',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: isActive
+                          ? const Color(0xFF32998D)
+                          : Colors.grey[700],
+                    ),
                   ),
                 ),
-                ElevatedButton.icon(
-                  onPressed: _usePlan,
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('USE'),
+                ElevatedButton(
+                  onPressed: isActive ? null : _usePlan,
                   style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                    backgroundColor: const Color(0xFF32998D),
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.transparent,
+                    disabledForegroundColor: const Color(0xFF32998D),
+                    elevation: isActive ? 0 : 2,
                   ),
-                ),
+                  child: Text(isActive ? 'ACTIVE' : 'ACTIVATE'),
+                )
               ],
             ),
           ),
-          const SizedBox(height: 14),
-
-          if (type == 'week') ...[
-            Builder(builder: (_) {
+          const SizedBox(height: 20),
+          Builder(builder: (ctx) {
+            if (isDay) {
+              final dayData = plan['day'] ?? (plan['days'] as Map?)?.values.first;
+              if (dayData is! Map) {
+                return const Center(child: Text("No meals found in this plan."));
+              }
+              return _buildDaySection("Plan Items", dayData);
+            } else {
               final days = plan['days'];
-              if (days is! Map) return const Text('No days found in this saved plan.');
-
-              final keys = days.keys.map((k) => k.toString()).toList()..sort();
-
-              final widgets = <Widget>[];
-              for (final dayKey in keys) {
-                final day = days[dayKey];
-                if (day is! Map) continue;
-
-                widgets.add(_daySectionCard(
-                  title: _prettyDayKey(dayKey),
-                  day: day,
-                ));
-                widgets.add(const SizedBox(height: 14));
+              if (days is! Map) {
+                return const Center(child: Text("No meals found in this plan."));
               }
 
-              if (widgets.isNotEmpty) widgets.removeLast();
-              return Column(children: widgets);
-            }),
-          ] else ...[
-            Builder(builder: (_) {
-              final day = plan['day'];
-              if (day is! Map) return const Text('No day data found in this saved plan.');
+              final keys = days.keys.toList()..sort();
+              return Column(
+                children: keys.map((k) {
+                  String label = "Day $k";
+                  final dt = MealPlanKeys.parseDayKey(k.toString());
+                  if (dt != null) {
+                    label = "${dt.day}/${dt.month} (${_dayName(dt.weekday)})";
+                  } else if (int.tryParse(k.toString()) != null) {
+                    label = "Day ${int.parse(k.toString()) + 1}";
+                  }
 
-              final dayKey = (plan['dayKey'] ?? MealPlanKeys.todayKey()).toString();
-              return _daySectionCard(
-                title: _prettyDayKey(dayKey),
-                day: day,
+                  return _buildDaySection(label, days[k]);
+                }).toList(),
               );
-            }),
-          ],
+            }
+          })
         ],
       ),
     );
   }
+
+  String _dayName(int w) => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][w - 1];
 }
