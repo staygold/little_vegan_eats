@@ -185,13 +185,19 @@ class MealPlanController extends ChangeNotifier {
     return u.uid;
   }
 
+  /// ✅ IMPORTANT:
+  /// Do NOT use "any map exists" logic here — that causes ghost plans.
+  /// Only count real content (recipeId/text), not just {type/kind/source}.
   bool get hasActivePlan {
-    if (weekData == null) return false;
-    return MealPlanRepository.hasAnyPlannedEntries(weekData);
+    final data = weekData;
+    if (data == null) return false;
+    return _weekHasMeaningfulPlanData(data);
   }
 
   void start() {
     _sub?.cancel();
+    isLoading = true;
+
     _sub = _repo.watchWeek(uid: uid, weekId: weekId).listen((data) {
       weekData = data;
       isLoading = false;
@@ -223,6 +229,134 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
+  // Meaningful plan detection (prevents "ghost plans")
+  // -------------------------------------------------------
+
+  int? _asInt(dynamic v) {
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    return int.tryParse(v?.toString() ?? '');
+  }
+
+  bool _isValidRecipeId(dynamic v) {
+    final n = (v is int) ? v : int.tryParse(v?.toString() ?? '');
+    return (n ?? 0) > 0;
+  }
+
+  bool _isSlotEntryMap(Map m) {
+    final keys = m.keys.map((e) => e.toString()).toSet();
+    return keys.contains('type') ||
+        keys.contains('kind') ||
+        keys.contains('recipeId') ||
+        keys.contains('id') ||
+        keys.contains('text') ||
+        keys.contains('note') ||
+        keys.contains('fromDayKey') ||
+        keys.contains('fromSlot');
+  }
+
+  bool _slotHasRealContent(Map m) {
+    final type = (m['type'] ?? m['kind'] ?? '').toString().trim().toLowerCase();
+
+    // cleared/clear = not meaningful content
+    if (type == 'clear' || type == 'cleared') return false;
+
+    // note requires text
+    if (type == 'note') {
+      final t = (m['text'] ?? '').toString().trim();
+      return t.isNotEmpty;
+    }
+
+    // recipe requires recipe id
+    if (type == 'recipe') {
+      return _isValidRecipeId(m['recipeId']) || _isValidRecipeId(m['id']);
+    }
+
+    // reuse is meaningful only if it references something real (still counts as having plan structure)
+    // BUT for "ghost plan" detection, reuse-only plans should NOT count unless they resolve to a real entry.
+    // So treat reuse as non-meaningful here.
+    if (type == 'reuse') return false;
+
+    // Unknown entry maps: only meaningful if there's a usable recipe id or text
+    if (_isValidRecipeId(m['recipeId']) || _isValidRecipeId(m['id'])) return true;
+    final t = (m['text'] ?? m['note'] ?? '').toString().trim();
+    if (t.isNotEmpty) return true;
+
+    return false;
+  }
+
+  bool _hasMeaningfulValue(dynamic v) {
+    if (v == null) return false;
+
+    if (v is String) return v.trim().isNotEmpty;
+    if (v is num || v is bool) return true;
+
+    if (v is List) {
+      for (final item in v) {
+        if (_hasMeaningfulValue(item)) return true;
+      }
+      return false;
+    }
+
+    if (v is Map) {
+      if (v.isEmpty) return false;
+
+      // ✅ Key fix
+      if (_isSlotEntryMap(v)) {
+        return _slotHasRealContent(v);
+      }
+
+      for (final entry in v.entries) {
+        final key = entry.key.toString();
+        final val = entry.value;
+        if (key == 'updatedAt' || key == 'createdAt') continue;
+        if (_hasMeaningfulValue(val)) return true;
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  bool _dayHasMeaningfulSlots(Map<String, dynamic> day) {
+    for (final slot in MealPlanSlots.order) {
+      final v = day[slot];
+      if (_hasMeaningfulValue(v)) return true;
+
+      // legacy snack keys
+      if (slot == 'snack1' && _hasMeaningfulValue(day['snack_1'])) return true;
+      if (slot == 'snack2' && _hasMeaningfulValue(day['snack_2'])) return true;
+    }
+    return false;
+  }
+
+  bool _weekHasMeaningfulPlanData(Map<String, dynamic> week) {
+    final days = week['days'];
+    if (days is! Map) return false;
+
+    // Determine mode (day vs week) but in both cases:
+    // - only count meaningful slot entries.
+    final cfg = week['config'];
+    final daysToPlan = (cfg is Map) ? _asInt(cfg['daysToPlan']) : null;
+    final isDayPlan = (daysToPlan ?? 0) == 1;
+
+    if (isDayPlan) {
+      final tk = MealPlanKeys.todayKey();
+      final today = (days[tk] is Map) ? Map<String, dynamic>.from(days[tk] as Map) : <String, dynamic>{};
+      return _dayHasMeaningfulSlots(today);
+    }
+
+    for (final entry in days.entries) {
+      final v = entry.value;
+      if (v is Map) {
+        final m = Map<String, dynamic>.from(v as Map);
+        if (_dayHasMeaningfulSlots(m)) return true;
+      }
+    }
+    return false;
+  }
+
+  // -------------------------------------------------------
   // Activation / Deletion Logic
   // -------------------------------------------------------
 
@@ -236,7 +370,9 @@ class MealPlanController extends ChangeNotifier {
     final targetDates = MealPlanKeys.weekDayKeys(weekId);
 
     final rawConfig = savedPlan['config'];
-    final config = (rawConfig is Map) ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
+    final config = (rawConfig is Map)
+        ? Map<String, dynamic>.from(rawConfig)
+        : <String, dynamic>{};
 
     final v = config['daysToPlan'];
     final daysToPlan = (v is int) ? v : int.tryParse(v?.toString() ?? '');
@@ -246,14 +382,12 @@ class MealPlanController extends ChangeNotifier {
     final Map<String, Map<String, dynamic>> newActiveDays = {};
 
     if (isDayPlan) {
-      // pick intended dayKey if present, else default to first day in horizon (today)
       final tk = (config['targetDayKey'] ?? '').toString().trim();
       final targetDayKey = tk.isNotEmpty ? tk : targetDates.first;
 
-      // clamp to horizon
-      final finalDayKey = targetDates.contains(targetDayKey) ? targetDayKey : targetDates.first;
+      final finalDayKey =
+          targetDates.contains(targetDayKey) ? targetDayKey : targetDates.first;
 
-      // use template day "0" (or first available map) for the single-day data
       Map<String, dynamic>? dayData;
       if (sourceDays['0'] is Map) {
         dayData = Map<String, dynamic>.from(sourceDays['0'] as Map);
@@ -335,8 +469,23 @@ class MealPlanController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// ✅ IMPORTANT:
+  /// Clearing the active plan must also clear user-level pointers,
+  /// otherwise the hub can "think" something is active via legacy fields.
   Future<void> clearPlan() async {
+    // 1) Delete the current week document (this is the real source of truth for active plan content)
     await _repo.deleteWeek(uid: uid, weekId: weekId);
+
+    // 2) Also clear user pointer (prevents hub / other screens thinking a deleted saved plan is still active)
+    final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+    await userRef.set(
+      {
+        'activeSavedMealPlanId': FieldValue.delete(),
+      },
+      SetOptions(merge: true),
+    );
+
+    // 3) Reset local state
     weekData = null;
     _draft.clear();
     notifyListeners();
@@ -387,9 +536,9 @@ class MealPlanController extends ChangeNotifier {
       }
 
       if (type == 'recipe') {
-        final rid = m['recipeId'];
-        final recipeId = (rid is int) ? rid : (rid is num ? rid.toInt() : null);
-        if (recipeId == null) return null;
+        final rid = m['recipeId'] ?? m['id'];
+        final recipeId = (rid is int) ? rid : (rid is num ? rid.toInt() : int.tryParse('${rid ?? ''}'));
+        if (recipeId == null || recipeId <= 0) return null;
         return {
           'type': 'recipe',
           'recipeId': recipeId,
@@ -543,6 +692,51 @@ class MealPlanController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Set<String> dirtyDayKeys() {
+    final out = <String>{};
+    final dayKeys = MealPlanKeys.weekDayKeys(weekId);
+    for (final dk in dayKeys) {
+      if (hasDraftChanges(dk)) out.add(dk);
+    }
+    return out;
+  }
+
+  int dirtySlotCount() {
+    int total = 0;
+    final dayKeys = MealPlanKeys.weekDayKeys(weekId);
+    for (final dk in dayKeys) {
+      total += dirtySlotsForDay(dk).length;
+    }
+    return total;
+  }
+
+  Set<String> dirtySlotsForDay(String dayKey) {
+    final out = <String>{};
+    final d = _draft[dayKey];
+    if (d == null || d.isEmpty) return out;
+
+    final data = weekData;
+    if (data == null) {
+      out.addAll(d.keys);
+      return out;
+    }
+
+    for (final e in d.entries) {
+      final current = firestoreEntry(dayKey, e.key);
+      if (!_entryEquals(current, e.value)) {
+        out.add(e.key);
+      }
+    }
+    return out;
+  }
+
+  Future<void> saveAllDirtyDays() async {
+    final days = dirtyDayKeys().toList()..sort();
+    for (final dk in days) {
+      await saveDay(dk);
+    }
+  }
+
   bool hasDraftChanges(String dayKey) {
     final d = _draft[dayKey];
     if (d == null || d.isEmpty) return false;
@@ -582,7 +776,8 @@ class MealPlanController extends ChangeNotifier {
       final rb = entryReuseFrom(b);
       if (ra == null && rb == null) return true;
       if (ra == null || rb == null) return false;
-      return ra['dayKey'] == rb['dayKey'] && _normSlot(ra['slot']!) == _normSlot(rb['slot']!);
+      return ra['dayKey'] == rb['dayKey'] &&
+          _normSlot(ra['slot']!) == _normSlot(rb['slot']!);
     }
     if (taNorm == 'clear') return true;
 
@@ -593,7 +788,8 @@ class MealPlanController extends ChangeNotifier {
     final dayDraft = _draft[dayKey];
     if (dayDraft == null || dayDraft.isEmpty) return;
 
-    final existing = MealPlanRepository.dayMapFromWeek(weekData ?? {}, dayKey) ?? {};
+    final existing =
+        MealPlanRepository.dayMapFromWeek(weekData ?? {}, dayKey) ?? {};
 
     final merged = <String, dynamic>{...existing};
     for (final e in dayDraft.entries) {
@@ -631,7 +827,8 @@ class MealPlanController extends ChangeNotifier {
         final from = entryReuseFrom(e);
         if (from == null) continue;
 
-        if (from['dayKey'] == fromDayKey && _normSlot(from['slot']!) == fromSlotNorm) {
+        if (from['dayKey'] == fromDayKey &&
+            _normSlot(from['slot']!) == fromSlotNorm) {
           out.add({'dayKey': dk, 'slot': slot});
         }
       }
@@ -704,7 +901,10 @@ class MealPlanController extends ChangeNotifier {
 
     if (v == null && r['taxonomies'] is Map) {
       final tax = r['taxonomies'];
-      v = tax['course'] ?? tax['recipe_course'] ?? tax['wprm_course'] ?? tax['category'];
+      v = tax['course'] ??
+          tax['recipe_course'] ??
+          tax['wprm_course'] ??
+          tax['category'];
     }
 
     if (v == null) return null;

@@ -1,125 +1,164 @@
-// lib/meal_plan/builder/meal_plan_builder_service.dart
 import 'dart:math';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
-
 import '../core/meal_plan_controller.dart';
+import '../core/meal_plan_keys.dart';
+import '../core/meal_plan_repository.dart';
 
 class MealPlanBuilderService {
   final MealPlanController controller;
-
   MealPlanBuilderService(this.controller);
 
-  /// Converts any Map (often _Map<dynamic,dynamic> from Firestore) into Map<String,dynamic>.
-  /// Safe to use on null / non-map.
-  Map<String, dynamic> _stringKeyMap(Object? v) {
-    if (v is Map) {
-      return v.map((k, val) => MapEntry(k.toString(), val));
-    }
-    return <String, dynamic>{};
-  }
-
+  /// SCENARIO 1 & 2: Generate New Plan (Day or Week)
   Future<void> buildAndActivate({
     required String title,
     required List<Map<String, dynamic>> availableRecipes,
-    required int daysToPlan,
+    required int daysToPlan, // 1 or 7
     required bool includeBreakfast,
     required bool includeLunch,
     required bool includeDinner,
     required bool includeSnacks,
-    required int snackCount, // 0..2
-
-    /// ✅ NEW: For day plans, specify which date in the current planning horizon to activate.
-    /// Must be a YYYY-MM-DD dayKey.
-    String? targetDayKey,
+    required int snackCount, 
+    String? targetDayKey, // required if daysToPlan == 1
   }) async {
-    final builtDays = <String, Map<String, dynamic>>{};
     final random = Random();
+    final isDayPlan = daysToPlan == 1;
 
-    Map<String, dynamic>? getRandomRecipe(String slot) {
+    if (isDayPlan && (targetDayKey == null || targetDayKey.trim().isEmpty)) {
+      throw Exception('Day plan requires a targetDayKey');
+    }
+
+    // --- Helper: Pick Random ---
+    Map<String, dynamic> _pick(String slot) {
       final candidates = controller.getCandidatesForSlot(slot, availableRecipes);
-      if (candidates.isEmpty) return null;
-
+      if (candidates.isEmpty) return <String, dynamic>{'type': 'clear'};
+      
       final id = candidates[random.nextInt(candidates.length)];
-      return <String, dynamic>{
-        'recipeId': id,
+      return {
         'type': 'recipe',
-        'kind': 'recipe', // backwards compat
-        'source': 'auto builder',
+        'kind': 'recipe', // backward compat
+        'recipeId': id,
+        'source': 'auto-builder',
       };
     }
 
-    final effectiveSnackCount = includeSnacks ? snackCount.clamp(0, 2) : 0;
+    // --- Helper: Build 1 Day ---
+    Map<String, dynamic> _buildDay() {
+      final slots = <String, dynamic>{};
+      slots['breakfast'] = includeBreakfast ? _pick('breakfast') : {'type': 'clear'};
+      slots['lunch'] = includeLunch ? _pick('lunch') : {'type': 'clear'};
+      slots['dinner'] = includeDinner ? _pick('dinner') : {'type': 'clear'};
 
-    for (int i = 0; i < daysToPlan; i++) {
-      final daySlots = <String, dynamic>{};
-
-      daySlots['breakfast'] = includeBreakfast
-          ? (getRandomRecipe('breakfast') ?? <String, dynamic>{'type': 'clear'})
-          : <String, dynamic>{'type': 'clear'};
-
-      daySlots['lunch'] = includeLunch
-          ? (getRandomRecipe('lunch') ?? <String, dynamic>{'type': 'clear'})
-          : <String, dynamic>{'type': 'clear'};
-
-      daySlots['dinner'] = includeDinner
-          ? (getRandomRecipe('dinner') ?? <String, dynamic>{'type': 'clear'})
-          : <String, dynamic>{'type': 'clear'};
-
-      // Snacks (0..2)
-      if (effectiveSnackCount == 0) {
-        daySlots['snack1'] = <String, dynamic>{'type': 'clear'};
-        // don't write snack2
-      } else {
-        daySlots['snack1'] =
-            getRandomRecipe('snack') ?? <String, dynamic>{'type': 'clear'};
-
-        if (effectiveSnackCount >= 2) {
-          daySlots['snack2'] =
-              getRandomRecipe('snack') ?? <String, dynamic>{'type': 'clear'};
-        }
-      }
-
-      builtDays[i.toString()] = daySlots;
+      final effectiveSnacks = includeSnacks ? snackCount.clamp(0, 2) : 0;
+      slots['snack1'] = (effectiveSnacks >= 1) ? _pick('snack') : {'type': 'clear'};
+      slots['snack2'] = (effectiveSnacks >= 2) ? _pick('snack') : {'type': 'clear'};
+      return slots;
     }
 
-    // Save as a new document in savedMealPlans
-    final userRef =
-        FirebaseFirestore.instance.collection('users').doc(controller.uid);
-    final newPlanRef = userRef.collection('savedMealPlans').doc();
+    // 1. Generate Data
+    final builtDays = <String, Map<String, dynamic>>{};
+    
+    if (isDayPlan) {
+      final d = _buildDay();
+      d['title'] = title; // Store title on the day slot itself for easy lookup
+      builtDays[targetDayKey!] = d;
+    } else {
+      final weekKeys = MealPlanKeys.weekDayKeys(controller.weekId);
+      for (final dk in weekKeys) {
+        builtDays[dk] = _buildDay();
+      }
+    }
 
-    final planDoc = <String, dynamic>{
+    // 2. Save to History (The "Library")
+    final userRef = FirebaseFirestore.instance.collection('users').doc(controller.uid);
+    final savedPlanRef = userRef.collection('savedMealPlans').doc();
+    
+    await savedPlanRef.set({
       'title': title,
-      'days': builtDays, // template days: "0".."6"
-      'type': daysToPlan == 1 ? 'day' : 'week',
+      'type': isDayPlan ? 'day' : 'week',
+      'days': builtDays,
       'savedAt': FieldValue.serverTimestamp(),
-      'config': <String, dynamic>{
-        // ✅ CRITICAL: used by Home + MealPlanScreen to decide day vs week view
-        'daysToPlan': daysToPlan,
+    });
 
-        // ✅ Snacks
-        'snacksPerDay': effectiveSnackCount,
+    // 3. Activate (Write to "Calendar")
+    final repo = MealPlanRepository(FirebaseFirestore.instance);
+    await repo.ensureWeekExists(uid: controller.uid, weekId: controller.weekId);
 
-        // ✅ For day plans, capture the intended date
-        if (daysToPlan == 1 && targetDayKey != null && targetDayKey.trim().isNotEmpty)
-          'targetDayKey': targetDayKey.trim(),
-      },
-    };
+    if (isDayPlan) {
+      // SCENARIO 1: DAY PLAN
+      // - Update ONLY the specific day slots
+      // - Update config.daySources to track this specific day's origin
+      // - Do NOT touch other days
+      
+      await repo.applyDayPlan(
+        uid: controller.uid,
+        weekId: controller.weekId,
+        dayKey: targetDayKey!,
+        daySlots: builtDays[targetDayKey!]!,
+        sourceDayPlanId: savedPlanRef.id,
+      );
 
-    await newPlanRef.set(planDoc);
+      // Force update the daySource tracker
+      await userRef.collection('mealPlansWeeks').doc(controller.weekId).set({
+        'config': {
+          'daySources': {
+            targetDayKey: savedPlanRef.id
+          }
+        }
+      }, SetOptions(merge: true));
 
-    // Activate it (write to the current week schedule)
-    final baseConfig = _stringKeyMap(planDoc['config']);
+    } else {
+      // SCENARIO 2: WEEK PLAN
+      // - Overwrite ALL days
+      // - Set config.title
+      // - Set config.sourceWeekPlanId
+      
+      await repo.activateWeekPlan(
+        uid: controller.uid,
+        weekId: controller.weekId,
+        days: builtDays,
+        sourceWeekPlanId: savedPlanRef.id,
+      );
+      
+      // Force config update
+      await userRef.collection('mealPlansWeeks').doc(controller.weekId).update({
+         'config.title': title,
+         'config.sourceWeekPlanId': savedPlanRef.id,
+         'config.daySources': FieldValue.delete(), // Clear individual day sources
+      });
+    }
+  }
 
-    final savedPlan = <String, dynamic>{
-      ...planDoc,
-      'config': <String, dynamic>{
-        ...baseConfig,
-        // ✅ CRITICAL: MealPlanScreen sync reads config.sourcePlanId
-        'sourcePlanId': newPlanRef.id,
-      },
-    };
+  /// SCENARIO 3: Convert Active Days -> Saved Week Plan
+  Future<void> saveCurrentWeekAsPlan(String title) async {
+    // 1. Get current active data
+    final weekDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(controller.uid)
+        .collection('mealPlansWeeks')
+        .doc(controller.weekId)
+        .get();
 
-    await controller.activateSavedPlan(savedPlan: savedPlan);
+    if (!weekDoc.exists) throw Exception("No active week to save");
+    
+    final data = weekDoc.data()!;
+    final days = data['days'] as Map<String, dynamic>? ?? {};
+
+    // 2. Save to History
+    final userRef = FirebaseFirestore.instance.collection('users').doc(controller.uid);
+    final savedPlanRef = userRef.collection('savedMealPlans').doc();
+
+    await savedPlanRef.set({
+      'title': title,
+      'type': 'week', // It is now a week plan
+      'days': days,   // Contains the mixed day plans
+      'savedAt': FieldValue.serverTimestamp(),
+    });
+
+    // 3. Update Active Week to point to this new "Master" plan
+    await userRef.collection('mealPlansWeeks').doc(controller.weekId).update({
+      'config.title': title,
+      'config.sourceWeekPlanId': savedPlanRef.id,
+      'config.daySources': FieldValue.delete(), // It's no longer a mix of sources
+    });
   }
 }

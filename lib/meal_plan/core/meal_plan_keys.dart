@@ -1,16 +1,18 @@
+// lib/meal_plan/core/meal_plan_keys.dart
+
 /// Centralised keys + date logic for Meal Plans
 /// ------------------------------------------------
 ///
-/// Design principles:
-/// • A "week" is forward-anchored (today → next 7 days)
-/// • The Firestore week document ID == todayKey
+/// ✅ New design principles:
+/// • A "week" is Monday → Sunday (always)
+/// • The Firestore week document ID == the Monday dayKey of that week
 /// • All screens (Home, Hub, MealPlanScreen) must use this
 ///
 /// This file is the ONLY place date / key logic should live.
 /// ------------------------------------------------
 
 class MealPlanKeys {
-  MealPlanKeys._(); // no instances
+  MealPlanKeys._();
 
   // ---------- Date helpers ----------
 
@@ -18,36 +20,10 @@ class MealPlanKeys {
 
   /// YYYY-MM-DD
   static String dayKey(DateTime d) {
-    final y = d.year.toString().padLeft(4, '0');
-    final m = d.month.toString().padLeft(2, '0');
-    final day = d.day.toString().padLeft(2, '0');
-    return '$y-$m-$day';
+    final dd = d.day.toString().padLeft(2, '0');
+    final mm = d.month.toString().padLeft(2, '0');
+    return '${d.year}-$mm-$dd';
   }
-
-  /// Today's day key (local time)
-  static String todayKey() => dayKey(_dateOnly(DateTime.now()));
-
-  // ---------- Week semantics ----------
-
-  /// Forward-anchored planning week
-  ///
-  /// This is intentionally NOT Monday-based.
-  /// If today is Sunday, the "week" starts Sunday.
-  ///
-  /// Firestore path:
-  /// users/{uid}/mealPlansWeeks/{weekId}
-  static String currentWeekId() => todayKey();
-
-  /// Day keys belonging to this week (7 days forward)
-  static List<String> weekDayKeys(String weekId) {
-    final start = parseDayKey(weekId) ?? _dateOnly(DateTime.now());
-    return List.generate(
-      7,
-      (i) => dayKey(start.add(Duration(days: i))),
-    );
-  }
-
-  // ---------- Parsing ----------
 
   static DateTime? parseDayKey(String key) {
     final parts = key.split('-');
@@ -61,6 +37,43 @@ class MealPlanKeys {
     return DateTime(y, m, d);
   }
 
+  static String todayKey() => dayKey(_dateOnly(DateTime.now()));
+
+  // ---------- Week semantics (MON-SUN) ----------
+
+  static DateTime weekStartMonday(DateTime anyDay) {
+    final d = _dateOnly(anyDay);
+    final delta = d.weekday - DateTime.monday; // Mon=0
+    return d.subtract(Duration(days: delta));
+  }
+
+  /// Week doc id == Monday of week (YYYY-MM-DD)
+  static String weekIdForDate(DateTime anyDay) => dayKey(weekStartMonday(anyDay));
+
+  /// Current week doc id (Monday)
+  static String currentWeekId() => weekIdForDate(DateTime.now());
+
+  /// Day keys belonging to this week (Mon..Sun)
+  static List<String> weekDayKeys(String weekId) {
+    final start = parseDayKey(weekId) ?? weekStartMonday(DateTime.now());
+    return List.generate(7, (i) => dayKey(start.add(Duration(days: i))));
+  }
+
+  static String nextWeekId(String weekId) {
+    final start = parseDayKey(weekId) ?? weekStartMonday(DateTime.now());
+    return dayKey(start.add(const Duration(days: 7)));
+  }
+
+  static String prevWeekId(String weekId) {
+    final start = parseDayKey(weekId) ?? weekStartMonday(DateTime.now());
+    return dayKey(start.subtract(const Duration(days: 7)));
+  }
+
+  static bool isDayKeyInWeek(String weekId, String dayKey) {
+    final keys = weekDayKeys(weekId);
+    return keys.contains(dayKey);
+  }
+
   // ---------- Display helpers ----------
 
   static String formatPretty(String dayKey) {
@@ -68,28 +81,12 @@ class MealPlanKeys {
     if (dt == null) return dayKey;
 
     const weekdays = [
-      'Monday',
-      'Tuesday',
-      'Wednesday',
-      'Thursday',
-      'Friday',
-      'Saturday',
-      'Sunday',
+      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
     ];
 
     const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
     ];
 
     final weekday = weekdays[dt.weekday - 1];
@@ -98,7 +95,7 @@ class MealPlanKeys {
     return '$weekday, ${dt.day} $month';
   }
 
-  /// Single-letter weekday for tabs (S M T W T F S)
+  /// Single-letter weekday for tabs (M T W T F S S)
   static String weekdayLetter(DateTime dt) {
     switch (dt.weekday) {
       case DateTime.monday:

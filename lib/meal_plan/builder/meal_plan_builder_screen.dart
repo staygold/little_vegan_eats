@@ -14,24 +14,33 @@ import 'meal_plan_builder_service.dart';
 enum _HorizonUI { day, week }
 
 class MealPlanBuilderScreen extends StatefulWidget {
-  const MealPlanBuilderScreen({super.key});
+  /// ✅ Optional: preselect the day when building a day plan.
+  /// (Used by week-first empty-day CTA.)
+  final String? initialSelectedDayKey;
+
+  /// ✅ Optional: start on Day or Week. Defaults to week.
+  final bool? startAsDayPlan;
+
+  const MealPlanBuilderScreen({
+    super.key,
+    this.initialSelectedDayKey,
+    this.startAsDayPlan,
+  });
 
   @override
   State<MealPlanBuilderScreen> createState() => _MealPlanBuilderScreenState();
 }
 
 class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
-  // ✅ ADDED: Controller for naming the plan
   final TextEditingController _planNameController = TextEditingController();
 
-  // UI state
   _HorizonUI _horizon = _HorizonUI.week;
 
   bool _breakfast = true;
   bool _lunch = true;
   bool _dinner = true;
 
-  // ✅ MODIFIED: Changed from bool to int to support 0, 1, or 2 snacks
+  /// ✅ 0, 1, or 2 snacks
   int _snacksPerDay = 1;
 
   String _selectedDayKey = MealPlanKeys.todayKey();
@@ -39,12 +48,23 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
   bool _busy = false;
 
   @override
+  void initState() {
+    super.initState();
+
+    final initDay = (widget.initialSelectedDayKey ?? '').trim();
+    if (initDay.isNotEmpty) _selectedDayKey = initDay;
+
+    if (widget.startAsDayPlan == true) {
+      _horizon = _HorizonUI.day;
+    }
+  }
+
+  @override
   void dispose() {
     _planNameController.dispose();
     super.dispose();
   }
 
-  // Helpers
   String get _weekId => MealPlanKeys.currentWeekId();
   List<String> get _next7DayKeys => MealPlanKeys.weekDayKeys(_weekId);
 
@@ -143,7 +163,6 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
 
       final isDayPlan = _horizon == _HorizonUI.day;
 
-      // ✅ MODIFIED: Pass name, exact snack count, AND targetDayKey for day plans
       await builderService.buildAndActivate(
         title: _planNameController.text.trim().isNotEmpty
             ? _planNameController.text.trim()
@@ -156,28 +175,30 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
         includeSnacks: _snacksPerDay > 0,
         snackCount: _snacksPerDay,
 
-        // ✅ CRITICAL: ensures day plan activates ONLY this day
+        // ✅ Day plan activates ONLY the selected day
         targetDayKey: isDayPlan ? _selectedDayKey : null,
       );
 
       if (!mounted) return;
 
       if (isDayPlan) {
+        // ✅ CHANGE: go back to WEEK view, focused on the day we just created
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
             builder: (_) => MealPlanScreen(
               weekId: _weekId,
               focusDayKey: _selectedDayKey,
-
-              // ✅ CRITICAL: force UI to open in Today mode
-              initialViewMode: MealPlanViewMode.today,
+              initialViewMode: MealPlanViewMode.week, // ✅ forces full week UI
             ),
           ),
         );
       } else {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
-            builder: (_) => MealPlanScreen(weekId: _weekId),
+            builder: (_) => MealPlanScreen(
+              weekId: _weekId,
+              initialViewMode: MealPlanViewMode.week,
+            ),
           ),
         );
       }
@@ -248,7 +269,6 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
           children: [
             const SizedBox(height: 12),
 
-            // ✅ NEW: PLAN NAME SECTION
             _sectionTitle('PLAN NAME'),
             _card(
               child: TextField(
@@ -325,7 +345,6 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
               ),
             ),
 
-            // ✅ MODIFIED: SNACKS SELECTION (0, 1, or 2)
             _sectionTitle('SNACKS PER DAY'),
             _card(
               child: Row(
@@ -362,10 +381,7 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _SummaryLine(
-                    label: 'Week',
-                    value: _weekId,
-                  ),
+                  _SummaryLine(label: 'Week', value: _weekId),
                   const SizedBox(height: 6),
                   _SummaryLine(
                     label: 'Plan type',
@@ -373,19 +389,16 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
                   ),
                   if (_horizon == _HorizonUI.day) ...[
                     const SizedBox(height: 6),
-                    _SummaryLine(
-                      label: 'Day',
-                      value: _prettyDay(_selectedDayKey),
-                    ),
+                    _SummaryLine(label: 'Day', value: _prettyDay(_selectedDayKey)),
                   ],
                   const SizedBox(height: 10),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      if (_breakfast) _Chip(text: 'Breakfast'),
-                      if (_lunch) _Chip(text: 'Lunch'),
-                      if (_dinner) _Chip(text: 'Dinner'),
+                      if (_breakfast) const _Chip(text: 'Breakfast'),
+                      if (_lunch) const _Chip(text: 'Lunch'),
+                      if (_dinner) const _Chip(text: 'Dinner'),
                       if (_snacksPerDay > 0) _Chip(text: 'Snacks x$_snacksPerDay'),
                     ],
                   ),
@@ -498,10 +511,7 @@ class _ToggleRow extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w800),
           ),
         ),
-        Switch(
-          value: value,
-          onChanged: onChanged,
-        ),
+        Switch(value: value, onChanged: onChanged),
       ],
     );
   }

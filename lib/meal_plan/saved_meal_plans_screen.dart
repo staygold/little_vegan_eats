@@ -1,3 +1,4 @@
+// lib/meal_plan/saved_meal_plans_screen.dart
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -9,7 +10,7 @@ import 'core/meal_plan_keys.dart';
 import 'core/meal_plan_repository.dart';
 
 import 'saved_meal_plan_detail_screen.dart';
-import 'meal_plan_screen.dart'; 
+import 'meal_plan_screen.dart';
 
 class SavedMealPlansScreen extends StatefulWidget {
   const SavedMealPlansScreen({super.key});
@@ -20,106 +21,152 @@ class SavedMealPlansScreen extends StatefulWidget {
 
 class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
   MealPlanController? _activeCtrl;
+  late final MealPlanRepository _repo;
+
+  StreamSubscription<User?>? _authSub;
 
   @override
   void initState() {
     super.initState();
+    _repo = MealPlanRepository(FirebaseFirestore.instance);
+
     _activeCtrl = MealPlanController(
       auth: FirebaseAuth.instance,
-      repo: MealPlanRepository(FirebaseFirestore.instance),
+      repo: _repo,
       initialWeekId: MealPlanKeys.currentWeekId(),
     );
     _activeCtrl!.start();
+    _activeCtrl!.ensureWeek();
+
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
+      if (!mounted) return;
+      setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _authSub?.cancel();
     _activeCtrl?.stop();
     _activeCtrl?.dispose();
     super.dispose();
   }
 
-  bool _isPlanActive(Map<String, dynamic> savedPlanData, String savedDocId) {
-    if (_activeCtrl?.weekData == null) return false;
-    
-    final activeConfig = _activeCtrl!.weekData!['config'];
-    if (activeConfig is! Map) return false;
+  // -------------------------------------------------------
+  // ACTIVE DETECTION
+  // -------------------------------------------------------
 
-    final activeSourceId = activeConfig['sourcePlanId'];
-    if (activeSourceId != null && activeSourceId.toString() == savedDocId) {
-      return true;
+  bool _weekUsesSavedPlan(Map<String, dynamic>? weekData, String planId) {
+    if (weekData == null) return false;
+
+    final cfg = weekData['config'];
+    if (cfg is! Map) return false;
+
+    // Check Week Plan pointer
+    final sourceWeekPlanId = (cfg['sourceWeekPlanId'] ?? '').toString().trim();
+    if (sourceWeekPlanId.isNotEmpty && sourceWeekPlanId == planId) return true;
+
+    // Check Day pointers
+    final daySources = cfg['daySources'];
+    if (daySources is Map) {
+      for (final v in daySources.values) {
+        final id = (v ?? '').toString().trim();
+        if (id == planId) return true;
+      }
     }
+
+    // Legacy fallback
+    final legacySource = (cfg['sourcePlanId'] ?? '').toString().trim();
+    if (legacySource.isNotEmpty && legacySource == planId) return true;
+
     return false;
   }
 
+  bool _isPlanActive(Map<String, dynamic> savedPlanData, String savedDocId) {
+    return _weekUsesSavedPlan(_activeCtrl?.weekData, savedDocId);
+  }
+
   // ----------------------------
-  // ✅ DATA NORMALIZATION (Shared with Detail Screen)
+  // DATA NORMALIZATION
   // ----------------------------
   Map<String, dynamic> _normalizeForActivation(Map<String, dynamic> rawDayData) {
     final processed = <String, dynamic>{};
     processed.addAll(rawDayData);
 
     for (final slot in ['breakfast', 'lunch', 'dinner', 'snack1', 'snack2']) {
-      if (rawDayData[slot] is Map) {
-        final entry = Map<String, dynamic>.from(rawDayData[slot]);
-        
-        // Unify Type/Kind for backward compatibility
+      final raw = rawDayData[slot];
+      if (raw is Map) {
+        final entry = Map<String, dynamic>.from(raw);
+        // Normalize keys
         final kind = entry['kind'] ?? entry['type'];
         if (kind != null) {
           entry['kind'] = kind;
-          entry['type'] = kind; 
+          entry['type'] = kind;
         }
-
-        // Unify ID/RecipeId for Home Screen compatibility
         final id = entry['id'] ?? entry['recipeId'];
         if (id != null) {
           entry['id'] = id;
-          entry['recipeId'] = id; 
+          entry['recipeId'] = id;
         }
-
         processed[slot] = entry;
       }
     }
     return processed;
   }
 
-  // ✅ ROBUST ACTIVATION LOGIC
-  Future<void> _activatePlan(Map<String, dynamic> planData, String docId) async {
-    // 1. DETECT TYPE & SCRUB DATA
+  // -------------------------------------------------------
+  // PLAN SHAPE DETECTION
+  // -------------------------------------------------------
+
+  ({bool isDayPlan, Map<String, dynamic>? dayData, Map<String, dynamic>? daysData})
+      _extractSavedPlanShape(Map<String, dynamic> planData) {
     Map<String, dynamic>? dayData;
     Map<String, dynamic>? daysData;
     bool isDayPlan = false;
 
+    final typeRaw = (planData['type'] ?? '').toString().trim().toLowerCase();
+    if (typeRaw == 'day') {
+      isDayPlan = true;
+    }
+
     if (planData['day'] is Map) {
       isDayPlan = true;
-      dayData = Map<String, dynamic>.from(planData['day']);
+      dayData = Map<String, dynamic>.from(planData['day'] as Map);
     } else if (planData['days'] is Map) {
-      final map = planData['days'] as Map<String, dynamic>;
-      if (map.length == 1) {
+      final map = Map<String, dynamic>.from(planData['days'] as Map);
+      if (map.isEmpty) {
+        // empty
+      } else if (isDayPlan || map.length == 1) {
         isDayPlan = true;
-        dayData = Map<String, dynamic>.from(map.values.first);
+        final first = map.values.first;
+        if (first is Map) dayData = Map<String, dynamic>.from(first as Map);
       } else {
         daysData = map;
       }
     }
 
-    // Scrub nested wrapper if present (Prevents "empty" items)
-    if (isDayPlan && dayData != null) {
-       if (dayData!.containsKey('day') && dayData!['day'] is Map) {
-         dayData = Map<String, dynamic>.from(dayData!['day']);
-       } else if (dayData!.containsKey('meals') && dayData!['meals'] is Map) {
-         dayData = Map<String, dynamic>.from(dayData!['meals']);
-       }
-    }
+    return (isDayPlan: isDayPlan, dayData: dayData, daysData: daysData);
+  }
+
+  // -------------------------------------------------------
+  // ✅ ACTIVATION LOGIC (FIXED)
+  // -------------------------------------------------------
+
+  Future<void> _activatePlan(Map<String, dynamic> planData, String docId) async {
+    final shape = _extractSavedPlanShape(planData);
+    final isDayPlan = shape.isDayPlan;
+    var dayData = shape.dayData;
+    final daysData = shape.daysData;
+    final String title = planData['title'] ?? 'Untitled Plan';
 
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Use this plan?'),
         content: Text(
-          isDayPlan 
-          ? 'This will replace your meal plan for TODAY.'
-          : 'This will replace your current weekly schedule.'
+          isDayPlan
+              ? 'This will replace your plan for TODAY (${MealPlanKeys.formatPretty(MealPlanKeys.todayKey())}).'
+              : 'This will replace your current weekly schedule.',
         ),
         actions: [
           TextButton(
@@ -139,75 +186,105 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
+    final uid = user.uid;
+    final currentWeekId = MealPlanKeys.currentWeekId();
+    final todayKey = MealPlanKeys.todayKey();
+    final horizonKeys = MealPlanKeys.weekDayKeys(currentWeekId);
+
     try {
-      final currentWeekId = MealPlanKeys.currentWeekId();
-      final batch = FirebaseFirestore.instance.batch();
+      await _repo.ensureWeekExists(uid: uid, weekId: currentWeekId);
 
       final weekRef = FirebaseFirestore.instance
           .collection('users')
-          .doc(user.uid)
+          .doc(uid)
           .collection('mealPlansWeeks')
           .doc(currentWeekId);
 
-      final todayKey = MealPlanKeys.todayKey();
-      final targetDateKeys = MealPlanKeys.weekDayKeys(currentWeekId);
+      // ---------------------------------------------------------
+      // CASE A: Activate Day Plan (Fix: Switch to Day Mode)
+      // ---------------------------------------------------------
+      if (isDayPlan) {
+        if (dayData == null) return;
+        final safeDayData = _normalizeForActivation(dayData);
 
-      // 2. APPLY UPDATE (Normalized for compatibility)
-      if (isDayPlan && dayData != null) {
-        final safeDayData = _normalizeForActivation(dayData!);
+        // We update the map destructively to ensure we leave "Week Mode"
+        final updates = <String, dynamic>{
+          // 1. Write content to specific day
+          'days.$todayKey': safeDayData,
+          'days.$todayKey.title': title, 
 
-        batch.set(weekRef, {
-          'uid': user.uid,
-          'weekId': currentWeekId,
-          'days': { todayKey: safeDayData },
-          'config': { 
-            'sourcePlanId': docId, 
-            'updatedAt': FieldValue.serverTimestamp(),
-            'daysToPlan': 1,
-            'startDate': todayKey
+          // 2. Set Day Source tracking
+          'config.daySources.$todayKey': docId,
+          'config.dayPlanTitles.$todayKey': title,
+
+          // 3. ✅ FORCE "DAY MODE"
+          'config.horizon': 'day',
+          'config.mode': 'day',
+
+          // 4. ✅ REMOVE "WEEK PLAN" OVERRIDES
+          // This tells Hub to stop showing the Single Card
+          'config.sourceWeekPlanId': FieldValue.delete(),
+          'config.title': FieldValue.delete(), 
+
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+
+        await weekRef.update(updates);
+      } 
+      // ---------------------------------------------------------
+      // CASE B: Activate Week Plan (Fix: Switch to Week Mode)
+      // ---------------------------------------------------------
+      else {
+        if (daysData == null) return;
+
+        // Remap keys
+        final sourceKeys = daysData.keys.map((e) => e.toString()).toList()..sort();
+        final remapped = <String, Map<String, dynamic>>{};
+
+        for (int i = 0; i < horizonKeys.length; i++) {
+          final hk = horizonKeys[i];
+          if (i >= sourceKeys.length) {
+            remapped[hk] = <String, dynamic>{};
+            continue;
           }
-        }, SetOptions(merge: true)); 
-      } else if (daysData != null) {
-        final sourceKeys = daysData.keys.toList()..sort();
-        final remapped = <String, dynamic>{};
-        
-        for (int i = 0; i < targetDateKeys.length; i++) {
-          if (i < sourceKeys.length) {
-            final rawDay = daysData[sourceKeys[i]];
-            if (rawDay is Map<String, dynamic>) {
-              remapped[targetDateKeys[i]] = _normalizeForActivation(rawDay);
-            } else {
-              remapped[targetDateKeys[i]] = rawDay;
-            }
+          final rawDay = daysData[sourceKeys[i]];
+          if (rawDay is Map) {
+            remapped[hk] = _normalizeForActivation(Map<String, dynamic>.from(rawDay as Map));
+          } else {
+            remapped[hk] = <String, dynamic>{};
           }
         }
 
-        batch.set(weekRef, {
-          'uid': user.uid,
-          'weekId': currentWeekId,
+        // We replace the week config to ensure we enter "Week Mode"
+        await weekRef.set({
           'days': remapped,
-          'config': { 
-            'sourcePlanId': docId, 
-            'updatedAt': FieldValue.serverTimestamp(),
+          'config': {
+            'title': title,
+            'sourceWeekPlanId': docId,
+            
+            // ✅ FORCE "WEEK MODE"
+            'horizon': 'week',
+            'mode': 'week',
             'daysToPlan': 7,
-            'startDate': targetDateKeys.first
+            
+            // ✅ REMOVE "DAY PLAN" OVERRIDES
+            // This ensures we don't have stray day titles
+            'daySources': FieldValue.delete(),
+            'dayPlanTitles': FieldValue.delete(),
+
+            'updatedAt': FieldValue.serverTimestamp(),
           }
         }, SetOptions(merge: true));
       }
 
-      // 3. UPDATE USER POINTER
-      final userRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
-      batch.set(userRef, {
-        'activeSavedMealPlanId': docId
-      }, SetOptions(merge: true));
-
-      await batch.commit();
+      await _activeCtrl?.setWeek(currentWeekId);
+      await _activeCtrl?.ensureWeek();
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Plan activated!')),
       );
-
+      Navigator.pop(context); // Go back
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -216,22 +293,20 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
     }
   }
 
-  Future<void> _deletePlan(String docId, bool isActive) async {
-    final title = isActive ? 'Delete active plan?' : 'Delete saved plan?';
-    final content = isActive 
-        ? 'This plan is currently active.\n\nDeleting it will remove it from your library AND clear your current weekly schedule.' 
-        : 'This cannot be undone.';
-
+  // -------------------------------------------------------
+  // DELETE
+  // -------------------------------------------------------
+  Future<void> _deletePlan(String docId) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Text(content),
+        title: const Text('Delete saved plan?'),
+        content: const Text(
+          'This cannot be undone.\n\n'
+          'If this plan is currently used, it will be removed from your current schedule.',
+        ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: TextButton.styleFrom(foregroundColor: Colors.red),
@@ -245,43 +320,57 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+    final uid = user.uid;
+    final currentWeekId = MealPlanKeys.currentWeekId();
 
     try {
-      if (isActive) {
-        await _activeCtrl?.clearPlan();
+      final weekRef = _repo.weekDoc(uid: uid, weekId: currentWeekId);
+      final weekSnap = await weekRef.get();
+      final weekData = weekSnap.data();
+      final batch = FirebaseFirestore.instance.batch();
+
+      if (_weekUsesSavedPlan(weekData, docId) && weekData != null) {
+        final cfg = weekData['config'] as Map<String, dynamic>? ?? {};
+        
+        // Detach Week
+        if ((cfg['sourceWeekPlanId'] ?? '').toString().trim() == docId) {
+          batch.set(weekRef, {'config': {'sourceWeekPlanId': FieldValue.delete()}}, SetOptions(merge: true));
+        }
+
+        // Detach Days
+        final ds = cfg['daySources'];
+        if (ds is Map) {
+          final updates = <String, dynamic>{};
+          for (final e in ds.entries) {
+            if ((e.value ?? '').toString().trim() == docId) {
+              updates['config.daySources.${e.key}'] = FieldValue.delete();
+              updates['config.dayPlanTitles.${e.key}'] = FieldValue.delete();
+              updates['days.${e.key}'] = <String, dynamic>{}; // clear meals
+            }
+          }
+          if (updates.isNotEmpty) batch.update(weekRef, updates);
+        }
       }
 
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .collection('savedMealPlans')
-          .doc(docId)
-          .delete();
-          
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .set({
-            'savedMealPlanCount': FieldValue.increment(-1),
-          }, SetOptions(merge: true));
+      final savedRef = FirebaseFirestore.instance.collection('users').doc(uid).collection('savedMealPlans').doc(docId);
+      batch.delete(savedRef);
+      await batch.commit();
+
+      await _activeCtrl?.setWeek(currentWeekId);
+      await _activeCtrl?.ensureWeek();
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(isActive ? 'Plan deleted & schedule cleared' : 'Plan deleted')),
-      );
-
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Plan deleted')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Error deleting plan')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error deleting: $e')));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return const SizedBox.shrink();
+    if (user == null) return const Scaffold(body: Center(child: Text('Log in to view your saved plans')));
 
     return Scaffold(
       backgroundColor: const Color(0xFFECF3F4),
@@ -290,37 +379,18 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
         animation: _activeCtrl!,
         builder: (context, _) {
           return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance
-                .collection('users')
-                .doc(user.uid)
-                .collection('savedMealPlans')
-                .orderBy('savedAt', descending: true)
-                .snapshots(),
+            stream: FirebaseFirestore.instance.collection('users').doc(user.uid).collection('savedMealPlans').orderBy('savedAt', descending: true).snapshots(),
             builder: (context, snap) {
-              if (snap.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-
+              if (snap.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
               final allDocs = snap.data?.docs ?? [];
-              if (allDocs.isEmpty) {
-                return const Center(
-                  child: Text(
-                    'No saved plans yet.\nCreate one from the Home screen!',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                );
-              }
+              if (allDocs.isEmpty) return const Center(child: Text('No saved plans yet.', style: TextStyle(color: Colors.grey)));
 
               QueryDocumentSnapshot<Map<String, dynamic>>? activeDoc;
               final otherDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
               for (final doc in allDocs) {
-                if (_isPlanActive(doc.data(), doc.id)) {
-                  activeDoc = doc;
-                } else {
-                  otherDocs.add(doc);
-                }
+                if (_isPlanActive(doc.data(), doc.id)) activeDoc = doc;
+                else otherDocs.add(doc);
               }
 
               final displayList = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
@@ -337,62 +407,20 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
 
                   return Column(
                     children: [
-                      if (isActive && index == 0) ...[
-                        const Padding(
-                          padding: EdgeInsets.only(bottom: 8.0, left: 4),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              'CURRENTLY ACTIVE',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w900,
-                                color: Color(0xFF32998D),
-                                letterSpacing: 1.0,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
+                      if (isActive && index == 0) _sectionHeader('CURRENTLY ACTIVE', Color(0xFF32998D)),
                       if (!isActive && index == (activeDoc != null ? 1 : 0) && activeDoc != null) ...[
                         const SizedBox(height: 12),
-                        const Padding(
-                          padding: EdgeInsets.only(bottom: 8.0, left: 4),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              'OTHER PLANS',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w900,
-                                color: Colors.grey,
-                                letterSpacing: 1.0,
-                              ),
-                            ),
-                          ),
-                        ),
+                        _sectionHeader('OTHER PLANS', Colors.grey),
                       ],
-
                       _SavedPlanCard(
                         data: data,
                         isActive: isActive,
                         onTap: () {
-                          if (isActive) {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => MealPlanScreen(weekId: MealPlanKeys.currentWeekId()),
-                              ),
-                            );
-                          } else {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => SavedMealPlanDetailScreen(savedPlanId: doc.id),
-                              ),
-                            );
-                          }
+                          if (isActive) Navigator.of(context).push(MaterialPageRoute(builder: (_) => MealPlanScreen(weekId: MealPlanKeys.currentWeekId())));
+                          else Navigator.of(context).push(MaterialPageRoute(builder: (_) => SavedMealPlanDetailScreen(savedPlanId: doc.id)));
                         },
                         onActivate: () => _activatePlan(data, doc.id),
-                        onDelete: () => _deletePlan(doc.id, isActive),
+                        onDelete: () => _deletePlan(doc.id),
                       ),
                     ],
                   );
@@ -404,22 +432,23 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
       ),
     );
   }
+
+  Widget _sectionHeader(String text, Color color) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8.0, left: 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text(text, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: color, letterSpacing: 1.0)),
+      ),
+    );
+  }
 }
 
 class _SavedPlanCard extends StatelessWidget {
-  const _SavedPlanCard({
-    required this.data,
-    required this.isActive,
-    required this.onTap,
-    required this.onActivate,
-    required this.onDelete,
-  });
-
+  const _SavedPlanCard({required this.data, required this.isActive, required this.onTap, required this.onActivate, required this.onDelete});
   final Map<String, dynamic> data;
   final bool isActive;
-  final VoidCallback onTap;
-  final VoidCallback onActivate;
-  final VoidCallback onDelete;
+  final VoidCallback onTap, onActivate, onDelete;
 
   String _formatDate(dynamic ts) {
     if (ts is Timestamp) {
@@ -429,41 +458,26 @@ class _SavedPlanCard extends StatelessWidget {
     return '';
   }
 
-  String _cleanTitle(String? raw, bool isDay) {
-    final s = (raw ?? '').toString().trim();
-    if (s.isEmpty || s.toLowerCase().contains('week_generated') || s.toLowerCase().contains('generated')) {
-      return isDay ? 'My Day Plan' : 'My Week Plan';
-    }
-    return s;
+  bool _isDayPlan(Map<String, dynamic> d) {
+    final typeRaw = (d['type'] ?? '').toString().trim().toLowerCase();
+    if (typeRaw.contains('day')) return true;
+    final days = d['days'];
+    if (days is Map && days.length == 1) return true;
+    return false;
   }
 
   @override
   Widget build(BuildContext context) {
-    final typeRaw = (data['type'] ?? 'Custom').toString();
-    bool isDay = typeRaw.toLowerCase().contains('day');
-
-    if (!isDay && data['days'] is Map) {
-      final map = data['days'] as Map;
-      if (map.length == 1) {
-        isDay = true;
-      }
-    }
-
-    final title = _cleanTitle(data['title'], isDay);
+    final isDay = _isDayPlan(data);
+    final title = data['title'] ?? 'Untitled';
     final savedAt = _formatDate(data['savedAt']);
-
-    final String flagText = isDay ? 'DAY' : 'WEEK';
-    final Color flagColor = isDay ? Colors.blue.shade50 : Colors.teal.shade50;
-    final Color flagTextColor = isDay ? Colors.blue.shade700 : Colors.teal.shade700;
+    final flagText = isDay ? 'DAY' : 'WEEK';
+    final flagColor = isDay ? Colors.blue.shade50 : Colors.teal.shade50;
+    final flagTextColor = isDay ? Colors.blue.shade700 : Colors.teal.shade700;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: isActive 
-          ? const BorderSide(color: Color(0xFF32998D), width: 2) 
-          : BorderSide.none,
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: isActive ? const BorderSide(color: Color(0xFF32998D), width: 2) : BorderSide.none),
       elevation: isActive ? 4 : 1,
       child: InkWell(
         onTap: onTap,
@@ -476,98 +490,27 @@ class _SavedPlanCard extends StatelessWidget {
               Row(
                 children: [
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          title,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF044246),
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Text(
-                              isActive ? 'Active Plan' : 'Created $savedAt',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: isActive ? const Color(0xFF32998D) : Colors.black.withOpacity(0.5),
-                                fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-                              ),
-                            ),
-                            if (!isActive) ...[
-                              const SizedBox(width: 8),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: flagColor,
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  flagText,
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: flagTextColor,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (isActive)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE0F2F1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.check_circle,
-                              size: 16, color: Color(0xFF32998D)),
-                          SizedBox(width: 4),
-                          Text(
-                            'ACTIVE',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w900,
-                              color: Color(0xFF32998D),
-                            ),
-                          ),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF044246))),
+                      const SizedBox(height: 4),
+                      Row(children: [
+                        Text(isActive ? 'Active Plan' : 'Created $savedAt', style: TextStyle(fontSize: 12, color: isActive ? const Color(0xFF32998D) : Colors.black.withOpacity(0.5), fontWeight: isActive ? FontWeight.bold : FontWeight.normal)),
+                        if (!isActive) ...[
+                          const SizedBox(width: 8),
+                          Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: flagColor, borderRadius: BorderRadius.circular(4)), child: Text(flagText, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: flagTextColor))),
                         ],
-                      ),
-                    ),
+                      ]),
+                    ]),
+                  ),
+                  if (isActive) Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(8)), child: const Row(children: [Icon(Icons.check_circle, size: 16, color: Color(0xFF32998D)), SizedBox(width: 4), Text('ACTIVE', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: Color(0xFF32998D)))]))
                 ],
               ),
               const Divider(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  if (!isActive)
-                    TextButton.icon(
-                      onPressed: onActivate,
-                      icon: const Icon(Icons.play_circle_outline, size: 20),
-                      label: const Text('Make Active'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: const Color(0xFF32998D),
-                      ),
-                    ),
-                  const Spacer(),
-                  IconButton(
-                    onPressed: onDelete,
-                    icon: const Icon(Icons.delete_outline, color: Colors.grey),
-                    tooltip: 'Delete',
-                  ),
-                ],
-              ),
+              Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                if (!isActive) TextButton.icon(onPressed: onActivate, icon: const Icon(Icons.play_circle_outline, size: 20), label: const Text('Make Active'), style: TextButton.styleFrom(foregroundColor: const Color(0xFF32998D))),
+                const Spacer(),
+                IconButton(onPressed: onDelete, icon: const Icon(Icons.delete_outline, color: Colors.grey), tooltip: 'Delete'),
+              ]),
             ],
           ),
         ),

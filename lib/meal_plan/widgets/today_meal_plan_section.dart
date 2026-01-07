@@ -98,8 +98,8 @@ class TodayMealPlanSection extends StatelessWidget {
       onClearSlot != null ||
       onSaveChanges != null;
 
-  // Helper to get the main action
-  VoidCallback? get _mainAction => onOpenMealPlan ?? onOpenWeek ?? onOpenToday;
+  // ✅ Always week view now
+  VoidCallback? get _mainAction => onOpenWeek;
 
   int _clampWght(int v) => v.clamp(100, 900);
 
@@ -302,6 +302,15 @@ class TodayMealPlanSection extends StatelessWidget {
   // HEADER (shared)
   // -----------------------------
   Widget _heroHeader(BuildContext context) {
+    final showPlanTitle = (planTitle?.trim().isNotEmpty == true);
+    final showHeroText =
+        heroTopText.trim().isNotEmpty || heroBottomText.trim().isNotEmpty;
+
+    // ✅ KEY CHANGE: if nothing is shown, don't reserve any header space.
+    if (!showPlanTitle && !showHeroText) {
+      return const SizedBox.shrink();
+    }
+
     final theme = Theme.of(context);
 
     final heroStyle =
@@ -322,8 +331,6 @@ class TodayMealPlanSection extends StatelessWidget {
       height: 1.05,
     );
 
-    final showPlanTitle = (planTitle?.trim().isNotEmpty == true);
-
     return Padding(
       padding: const EdgeInsets.fromLTRB(AppSpace.s16, 18, AppSpace.s16, 14),
       child: Column(
@@ -338,10 +345,11 @@ class TodayMealPlanSection extends StatelessWidget {
             ),
             const SizedBox(height: 6),
           ],
-          Text(
-            '${heroTopText.trim()} ${heroBottomText.trim()}'.trim(),
-            style: heroStyle,
-          ),
+          if (showHeroText)
+            Text(
+              '${heroTopText.trim()} ${heroBottomText.trim()}'.trim(),
+              style: heroStyle,
+            ),
         ],
       ),
     );
@@ -571,7 +579,7 @@ class TodayMealPlanSection extends StatelessWidget {
       }
     }
 
-    // 4. FALLBACK
+    // 4. FALLBACK (reuse only)
     final reuseMeta = MealPlanEntryParser.entryReuseFrom(entry);
     if (reuseMeta != null) {
       final dk = reuseMeta['dayKey'] ?? reuseMeta['fromDayKey'] ?? '?';
@@ -596,9 +604,8 @@ class TodayMealPlanSection extends StatelessWidget {
                 children: [
                   Text(
                     'Reuse link',
-                    style:
-                        (theme.textTheme.titleMedium ?? const TextStyle())
-                            .copyWith(
+                    style: (theme.textTheme.titleMedium ?? const TextStyle())
+                        .copyWith(
                       color: AppColors.brandDark,
                       fontWeight: FontWeight.w800,
                     ),
@@ -629,6 +636,7 @@ class TodayMealPlanSection extends StatelessWidget {
       );
     }
 
+    // 5. UNKNOWN
     return Container(
       height: 86,
       decoration: BoxDecoration(
@@ -667,12 +675,12 @@ class TodayMealPlanSection extends StatelessWidget {
 
     final theme = Theme.of(context);
     final labelStyle =
-    (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
-  color: Colors.white,
-  fontWeight: FontWeight.w900,
-  fontVariations: const [FontVariation('wght', 900)],
-  letterSpacing: 0.2,
-);
+        (theme.textTheme.labelLarge ?? const TextStyle()).copyWith(
+      color: Colors.white,
+      fontWeight: FontWeight.w900,
+      fontVariations: const [FontVariation('wght', 900)],
+      letterSpacing: 0.2,
+    );
 
     return SizedBox(
       height: 44,
@@ -693,7 +701,7 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   Widget _homeButtons(BuildContext context) {
-    if (_mainAction == null) return const SizedBox.shrink();
+    if (onOpenWeek == null) return const SizedBox.shrink();
 
     final theme = Theme.of(context);
     final labelStyle =
@@ -723,15 +731,14 @@ class TodayMealPlanSection extends StatelessWidget {
         height: 52,
         width: double.infinity,
         child: OutlinedButton(
-          onPressed: _mainAction,
+          onPressed: onOpenWeek,
           style: btnStyle,
-          child: Text('VIEW FULL PLAN', style: labelStyle),
+          child: Text('VIEW FULL MEAL PLAN', style: labelStyle),
         ),
       ),
     );
   }
 
-  // ✅ snack lane collapsing helper
   List<MapEntry<String, Map<String, dynamic>>> _plannedSnacks(
     Map<String, Map<String, dynamic>> parsed,
   ) {
@@ -755,8 +762,7 @@ class TodayMealPlanSection extends StatelessWidget {
         children: [
           _heroHeader(context),
           Padding(
-            padding:
-                const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
+            padding: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
             child: _EmptyCtaCard(
               title: emptyTitle,
               body: emptyBody,
@@ -800,8 +806,7 @@ class TodayMealPlanSection extends StatelessWidget {
         children: [
           _heroHeader(context),
           Padding(
-            padding:
-                const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 12),
+            padding: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 12),
             child: Column(
               children: [
                 _mealCard(context: context, slotKey: 'breakfast', entry: breakfast),
@@ -868,7 +873,7 @@ class TodayMealPlanSection extends StatelessWidget {
 
     return _HomeAccordionScaffold(
       panelBg: _homePanelBgConst,
-      hero: _heroHeader(context), // ✅ includes planTitle when provided
+      hero: _heroHeader(context),
       breakfastBg: _breakfastBg,
       lunchBg: _lunchBg,
       dinnerBg: _dinnerBg,
@@ -1001,9 +1006,6 @@ class TodayMealPlanSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ✅ CRITICAL: actually switch based on the flag.
-    // If this isn't here (or you always return _homeSection),
-    // your non-home title behaviour won't ever render.
     if (homeAccordion) return _homeSection(context);
     return _nonHomeSection(context);
   }

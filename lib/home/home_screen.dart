@@ -253,7 +253,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _openCourse(BuildContext context, String slug, String title, String subtitle) {
+  void _openCourse(
+    BuildContext context,
+    String slug,
+    String title,
+    String subtitle,
+  ) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => RecipesBootstrapGate(
@@ -279,7 +284,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (userDoc == null || weekStream == null) {
-      return const Scaffold(body: Center(child: Text('Log in to see your home feed')));
+      return const Scaffold(
+        body: Center(child: Text('Log in to see your home feed')),
+      );
     }
 
     const railBg = Color(0xFFECF3F4);
@@ -299,7 +306,9 @@ class _HomeScreenState extends State<HomeScreen> {
           stream: weekStream,
           builder: (context, snap) {
             if (snap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
             }
 
             final data = snap.data?.data() ?? <String, dynamic>{};
@@ -313,37 +322,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
             final mealPlanPanelBg = AppColors.brandDark;
 
-            final config = data['config'];
-
-            int? _asInt(dynamic v) {
-              if (v is int) return v;
-              if (v is double) return v.toInt();
-              return int.tryParse(v?.toString() ?? '');
-            }
-
-            final daysToPlan = (config is Map) ? _asInt(config['daysToPlan']) : null;
-            final isDayPlan = (daysToPlan ?? 0) == 1;
-
-            // ✅ FIXED: explicitly force which mode MealPlanScreen opens in
-            final VoidCallback onOpenFullPlan = isDayPlan
-                ? () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => MealPlanScreen(
-                          weekId: _weekId(),
-                          focusDayKey: todayKey,
-                          initialViewMode: MealPlanViewMode.today,
-                        ),
-                      ),
-                    )
-                : () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => MealPlanScreen(
-                          weekId: _weekId(),
-                          focusDayKey: todayKey,
-                          initialViewMode: MealPlanViewMode.week,
-                        ),
-                      ),
-                    );
+            // ✅ Always open MealPlanScreen in WEEK view from Home
+            final VoidCallback onOpenFullPlan = () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => MealPlanScreen(
+                      weekId: _weekId(),
+                      focusDayKey: todayKey,
+                      initialViewMode: MealPlanViewMode.week,
+                    ),
+                  ),
+                );
 
             return Scaffold(
               backgroundColor: railBg,
@@ -401,9 +389,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         heroTopText: "HERE'S SOME IDEAS",
                         heroBottomText: "FOR TODAY",
                         homeAccordion: true,
-                        onOpenMealPlan: onOpenFullPlan,
+
+                        // ✅ ALWAYS WEEK
+                        onOpenWeek: onOpenFullPlan,
+                        onOpenMealPlan: null,
                         onOpenToday: null,
-                        onOpenWeek: null,
+
                         onBuildMealPlan: () => _openBuilder(context),
                       ),
                     ),
