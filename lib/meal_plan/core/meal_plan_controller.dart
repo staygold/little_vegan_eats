@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'meal_plan_keys.dart';
 import 'meal_plan_repository.dart';
 import 'meal_plan_slots.dart';
+import '../services/meal_plan_manager.dart'; // ✅ Added Manager Import
 import '../../recipes/allergy_engine.dart';
 
 class MealPlanController extends ChangeNotifier {
@@ -33,6 +34,23 @@ class MealPlanController extends ChangeNotifier {
   final Map<String, Map<String, Map<String, dynamic>>> _draft = {};
 
   StreamSubscription<Map<String, dynamic>?>? _sub;
+
+  // -------------------------------------------------------
+  // ✅ Recurring state (lightweight, controller-level)
+  // -------------------------------------------------------
+
+  /// Cached pointer to the active recurring week plan id (from settings doc).
+  String? _activeRecurringWeekPlanId;
+
+  /// Expose for UI (Hub can show a badge, etc.)
+  String? get activeRecurringWeekPlanId => _activeRecurringWeekPlanId;
+
+  /// Force-refresh from Firestore (call when opening hub / builder complete)
+  Future<void> refreshRecurringSettings() async {
+    _activeRecurringWeekPlanId =
+        await _repo.getActiveRecurringWeekPlanId(uid: uid);
+    notifyListeners();
+  }
 
   // -------------------------------------------------------
   // ✅ GENERATE PLAN STRUCTURE
@@ -203,6 +221,9 @@ class MealPlanController extends ChangeNotifier {
       isLoading = false;
       notifyListeners();
     });
+
+    // Best-effort cache refresh (doesn't block)
+    refreshRecurringSettings();
   }
 
   Future<void> stop() async {
@@ -226,6 +247,114 @@ class MealPlanController extends ChangeNotifier {
     notifyListeners();
     start();
     await ensureWeek();
+  }
+
+  // -------------------------------------------------------
+  // ✅ Recurring write helpers (called by UI / builder flows)
+  // -------------------------------------------------------
+
+  /// Toggle recurring on a saved plan.
+  /// - For day plans: pass weekdays (Mon=1..Sun=7) when enabling.
+  /// - For week plans: pass anchorDayKey (YYYY-MM-DD) when enabling.
+  Future<void> setPlanRecurring({
+    required String planId,
+    required String planType, // "day" | "week"
+    required bool enabled,
+    List<int>? weekdays,
+    String? anchorDayKey,
+  }) async {
+    final pt = planType.trim().toLowerCase();
+    if (pt != 'day' && pt != 'week') {
+      throw Exception('Invalid planType: $planType');
+    }
+
+    // ---------------------------------------------------
+    // CASE 1: ENABLING RECURRENCE
+    // ---------------------------------------------------
+    if (enabled) {
+      if (pt == 'day') {
+        final clean = (weekdays ?? [])
+            .map((e) => e is int ? e : int.tryParse(e.toString()) ?? 0)
+            .where((e) => e >= 1 && e <= 7)
+            .toSet()
+            .toList()
+          ..sort();
+
+        if (clean.isEmpty) {
+          throw Exception('Recurring day plan requires at least one weekday.');
+        }
+
+        // ✅ Use Manager to ensure we check conflicts & apply forward immediately
+        final manager =
+            MealPlanManager(auth: _auth, firestore: FirebaseFirestore.instance);
+
+        // 1. Save the setting
+        await manager.setSavedPlanRecurring(
+            planId: planId, planType: 'day', enabled: true, weekdays: clean);
+
+        // 2. Push it forward immediately (so user sees it instantly)
+        await manager.applyRecurringDayPlanForward(
+            savedDayPlanId: planId, weekdays: clean);
+        return;
+      }
+
+      if (pt == 'week') {
+        final a = (anchorDayKey ?? '').trim();
+        if (a.isEmpty) {
+          throw Exception('Recurring week plan requires an anchorDayKey.');
+        }
+
+        // Save setting
+        await _repo.setSavedPlanRecurring(
+          uid: uid,
+          planId: planId,
+          enabled: true,
+          planType: 'week',
+          weekAnchorDateKey: a,
+          weekdays: null,
+        );
+
+        // Set active pointer
+        await _repo.setActiveRecurringWeekPlanId(uid: uid, planId: planId);
+        _activeRecurringWeekPlanId = planId;
+        notifyListeners();
+        return;
+      }
+    }
+
+    // ---------------------------------------------------
+    // CASE 2: DISABLING RECURRENCE (The Fix)
+    // ---------------------------------------------------
+
+    if (pt == 'day') {
+      // ✅ USE MANAGER TO WIPE GHOSTS
+      // We pass [1..7] to be safe and wipe this plan from ANY future day.
+      final manager =
+          MealPlanManager(auth: _auth, firestore: FirebaseFirestore.instance);
+
+      await manager.stopRecurringDayPlan(
+        savedPlanId: planId,
+        weekdays: [1, 2, 3, 4, 5, 6, 7],
+      );
+    } else {
+      // Disable Week Plan
+      await _repo.setSavedPlanRecurring(
+        uid: uid,
+        planId: planId,
+        enabled: false,
+        planType: pt,
+        weekAnchorDateKey: null,
+        weekdays: null,
+      );
+    }
+
+    // If this was the active recurring week plan, clear pointer
+    if (pt == 'week' && _activeRecurringWeekPlanId == planId) {
+      await _repo.setActiveRecurringWeekPlanId(uid: uid, planId: null);
+      _activeRecurringWeekPlanId = null;
+    }
+
+    notifyListeners();
   }
 
   // -------------------------------------------------------
@@ -342,7 +471,9 @@ class MealPlanController extends ChangeNotifier {
 
     if (isDayPlan) {
       final tk = MealPlanKeys.todayKey();
-      final today = (days[tk] is Map) ? Map<String, dynamic>.from(days[tk] as Map) : <String, dynamic>{};
+      final today = (days[tk] is Map)
+          ? Map<String, dynamic>.from(days[tk] as Map)
+          : <String, dynamic>{};
       return _dayHasMeaningfulSlots(today);
     }
 
@@ -364,6 +495,9 @@ class MealPlanController extends ChangeNotifier {
   /// - Day plan activates ONLY the target day (config.targetDayKey)
   /// - Week plan maps template days (0..6) onto the current horizon date keys
   /// - Always persists config.daysToPlan so Home/MealPlanScreen can route correctly
+  ///
+  /// NOTE: This method is legacy activation from a "saved plan" blob that already
+  /// contains 'config.daysToPlan'. Your new builder flow writes directly using repo methods.
   Future<void> activateSavedPlan({
     required Map<String, dynamic> savedPlan,
   }) async {
@@ -409,7 +543,7 @@ class MealPlanController extends ChangeNotifier {
       final cfg = <String, dynamic>{
         ...config,
         'daysToPlan': 1,
-        'targetDayKey': finalDayKey,
+        'targetDayKey': finalDayKey
       };
 
       final sourcePlanId = (cfg['sourcePlanId'] ?? '').toString().trim();
@@ -451,10 +585,7 @@ class MealPlanController extends ChangeNotifier {
 
     if (newActiveDays.isEmpty) return;
 
-    final cfg = <String, dynamic>{
-      ...config,
-      'daysToPlan': 7,
-    };
+    final cfg = <String, dynamic>{...config, 'daysToPlan': 7};
 
     final sourcePlanId = (cfg['sourcePlanId'] ?? '').toString().trim();
 
@@ -485,6 +616,10 @@ class MealPlanController extends ChangeNotifier {
       SetOptions(merge: true),
     );
 
+    // 2b) ✅ Clear recurring week pointer too (otherwise a recurring week plan can appear "active")
+    await _repo.setActiveRecurringWeekPlanId(uid: uid, planId: null);
+    _activeRecurringWeekPlanId = null;
+
     // 3) Reset local state
     weekData = null;
     _draft.clear();
@@ -506,8 +641,10 @@ class MealPlanController extends ChangeNotifier {
     if (container == null) return null;
     if (container.containsKey(slot)) return container[slot];
 
-    if (slot == 'snack1' && container.containsKey('snack_1')) return container['snack_1'];
-    if (slot == 'snack2' && container.containsKey('snack_2')) return container['snack_2'];
+    if (slot == 'snack1' && container.containsKey('snack_1'))
+      return container['snack_1'];
+    if (slot == 'snack2' && container.containsKey('snack_2'))
+      return container['snack_2'];
 
     return null;
   }
@@ -522,8 +659,10 @@ class MealPlanController extends ChangeNotifier {
   }
 
   static Map<String, dynamic>? _parseEntry(dynamic raw) {
-    if (raw is int) return {'type': 'recipe', 'recipeId': raw, 'source': 'auto'};
-    if (raw is num) return {'type': 'recipe', 'recipeId': raw.toInt(), 'source': 'auto'};
+    if (raw is int)
+      return {'type': 'recipe', 'recipeId': raw, 'source': 'auto'};
+    if (raw is num)
+      return {'type': 'recipe', 'recipeId': raw.toInt(), 'source': 'auto'};
 
     if (raw is Map) {
       final m = Map<String, dynamic>.from(raw);
@@ -537,7 +676,9 @@ class MealPlanController extends ChangeNotifier {
 
       if (type == 'recipe') {
         final rid = m['recipeId'] ?? m['id'];
-        final recipeId = (rid is int) ? rid : (rid is num ? rid.toInt() : int.tryParse('${rid ?? ''}'));
+        final recipeId = (rid is int)
+            ? rid
+            : (rid is num ? rid.toInt() : int.tryParse('${rid ?? ''}'));
         if (recipeId == null || recipeId <= 0) return null;
         return {
           'type': 'recipe',
@@ -550,7 +691,11 @@ class MealPlanController extends ChangeNotifier {
         final fromDayKey = (m['fromDayKey'] ?? '').toString().trim();
         final fromSlot = (m['fromSlot'] ?? '').toString().trim();
         if (fromDayKey.isEmpty || fromSlot.isEmpty) return null;
-        return {'type': 'reuse', 'fromDayKey': fromDayKey, 'fromSlot': fromSlot};
+        return {
+          'type': 'reuse',
+          'fromDayKey': fromDayKey,
+          'fromSlot': fromSlot
+        };
       }
 
       if (type == 'cleared' || type == 'clear') return {'type': 'clear'};
@@ -566,7 +711,8 @@ class MealPlanController extends ChangeNotifier {
     return _parseEntry(_lookupSlot(day, slot));
   }
 
-  Map<String, dynamic>? draftEntry(String dayKey, String slot) => _draft[dayKey]?[slot];
+  Map<String, dynamic>? draftEntry(String dayKey, String slot) =>
+      _draft[dayKey]?[slot];
 
   Map<String, dynamic>? effectiveEntry(String dayKey, String slot) {
     final d = _draft[dayKey];
@@ -869,7 +1015,8 @@ class MealPlanController extends ChangeNotifier {
 
           final norm = _normSlot(slot);
 
-          if (norm.contains('breakfast')) return _isBreakfastCourseTokens(tokens);
+          if (norm.contains('breakfast'))
+            return _isBreakfastCourseTokens(tokens);
 
           if (norm.contains('lunch') || norm.contains('dinner')) {
             return _isMainsCourseTokens(tokens);

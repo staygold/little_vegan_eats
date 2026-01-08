@@ -7,24 +7,26 @@ import '../core/meal_plan_keys.dart';
 import '../core/meal_plan_repository.dart';
 import '../core/meal_plan_controller.dart';
 import '../meal_plan_screen.dart';
+import '../services/meal_plan_manager.dart'; // ✅ Added Manager
 import '../../recipes/recipe_repository.dart';
 
 import 'meal_plan_builder_service.dart';
 
 enum _HorizonUI { day, week }
 
-class MealPlanBuilderScreen extends StatefulWidget {
-  /// ✅ Optional: preselect the day when building a day plan.
-  /// (Used by week-first empty-day CTA.)
-  final String? initialSelectedDayKey;
+/// Controls how this builder is launched
+enum MealPlanBuilderEntry { dayOnly, weekOnly, choose }
 
-  /// ✅ Optional: start on Day or Week. Defaults to week.
-  final bool? startAsDayPlan;
+class MealPlanBuilderScreen extends StatefulWidget {
+  final String weekId;
+  final MealPlanBuilderEntry entry;
+  final String? initialSelectedDayKey;
 
   const MealPlanBuilderScreen({
     super.key,
+    required this.weekId,
+    this.entry = MealPlanBuilderEntry.choose,
     this.initialSelectedDayKey,
-    this.startAsDayPlan,
   });
 
   @override
@@ -39,23 +41,58 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
   bool _breakfast = true;
   bool _lunch = true;
   bool _dinner = true;
-
-  /// ✅ 0, 1, or 2 snacks
   int _snacksPerDay = 1;
 
   String _selectedDayKey = MealPlanKeys.todayKey();
-
   bool _busy = false;
+
+  // -----------------------------
+  // ✅ Recurring UI state
+  // -----------------------------
+  bool _makeRecurring = false;
+
+  // Day plan: weekdays 1..7 (Mon..Sun)
+  final Set<int> _recurringWeekdays = <int>{};
+
+  // -----------------------------
+  // Date helpers
+  // -----------------------------
+  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  bool _isPastDay(String dayKey) {
+    final dt = MealPlanKeys.parseDayKey(dayKey);
+    if (dt == null) return true;
+
+    final todayOnly = _dateOnly(DateTime.now());
+    final dayOnly = _dateOnly(dt);
+
+    return dayOnly.isBefore(todayOnly);
+  }
+
+  String _firstNonPastKey(List<String> keys) {
+    for (final k in keys) {
+      if (!_isPastDay(k)) return k;
+    }
+    return keys.isNotEmpty ? keys.last : MealPlanKeys.todayKey();
+  }
 
   @override
   void initState() {
     super.initState();
 
-    final initDay = (widget.initialSelectedDayKey ?? '').trim();
-    if (initDay.isNotEmpty) _selectedDayKey = initDay;
+    final weekKeys = MealPlanKeys.weekDayKeys(widget.weekId);
 
-    if (widget.startAsDayPlan == true) {
+    final initDay = (widget.initialSelectedDayKey ?? '').trim();
+    if (initDay.isNotEmpty && !_isPastDay(initDay)) {
+      _selectedDayKey = initDay;
+    } else if (weekKeys.isNotEmpty) {
+      _selectedDayKey = _firstNonPastKey(weekKeys);
+    }
+
+    if (widget.entry == MealPlanBuilderEntry.dayOnly) {
       _horizon = _HorizonUI.day;
+    } else if (widget.entry == MealPlanBuilderEntry.weekOnly) {
+      _horizon = _HorizonUI.week;
     }
   }
 
@@ -65,193 +102,314 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
     super.dispose();
   }
 
-  String get _weekId => MealPlanKeys.currentWeekId();
-  List<String> get _next7DayKeys => MealPlanKeys.weekDayKeys(_weekId);
-
-  String _prettyDay(String dayKey) {
+  int? _weekdayForDayKey(String dayKey) {
     final dt = MealPlanKeys.parseDayKey(dayKey);
-    if (dt == null) return dayKey;
-    const w = [
-      'Monday',
-      'Tuesday',
-      'Wednesday',
-      'Thursday',
-      'Friday',
-      'Saturday',
-      'Sunday'
-    ];
-    const m = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec'
-    ];
-    return '${w[dt.weekday - 1]}, ${dt.day} ${m[dt.month - 1]}';
+    if (dt == null) return null;
+    return dt.weekday;
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  void _ensureDefaultWeekdaySelected() {
+    if (_recurringWeekdays.isNotEmpty) return;
+    final wd = _weekdayForDayKey(_selectedDayKey);
+    if (wd != null && wd >= 1 && wd <= 7) {
+      _recurringWeekdays.add(wd);
+    }
   }
 
-  Future<void> _showInfo({
+  // -----------------------------------------------------------------
+  // ✅ CONFLICT CHECK & AUTO-DISABLE LOGIC
+  // -----------------------------------------------------------------
+
+  Future<bool> _checkRecurringConflicts(String uid, bool isDayPlan) async {
+    final repo = MealPlanRepository(FirebaseFirestore.instance);
+    final manager = MealPlanManager(
+        auth: FirebaseAuth.instance,
+        firestore: FirebaseFirestore.instance); 
+
+    final conflicts = <Map<String, dynamic>>[];
+    String? conflictMessage;
+
+    // 1. Fetch ALL existing Recurring Day Plans
+    final existingDayPlans = await repo.listRecurringDayPlans(uid: uid);
+
+    if (isDayPlan) {
+      // --- CREATING DAY PLAN ---
+      // Conflict if: New days overlap with existing days
+      for (final plan in existingDayPlans) {
+        final planDays = List<int>.from(plan['recurringWeekdays'] ?? []);
+        final overlaps = planDays.any((d) => _recurringWeekdays.contains(d));
+        if (overlaps) {
+          conflicts.add(plan);
+        }
+      }
+
+      if (conflicts.isNotEmpty) {
+         final names = conflicts.map((e) => e['title'] ?? 'Untitled').join('\n• ');
+         conflictMessage = 'You already have recurring plans set for these days:\n\n• $names\n\nSaving this will replace them.';
+      }
+
+    } else {
+      // --- CREATING WEEK PLAN ---
+      // Conflict if: 
+      // 1. Any Recurring Week Plan exists
+      // 2. ANY Recurring Day Plan exists (Week Plan overrides everything)
+      
+      // Check existing Week Plan
+      final activeWeekId = await repo.getActiveRecurringWeekPlanId(uid: uid);
+      if (activeWeekId != null) {
+        final oldPlan = await repo.getSavedPlan(uid: uid, planId: activeWeekId);
+        if (oldPlan != null) {
+           conflicts.add({
+             'id': activeWeekId, 
+             'title': oldPlan['title'], 
+             'planType': 'week' // Explicit type for disabler
+           });
+        }
+      }
+
+      // Check ALL Day Plans (They all conflict with a full week plan)
+      if (existingDayPlans.isNotEmpty) {
+        conflicts.addAll(existingDayPlans);
+      }
+
+      if (conflicts.isNotEmpty) {
+        final names = conflicts.map((e) => e['title'] ?? 'Untitled').toSet().join('\n• ');
+        conflictMessage = 'Setting this Recurring Week Plan will stop and replace these existing plans:\n\n• $names';
+      }
+    }
+
+    // -------------------------------------
+    // EXECUTE WARNING & DISABLE
+    // -------------------------------------
+    if (conflicts.isNotEmpty && conflictMessage != null) {
+      final confirm = await _showConflictDialog(
+        title: 'Replace existing plans?',
+        content: conflictMessage!,
+      );
+
+      if (confirm) {
+        // ✅ AUTO-DISABLE THE OLD PLANS
+        for (final p in conflicts) {
+          final pId = p['id'];
+          // Determine type safely (day list returns data, week check we built manually)
+          String pType = (p['planType'] ?? p['type'] ?? 'day').toString().toLowerCase();
+          
+          // Safety fallback: if it has 'recurringWeekdays', it's a day plan
+          if (p['recurringWeekdays'] != null) pType = 'day';
+
+          // ✅ If we're creating a WEEK recurring plan in the future,
+// keep existing recurring plans active until the new start date.
+final stopFrom = isDayPlan
+    ? DateTime.now()
+    : (MealPlanKeys.parseDayKey(_selectedDayKey) ?? DateTime.now());
+
+await manager.setSavedPlanRecurring(
+  planId: pId,
+  planType: pType,
+  enabled: false,
+  stopFromDate: stopFrom,
+);
+        }
+      }
+      return confirm;
+    }
+
+    return true; // No conflict, proceed
+  }
+
+  Future<bool> _showConflictDialog({
     required String title,
-    required String message,
+    required String content,
   }) async {
-    if (!mounted) return;
-    await showDialog<void>(
+    final result = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
+      builder: (ctx) => AlertDialog(
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+        content: Text(content),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          )
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF32998D),
+            ),
+            child: const Text('Replace'),
+          ),
         ],
       ),
     );
+    return result ?? false;
   }
 
-  bool get _atLeastOneMealSelected =>
-      _breakfast || _lunch || _dinner || _snacksPerDay > 0;
+  // -----------------------------------------------------------------
+  // CREATE ACTION
+  // -----------------------------------------------------------------
 
   Future<void> _createMealPlan() async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      await _showInfo(
-        title: 'Not signed in',
-        message: 'Please log in to build a meal plan.',
-      );
-      return;
+    if (user == null) return;
+
+    // 1. Validate inputs locally first
+    final isDayPlan = _horizon == _HorizonUI.day;
+    if (_makeRecurring && isDayPlan) {
+      final clean = _recurringWeekdays
+          .where((e) => e >= 1 && e <= 7)
+          .toList()
+        ..sort();
+      if (clean.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please select at least one recurring day.')),
+        );
+        return;
+      }
     }
 
-    if (!_atLeastOneMealSelected) {
-      await _showInfo(
-        title: 'Nothing selected',
-        message: 'Select at least one meal or snack to generate a plan.',
-      );
-      return;
+    // 2. Check conflicts (Pre-flight)
+    if (_makeRecurring) {
+      final proceed = await _checkRecurringConflicts(user.uid, isDayPlan);
+      if (!proceed) return; // User cancelled
     }
 
+    // 3. Proceed with creation
     setState(() => _busy = true);
 
     try {
       final recipes = await RecipeRepository.ensureRecipesLoaded();
       if (recipes.isEmpty) {
-        _snack('No recipes available to generate a plan yet.');
-        setState(() => _busy = false);
-        return;
+        throw Exception('No recipes available.');
       }
 
       final controller = MealPlanController(
         auth: FirebaseAuth.instance,
         repo: MealPlanRepository(FirebaseFirestore.instance),
-        initialWeekId: _weekId,
+        initialWeekId: widget.weekId,
       );
 
-      final builderService = MealPlanBuilderService(controller);
+      final builder = MealPlanBuilderService(controller);
 
-      final isDayPlan = _horizon == _HorizonUI.day;
+      final weekKeys = MealPlanKeys.weekDayKeys(widget.weekId);
+      final safeDayKey = _isPastDay(_selectedDayKey)
+          ? _firstNonPastKey(weekKeys)
+          : _selectedDayKey;
 
-      await builderService.buildAndActivate(
+      await builder.buildAndActivate(
         title: _planNameController.text.trim().isNotEmpty
             ? _planNameController.text.trim()
-            : (isDayPlan ? "My Day Plan" : "My Week Plan"),
+            : (isDayPlan ? 'My Day Plan' : 'My Week Plan'),
         availableRecipes: recipes,
-        daysToPlan: isDayPlan ? 1 : 7,
+        isDayPlan: isDayPlan,
         includeBreakfast: _breakfast,
         includeLunch: _lunch,
         includeDinner: _dinner,
         includeSnacks: _snacksPerDay > 0,
         snackCount: _snacksPerDay,
+        targetDayKey: isDayPlan ? safeDayKey : null,
+        weekPlanStartDayKey: isDayPlan ? null : safeDayKey,
 
-        // ✅ Day plan activates ONLY the selected day
-        targetDayKey: isDayPlan ? _selectedDayKey : null,
+        // ✅ recurring
+        makeRecurring: _makeRecurring,
+        recurringWeekdays: isDayPlan
+            ? (_recurringWeekdays.toList()..sort())
+            : null,
       );
 
       if (!mounted) return;
 
-      if (isDayPlan) {
-        // ✅ CHANGE: go back to WEEK view, focused on the day we just created
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => MealPlanScreen(
-              weekId: _weekId,
-              focusDayKey: _selectedDayKey,
-              initialViewMode: MealPlanViewMode.week, // ✅ forces full week UI
-            ),
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => MealPlanScreen(
+            weekId: widget.weekId,
+            focusDayKey: isDayPlan ? safeDayKey : null,
+            initialViewMode: MealPlanViewMode.week,
           ),
-        );
-      } else {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => MealPlanScreen(
-              weekId: _weekId,
-              initialViewMode: MealPlanViewMode.week,
-            ),
-          ),
-        );
-      }
+        ),
+      );
     } catch (e) {
-      // ignore: avoid_print
-      print(e);
-      await _showInfo(
-        title: 'Could not create plan',
-        message: 'Something went wrong. Try again.\n\n$e',
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Could not create plan'),
+          content: Text('Something went wrong.\n\n$e'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
       );
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  Widget _sectionTitle(String text) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w800,
-          letterSpacing: 0.5,
+  Widget _sectionTitle(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
+        child: Text(
+          text,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
         ),
-      ),
-    );
-  }
+      );
 
-  Widget _card({required Widget child}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(18),
-          boxShadow: const [
-            BoxShadow(
-              offset: Offset(0, 10),
-              blurRadius: 24,
-              color: Color.fromRGBO(0, 0, 0, 0.08),
-            )
-          ],
+  Widget _card({required Widget child}) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: const [
+              BoxShadow(
+                offset: Offset(0, 10),
+                blurRadius: 24,
+                color: Color.fromRGBO(0, 0, 0, 0.08),
+              )
+            ],
+          ),
+          child: child,
         ),
-        padding: const EdgeInsets.all(14),
-        child: child,
-      ),
-    );
+      );
+
+  String _weekdayLabel(int w) {
+    switch (w) {
+      case 1:
+        return 'Mon';
+      case 2:
+        return 'Tue';
+      case 3:
+        return 'Wed';
+      case 4:
+        return 'Thu';
+      case 5:
+        return 'Fri';
+      case 6:
+        return 'Sat';
+      case 7:
+        return 'Sun';
+      default:
+        return '?';
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final dayKeys = _next7DayKeys;
+    final weekKeys = MealPlanKeys.weekDayKeys(widget.weekId);
+    final canChooseHorizon = widget.entry == MealPlanBuilderEntry.choose;
+    final isDayPlan = _horizon == _HorizonUI.day;
+
+    // If the current selection becomes invalid, correct it.
+    if (weekKeys.isNotEmpty && _isPastDay(_selectedDayKey)) {
+      final fixed = _firstNonPastKey(weekKeys);
+      if (fixed != _selectedDayKey) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _selectedDayKey = fixed);
+        });
+      }
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFECF3F4),
@@ -259,66 +417,77 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
         title: const Text('Build meal plan'),
         leading: IconButton(
           icon: const Icon(Icons.close),
-          onPressed: _busy ? null : () => Navigator.of(context).pop(),
+          onPressed: _busy ? null : () => Navigator.pop(context),
         ),
       ),
       body: AbsorbPointer(
         absorbing: _busy,
         child: ListView(
-          padding: const EdgeInsets.only(bottom: 110),
+          padding: const EdgeInsets.only(bottom: 120),
           children: [
-            const SizedBox(height: 12),
-
             _sectionTitle('PLAN NAME'),
             _card(
               child: TextField(
                 controller: _planNameController,
                 decoration: const InputDecoration(
-                  hintText: 'e.g. Summer Shred or My Week',
+                  hintText: 'e.g. My Week Plan',
                   border: InputBorder.none,
                 ),
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
 
-            _sectionTitle('PLAN TYPE'),
-            _card(
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _SegButton(
-                      label: 'Day plan',
-                      selected: _horizon == _HorizonUI.day,
-                      onTap: () => setState(() => _horizon = _HorizonUI.day),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _SegButton(
-                      label: 'Week plan',
-                      selected: _horizon == _HorizonUI.week,
-                      onTap: () => setState(() => _horizon = _HorizonUI.week),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            if (_horizon == _HorizonUI.day) ...[
-              _sectionTitle('SELECT DAY'),
+            if (canChooseHorizon) ...[
+              _sectionTitle('PLAN TYPE'),
               _card(
-                child: Column(
+                child: Row(
                   children: [
-                    for (final dk in dayKeys)
-                      _RadioRow(
-                        title: _prettyDay(dk),
-                        selected: _selectedDayKey == dk,
-                        onTap: () => setState(() => _selectedDayKey = dk),
+                    Expanded(
+                      child: _SegButton(
+                        label: 'Day plan',
+                        selected: _horizon == _HorizonUI.day,
+                        onTap: () {
+                          setState(() {
+                            _horizon = _HorizonUI.day;
+                            if (_makeRecurring) _ensureDefaultWeekdaySelected();
+                          });
+                        },
                       ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _SegButton(
+                        label: 'Week plan',
+                        selected: _horizon == _HorizonUI.week,
+                        onTap: () => setState(() => _horizon = _HorizonUI.week),
+                      ),
+                    ),
                   ],
                 ),
               ),
             ],
+
+            _sectionTitle(isDayPlan ? 'SELECT DAY' : 'START DAY'),
+            _card(
+              child: Column(
+                children: weekKeys.map((dk) {
+                  final disabled = _isPastDay(dk);
+                  return _RadioRow(
+                    title: MealPlanKeys.formatPretty(dk),
+                    selected: _selectedDayKey == dk,
+                    enabled: !disabled,
+                    onTap: () {
+                      setState(() {
+                        _selectedDayKey = dk;
+                        if (_makeRecurring && isDayPlan) {
+                          _ensureDefaultWeekdaySelected();
+                        }
+                      });
+                    },
+                  );
+                }).toList(),
+              ),
+            ),
 
             _sectionTitle('MEALS'),
             _card(
@@ -348,60 +517,98 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
             _sectionTitle('SNACKS PER DAY'),
             _card(
               child: Row(
-                children: [
-                  Expanded(
-                    child: _SegButton(
-                      label: '0',
-                      selected: _snacksPerDay == 0,
-                      onTap: () => setState(() => _snacksPerDay = 0),
+                children: [0, 1, 2].map((n) {
+                  return Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.only(right: n == 2 ? 0 : 10),
+                      child: _SegButton(
+                        label: '$n',
+                        selected: _snacksPerDay == n,
+                        onTap: () => setState(() => _snacksPerDay = n),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _SegButton(
-                      label: '1',
-                      selected: _snacksPerDay == 1,
-                      onTap: () => setState(() => _snacksPerDay = 1),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _SegButton(
-                      label: '2',
-                      selected: _snacksPerDay == 2,
-                      onTap: () => setState(() => _snacksPerDay = 2),
-                    ),
-                  ),
-                ],
+                  );
+                }).toList(),
               ),
             ),
 
-            _sectionTitle('SUMMARY'),
+            // -----------------------------
+            // ✅ RECURRING
+            // -----------------------------
+            _sectionTitle('RECURRING'),
             _card(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _SummaryLine(label: 'Week', value: _weekId),
-                  const SizedBox(height: 6),
-                  _SummaryLine(
-                    label: 'Plan type',
-                    value: (_horizon == _HorizonUI.day) ? 'Day' : 'Week',
+                  _ToggleRow(
+                    title: isDayPlan
+                        ? 'Make this day plan recurring'
+                        : 'Make this week plan recurring',
+                    value: _makeRecurring,
+                    onChanged: (v) {
+                      setState(() {
+                        _makeRecurring = v;
+                        if (v && isDayPlan) {
+                          _ensureDefaultWeekdaySelected();
+                        }
+                      });
+                    },
                   ),
-                  if (_horizon == _HorizonUI.day) ...[
-                    const SizedBox(height: 6),
-                    _SummaryLine(label: 'Day', value: _prettyDay(_selectedDayKey)),
+                  const SizedBox(height: 8),
+                  Text(
+                    isDayPlan
+                        ? 'If enabled, this plan can automatically apply on selected weekdays.'
+                        : 'If enabled, this week plan becomes your default template for future weeks.',
+                    style: TextStyle(
+                      color: Colors.black.withOpacity(0.55),
+                      fontWeight: FontWeight.w600,
+                      height: 1.25,
+                    ),
+                  ),
+
+                  // Day plan: weekday selection UI
+                  if (isDayPlan && _makeRecurring) ...[
+                    const SizedBox(height: 14),
+                    Text(
+                      'REPEAT ON',
+                      style: TextStyle(
+                        color: Colors.black.withOpacity(0.75),
+                        fontWeight: FontWeight.w900,
+                        fontSize: 12,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: List.generate(7, (i) {
+                        final w = i + 1; // 1..7
+                        final selected = _recurringWeekdays.contains(w);
+                        return _ChipToggle(
+                          label: _weekdayLabel(w),
+                          selected: selected,
+                          onTap: () {
+                            setState(() {
+                              if (selected) {
+                                _recurringWeekdays.remove(w);
+                              } else {
+                                _recurringWeekdays.add(w);
+                              }
+                            });
+                          },
+                        );
+                      }),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Tip: you can pick multiple days (e.g. Mon/Wed/Fri).',
+                      style: TextStyle(
+                        color: Colors.black.withOpacity(0.50),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ],
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      if (_breakfast) const _Chip(text: 'Breakfast'),
-                      if (_lunch) const _Chip(text: 'Lunch'),
-                      if (_dinner) const _Chip(text: 'Dinner'),
-                      if (_snacksPerDay > 0) _Chip(text: 'Snacks x$_snacksPerDay'),
-                    ],
-                  ),
                 ],
               ),
             ),
@@ -412,19 +619,9 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
         top: false,
         child: Container(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-          decoration: const BoxDecoration(
-            color: Color(0xFF044246),
-            boxShadow: [
-              BoxShadow(
-                offset: Offset(0, -6),
-                blurRadius: 18,
-                color: Color.fromRGBO(0, 0, 0, 0.10),
-              )
-            ],
-          ),
+          decoration: const BoxDecoration(color: Color(0xFF044246)),
           child: SizedBox(
             height: 52,
-            width: double.infinity,
             child: ElevatedButton(
               onPressed: _busy ? null : _createMealPlan,
               style: ElevatedButton.styleFrom(
@@ -442,10 +639,7 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
                     )
                   : const Text(
                       'CREATE MEAL PLAN',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 0.5,
-                      ),
+                      style: TextStyle(fontWeight: FontWeight.w900),
                     ),
             ),
           ),
@@ -454,6 +648,8 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
     );
   }
 }
+
+/* ---------- UI ATOMS ---------- */
 
 class _SegButton extends StatelessWidget {
   final String label;
@@ -473,11 +669,11 @@ class _SegButton extends StatelessWidget {
       onTap: onTap,
       child: Container(
         height: 44,
+        alignment: Alignment.center,
         decoration: BoxDecoration(
           color: selected ? const Color(0xFF044246) : const Color(0xFFF3F6F6),
           borderRadius: BorderRadius.circular(999),
         ),
-        alignment: Alignment.center,
         child: Text(
           label,
           style: TextStyle(
@@ -505,12 +701,7 @@ class _ToggleRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(
-          child: Text(
-            title,
-            style: const TextStyle(fontWeight: FontWeight.w800),
-          ),
-        ),
+        Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w800))),
         Switch(value: value, onChanged: onChanged),
       ],
     );
@@ -520,32 +711,35 @@ class _ToggleRow extends StatelessWidget {
 class _RadioRow extends StatelessWidget {
   final String title;
   final bool selected;
+  final bool enabled;
   final VoidCallback onTap;
 
   const _RadioRow({
     required this.title,
     required this.selected,
     required this.onTap,
+    this.enabled = true,
   });
 
   @override
   Widget build(BuildContext context) {
+    final titleStyle = TextStyle(
+      fontWeight: FontWeight.w700,
+      color: enabled ? Colors.black : Colors.black.withOpacity(0.35),
+    );
+
     return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: onTap,
+      onTap: enabled ? onTap : null,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Row(
           children: [
-            Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-            ),
+            Expanded(child: Text(title, style: titleStyle)),
             Icon(
               selected ? Icons.radio_button_checked : Icons.radio_button_off,
-              color: selected ? const Color(0xFF044246) : Colors.black38,
+              color: !enabled
+                  ? Colors.black.withOpacity(0.25)
+                  : (selected ? const Color(0xFF044246) : Colors.black38),
             ),
           ],
         ),
@@ -554,58 +748,40 @@ class _RadioRow extends StatelessWidget {
   }
 }
 
-class _SummaryLine extends StatelessWidget {
+class _ChipToggle extends StatelessWidget {
   final String label;
-  final String value;
+  final bool selected;
+  final VoidCallback onTap;
 
-  const _SummaryLine({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 74,
-          child: Text(
-            label.toUpperCase(),
-            style: TextStyle(
-              color: Colors.black.withOpacity(0.55),
-              fontSize: 11,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.5,
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            value,
-            style: const TextStyle(fontWeight: FontWeight.w800),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _Chip extends StatelessWidget {
-  final String text;
-  const _Chip({required this.text});
+  const _ChipToggle({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF3F6F6),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontWeight: FontWeight.w900,
-          fontSize: 12,
-          color: Color(0xFF044246),
+    final bg = selected ? const Color(0xFF044246) : const Color(0xFFF3F6F6);
+    final fg = selected ? Colors.white : const Color(0xFF044246);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: selected ? const Color(0xFF044246) : Colors.black.withOpacity(0.10),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: fg,
+            fontWeight: FontWeight.w900,
+          ),
         ),
       ),
     );

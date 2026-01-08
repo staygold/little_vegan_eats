@@ -222,7 +222,11 @@ class _HomeScreenState extends State<HomeScreen> {
   void _openBuilder(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => const MealPlanBuilderScreen(),
+        builder: (_) => MealPlanBuilderScreen(
+          weekId: _weekId(),
+          // If your builder supports an entry mode enum, you can pass it here:
+          // entry: MealPlanBuilderEntry.choose,
+        ),
       ),
     );
   }

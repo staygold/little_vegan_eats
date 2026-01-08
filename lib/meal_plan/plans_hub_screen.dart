@@ -1,9 +1,13 @@
+// lib/meal_plan/plans_hub_screen.dart
 import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'core/meal_plan_keys.dart';
+import 'core/meal_plan_repository.dart';
 import 'services/meal_plan_manager.dart';
 import 'meal_plan_screen.dart';
 import 'builder/meal_plan_builder_screen.dart';
@@ -19,36 +23,124 @@ class PlansHubScreen extends StatefulWidget {
 class _PlansHubScreenState extends State<PlansHubScreen> {
   static const Color _brandDark = Color(0xFF005A4F);
   static const Color _brandTeal = Color(0xFF32998D);
+  static const Color _bg = Color(0xFFECF3F4);
+
+  late final MealPlanRepository _repo;
+
+  // 0 = this week, positive = future weeks
+  int _weekOffset = 0;
+
+  // ✅ ALLOW 1 YEAR OF SCROLLING
+  static const int _maxWeeksForward = 52;
+
+  @override
+  void initState() {
+    super.initState();
+    _repo = MealPlanRepository(FirebaseFirestore.instance);
+    _triggerWeekCheck();
+  }
+
+  @override
+  void didUpdateWidget(covariant PlansHubScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _triggerWeekCheck();
+  }
+
+  // ---------- LOGIC TRIGGERS ----------
+
+  void _triggerWeekCheck() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final weekId = _weekIdForOffset(_weekOffset);
+    _repo.ensureWeekExists(uid: uid, weekId: weekId);
+  }
+
+  // ---------- DATE HELPERS ----------
+
+  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  bool _isPastDay(String dayKey) {
+    final dt = MealPlanKeys.parseDayKey(dayKey);
+    if (dt == null) return true;
+    return _dateOnly(dt).isBefore(_dateOnly(DateTime.now()));
+  }
+
+  String _monthShort(int m) {
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    final idx = (m - 1).clamp(0, 11);
+    return months[idx];
+  }
+
+  String _weekRangeLabel(String weekId) {
+    final dayKeys = MealPlanKeys.weekDayKeys(weekId);
+    if (dayKeys.isEmpty) return 'This week';
+
+    final start = MealPlanKeys.parseDayKey(dayKeys.first);
+    final end = MealPlanKeys.parseDayKey(dayKeys.last);
+    if (start == null || end == null) return 'This week';
+
+    if (start.month == end.month) {
+      return '${start.day}–${end.day} ${_monthShort(start.month)}';
+    }
+    return '${start.day} ${_monthShort(start.month)}–${end.day} ${_monthShort(end.month)}';
+  }
+
+  String _weekIdForOffset(int offset) {
+    final base = MealPlanKeys.parseDayKey(MealPlanKeys.currentWeekId()) ?? DateTime.now();
+    final monday = MealPlanKeys.weekStartMonday(base);
+    final target = monday.add(Duration(days: 7 * offset));
+    return MealPlanKeys.weekIdForDate(target);
+  }
+
+  // Local dayKey formatter to avoid relying on any extra helpers.
+  String _dayKeyForDate(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y-$m-$day';
+  }
 
   // ---------- NAVIGATION ----------
 
-  void _navigateToBuilder({String? dayKey}) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => MealPlanBuilderScreen(
-          initialSelectedDayKey: dayKey,
-          startAsDayPlan: dayKey != null,
+  void _navigateToBuilder({
+    required String weekId,
+    required MealPlanBuilderEntry entry,
+    String? dayKey,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => MealPlanBuilderScreen(
+            weekId: weekId,
+            entry: entry,
+            initialSelectedDayKey: dayKey,
+          ),
         ),
-      ),
-    );
+      );
+    });
   }
 
-  void _openMealPlanWeek() {
+  void _openMealPlanWeek(String weekId) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => MealPlanScreen(
-          weekId: MealPlanKeys.currentWeekId(),
+          weekId: weekId,
           initialViewMode: MealPlanViewMode.week,
         ),
       ),
     );
   }
 
-  void _openMealPlanForDay(String dayKey) {
+  void _openMealPlanForDay(String weekId, String dayKey) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => MealPlanScreen(
-          weekId: MealPlanKeys.currentWeekId(),
+          weekId: weekId,
           focusDayKey: dayKey,
           initialViewMode: MealPlanViewMode.today,
         ),
@@ -62,30 +154,148 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
     );
   }
 
+  // ✅ NEW: pick start date (today → 14 days ahead) for week-only builder
+  Future<DateTime?> _pickWeekPlanStartDate() async {
+    final now = DateTime.now();
+    final today = _dateOnly(now);
+    final last = today.add(const Duration(days: 14));
+
+    return showDatePicker(
+      context: context,
+      initialDate: today,
+      firstDate: today,
+      lastDate: last,
+      helpText: 'Choose start date',
+      fieldHintText: 'YYYY-MM-DD',
+    );
+  }
+
+  // ✅ NEW: create week plan flow (date picker → ensure week doc exists → open week-only builder)
+  Future<void> _onCreateWeekPlanPressed() async {
+    final picked = await _pickWeekPlanStartDate();
+    if (picked == null) return;
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final weekId = MealPlanKeys.weekIdForDate(picked);
+    final dayKey = _dayKeyForDate(picked);
+
+    // Ensure the week doc exists before builder loads
+    _repo.ensureWeekExists(uid: uid, weekId: weekId);
+
+    _navigateToBuilder(
+      weekId: weekId,
+      entry: MealPlanBuilderEntry.weekOnly,
+      dayKey: dayKey, // ✅ this becomes the anchor/start day for the week plan builder
+    );
+  }
+
+  // ---------- DATA HELPERS ----------
+
+  Map<String, dynamic> _mapOrEmpty(dynamic v) =>
+      (v is Map) ? Map<String, dynamic>.from(v as Map) : <String, dynamic>{};
+
+  bool _dayHasPlan(dynamic dayData) {
+    final m = _mapOrEmpty(dayData);
+    if (m.isEmpty) return false;
+
+    final keys = m.keys.map((e) => e.toString()).where((k) => k != 'title').toList();
+    if (keys.isEmpty) return false;
+
+    for (final k in keys) {
+      final v = m[k];
+      if (v is Map && v.isNotEmpty) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  ({bool isWeekPlan, String title, String? weekStartDayKey}) _resolvePlanMeta(
+    Map<String, dynamic> weekDocData,
+  ) {
+    final config = _mapOrEmpty(weekDocData['config']);
+    final title = (config['title'] ?? '').toString().trim();
+    final horizon = (config['horizon'] ?? config['mode'] ?? config['activeMode'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
+
+    final sourceWeekPlanId = (config['sourceWeekPlanId'] ?? '').toString().trim();
+
+    final startKey = (config['weekPlanStartDayKey'] ??
+            config['appliedFromDayKey'] ??
+            config['startDayKey'])
+        ?.toString()
+        .trim();
+    final weekStartDayKey = (startKey != null && startKey.isNotEmpty) ? startKey : null;
+
+    final isWeekPlan = sourceWeekPlanId.isNotEmpty || horizon == 'week';
+
+    return (
+      isWeekPlan: isWeekPlan,
+      title: title.isNotEmpty ? title : 'My Week Plan',
+      weekStartDayKey: weekStartDayKey
+    );
+  }
+
+  int? _dayIndexForWeekPlan({
+    required List<String> weekKeys,
+    required String dayKey,
+    required String? startDayKey,
+  }) {
+    if (startDayKey == null || startDayKey.trim().isEmpty) return null;
+
+    final start = MealPlanKeys.parseDayKey(startDayKey);
+    final current = MealPlanKeys.parseDayKey(dayKey);
+
+    if (start == null || current == null) return null;
+
+    final diff = current.difference(start).inDays;
+    if (diff < 0) return null;
+
+    return (diff % 7) + 1;
+  }
+
   // ---------- ACTIONS ----------
 
-  Future<void> _onRemoveWeekPressed() async {
+  Future<void> _onClearWeekPressed({
+    required String weekId,
+    required bool weekPlanPresent,
+  }) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text("Clear entire week?"),
-        content: const Text("This will remove all plans currently scheduled for this week."),
+        content: Text(
+          weekPlanPresent
+              ? "Weekly plan will be removed. This will clear all meals currently scheduled for this week."
+              : "This will remove all plans currently scheduled for this week.",
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
           TextButton(
-            onPressed: () => Navigator.pop(ctx, true), 
-            child: const Text("Clear All", style: TextStyle(color: Colors.red))
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("Clear All", style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
     );
 
-    if (confirm == true) {
-      await MealPlanManager().removeActiveWeekPlan(MealPlanKeys.currentWeekId());
+    if (confirm != true) return;
+
+    try {
+      await MealPlanManager().clearWeekCompletely(weekId: weekId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Week cleared')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to clear week: $e')));
     }
   }
 
-  Future<void> _removeDayPlan(String dayKey) async {
+  Future<void> _removeDayPlan(String weekId, String dayKey) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -94,45 +304,77 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
           TextButton(
-            onPressed: () => Navigator.pop(ctx, true), 
-            child: const Text("Remove", style: TextStyle(color: Colors.red))
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("Remove", style: TextStyle(color: Colors.red)),
           ),
-        ],
-      ),
-    );
-
-    if (confirm == true) {
-      await MealPlanManager().removeDayFromWeek(
-        weekId: MealPlanKeys.currentWeekId(), 
-        dayKey: dayKey
-      );
-    }
-  }
-
-  Future<void> _nukeCurrentWeek() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("NUKE WEEK (DEBUG)"),
-        content: const Text("Delete active week document? Use to fix ghost states."),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("DELETE", style: TextStyle(color: Colors.red))),
         ],
       ),
     );
 
     if (confirm != true) return;
 
-    await FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('mealPlansWeeks')
-        .doc(MealPlanKeys.currentWeekId())
-        .delete();
+    try {
+      await MealPlanManager().removeDayFromWeek(weekId: weekId, dayKey: dayKey);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to remove day plan: $e')));
+    }
+  }
+
+  /// ✅ SUPER NUKE: Deletes ALL weeks, saved plans, and settings.
+  Future<void> _nukeWeekDoc(String ignoredWeekId) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("🔥 SUPER NUKE (DEBUG)"),
+        content: const Text(
+          "This will delete:\n"
+          "1. ALL Calendar Weeks\n"
+          "2. ALL Saved Plans (Templates)\n"
+          "3. ALL Settings\n\n"
+          "This simulates a brand new user.",
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("DELETE EVERYTHING", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+
+      // 1. Delete Weeks
+      final weeks = await userRef.collection('mealPlansWeeks').get();
+      for (final doc in weeks.docs) batch.delete(doc.reference);
+
+      // 2. Delete Saved Plans (Templates)
+      final plans = await userRef.collection('savedMealPlans').get();
+      for (final doc in plans.docs) batch.delete(doc.reference);
+
+      // 3. Reset Settings
+      batch.delete(userRef.collection('mealPlan').doc('settings'));
+
+      await batch.commit();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('💥 Everything deleted! Fresh start.')));
+
+      setState(() { _weekOffset = 0; });
+      _triggerWeekCheck();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Nuke failed: $e')));
+    }
   }
 
   // ---------- BUILD ----------
@@ -140,280 +382,524 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return const Scaffold(body: Center(child: Text('Please log in')));
+    if (user == null) {
+      return const Scaffold(body: Center(child: Text('Please log in')));
+    }
+
+    final weekId = _weekIdForOffset(_weekOffset);
+    final weekLabel = _weekRangeLabel(weekId);
+    final isThisWeek = _weekOffset == 0;
+    final weekKeys = MealPlanKeys.weekDayKeys(weekId);
 
     return Scaffold(
-      backgroundColor: const Color(0xFFECF3F4),
+      backgroundColor: _bg,
       appBar: AppBar(
         title: const Text('Meal Planner'),
         backgroundColor: Colors.transparent,
         elevation: 0,
-        titleTextStyle: const TextStyle(color: _brandDark, fontWeight: FontWeight.bold, fontSize: 20),
+        titleTextStyle: const TextStyle(
+          color: _brandDark,
+          fontWeight: FontWeight.bold,
+          fontSize: 20,
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.history, color: _brandDark),
             tooltip: 'Saved Plans',
             onPressed: _openSavedPlansList,
           ),
-          IconButton(
-            icon: const Icon(Icons.delete_forever, color: Colors.red),
-            tooltip: 'NUKE WEEK',
-            onPressed: _nukeCurrentWeek,
+          if (kDebugMode)
+            IconButton(
+              icon: const Icon(Icons.delete_forever, color: Colors.red),
+              tooltip: 'NUKE EVERYTHING',
+              onPressed: () => _nukeWeekDoc(weekId),
+            ),
+        ],
+      ),
+      body: Column(
+        children: [
+          _WeekSwitcherHeader(
+            label: isThisWeek ? "THIS WEEK" : "WEEK",
+            range: weekLabel,
+            brandDark: _brandDark,
+            canGoPrev: _weekOffset > 0,
+            canGoNext: _weekOffset < _maxWeeksForward,
+            onPrev: () {
+              setState(() => _weekOffset = (_weekOffset - 1).clamp(0, _maxWeeksForward));
+              _triggerWeekCheck();
+            },
+            onNext: () {
+              setState(() => _weekOffset = (_weekOffset + 1).clamp(0, _maxWeeksForward));
+              _triggerWeekCheck();
+            },
+          ),
+          Expanded(
+            child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(user.uid)
+                  .collection('mealPlansWeeks')
+                  .doc(weekId)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final weekExists = snapshot.hasData && snapshot.data != null && snapshot.data!.exists;
+                final data = weekExists ? (snapshot.data!.data() ?? {}) : <String, dynamic>{};
+
+                final config = _mapOrEmpty(data['config']);
+                final daysMap = _mapOrEmpty(data['days']);
+
+                final hasAny = weekExists ? MealPlanRepository.hasAnyPlannedEntries(data) : false;
+
+                final meta = _resolvePlanMeta(data);
+                final isWeekPlan = meta.isWeekPlan;
+                final planTitle = meta.title;
+                final startDayKey = meta.weekStartDayKey;
+
+                final weekPlanPresent = weekExists && isWeekPlan;
+                final dayPlanTitles = _mapOrEmpty(config['dayPlanTitles']);
+
+                return ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 110),
+                  children: [
+                    _TopActionsCard(
+                      brandDark: _brandDark,
+                      brandTeal: _brandTeal,
+                      weekHasAnything: hasAny,
+                      onOpenWeek: hasAny ? () => _openMealPlanWeek(weekId) : null,
+
+                      // ✅ now opens a date picker (today → +14 days) then week-only builder
+                      onCreateWeekPlan: _onCreateWeekPlanPressed,
+
+                      onSavedPlans: _openSavedPlansList,
+                      onClearWeek: () => _onClearWeekPressed(
+                        weekId: weekId,
+                        weekPlanPresent: weekPlanPresent,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    Text(
+                      'YOUR WEEK',
+                      style: TextStyle(
+                        color: _brandDark,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+
+                    ...weekKeys.map((dayKey) {
+                      final dayData = daysMap[dayKey];
+                      final active = _dayHasPlan(dayData);
+
+                      final isPast = _isPastDay(dayKey);
+                      final canTap = active || !isPast;
+
+                      String subtitle;
+                      if (active) {
+                        if (isWeekPlan) {
+                          final n = _dayIndexForWeekPlan(
+                            weekKeys: weekKeys,
+                            dayKey: dayKey,
+                            startDayKey: startDayKey,
+                          );
+                          subtitle = (n != null) ? '$planTitle · Day $n' : planTitle;
+                          if (isPast) subtitle = 'Past day · $subtitle';
+                        } else {
+                          final titleFromConfig = (dayPlanTitles[dayKey] ?? '').toString().trim();
+                          final titleFromDay = (dayData is Map && dayData['title'] != null)
+                              ? dayData['title'].toString().trim()
+                              : '';
+                          final cfgTitle = (config['title'] ?? '').toString().trim();
+
+                          subtitle = titleFromConfig.isNotEmpty
+                              ? titleFromConfig
+                              : (titleFromDay.isNotEmpty
+                                  ? titleFromDay
+                                  : (cfgTitle.isNotEmpty ? cfgTitle : 'Day plan'));
+                        }
+                      } else {
+                        subtitle = isPast ? 'Past day (can’t add)' : 'No plan set';
+                      }
+
+                      return _DaySlotCard(
+                        title: MealPlanKeys.formatPretty(dayKey),
+                        subtitle: subtitle,
+                        brandTeal: _brandTeal,
+                        active: active,
+                        disabled: !canTap,
+                        isPast: isPast,
+                        showAdd: !active && !isPast,
+                        onTap: () {
+                          if (!canTap) return;
+                          if (active) {
+                            _openMealPlanForDay(weekId, dayKey);
+                          } else {
+                            _navigateToBuilder(
+                              weekId: weekId,
+                              entry: MealPlanBuilderEntry.dayOnly,
+                              dayKey: dayKey,
+                            );
+                          }
+                        },
+                        onRemove: active && !isWeekPlan
+                            ? () => _removeDayPlan(weekId, dayKey)
+                            : null,
+                      );
+                    }).toList(),
+
+                    const SizedBox(height: 6),
+
+                    if (!hasAny)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          'Tip: Set recurring from Saved Plans to automatically fill future weeks.',
+                          style: TextStyle(
+                            color: Colors.black.withOpacity(0.45),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
           ),
         ],
       ),
-      body: StreamBuilder<DocumentSnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('users').doc(user.uid)
-            .collection('mealPlansWeeks').doc(MealPlanKeys.currentWeekId())
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          // 1. If document doesn't exist -> Show Empty State
-          if (!snapshot.hasData || !snapshot.data!.exists) {
-            return _NoActivePlanView(
-              onTapCreate: () => _navigateToBuilder(),
-              onTapViewAll: _openSavedPlansList,
-            );
-          }
-
-          final data = snapshot.data!.data() as Map<String, dynamic>;
-          final daysMap = data['days'] as Map<String, dynamic>? ?? {};
-
-          // 2. ✅ FIX: If document exists but HAS NO FOOD -> Show Empty State
-          // (This prevents showing 7 empty slots)
-          bool hasAnyFood = false;
-          if (daysMap.isNotEmpty) {
-            for (final v in daysMap.values) {
-              if (v is Map && v.isNotEmpty) {
-                hasAnyFood = true;
-                break;
-              }
-            }
-          }
-
-          if (!hasAnyFood) {
-             return _NoActivePlanView(
-              onTapCreate: () => _navigateToBuilder(),
-              onTapViewAll: _openSavedPlansList,
-            );
-          }
-
-          // 3. Otherwise show the plan
-          final config = data['config'] as Map<String, dynamic>? ?? {};
-          String mode = config['horizon'] ?? config['mode'] ?? config['activeMode'] ?? 'week';
-
-          if (mode == 'day') {
-            return _buildDayByDayList(data);
-          } else {
-            return _buildWeeklyCardView(data);
-          }
-        },
-      ),
-    );
-  }
-
-  // ---------- VIEW 1: WEEKLY CARD ----------
-
-  Widget _buildWeeklyCardView(Map<String, dynamic> data) {
-    final String title = data['config']?['title'] ?? 'Weekly Meal Plan';
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
-      children: [
-        const Text('THIS WEEK’S PLAN', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: _brandDark)),
-        const SizedBox(height: 12),
-        Card(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: const BorderSide(color: _brandTeal, width: 2)),
-          child: ListTile(
-            title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
-            subtitle: const Text('Active for the full week'),
-            trailing: const Icon(Icons.chevron_right, color: _brandTeal),
-            onTap: _openMealPlanWeek,
-          ),
-        ),
-        const SizedBox(height: 24),
-        _RemoveButton(label: 'Clear Entire Week', onPressed: _onRemoveWeekPressed),
-        
-        const SizedBox(height: 12),
-        Center(
-          child: TextButton(
-            onPressed: _openSavedPlansList,
-            child: const Text("View All Saved Plans", style: TextStyle(color: _brandTeal, fontWeight: FontWeight.bold)),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ---------- VIEW 2: 7 DAY SLOTS ----------
-
-  Widget _buildDayByDayList(Map<String, dynamic> data) {
-    final daysMap = data['days'] as Map<String, dynamic>? ?? {};
-    final config = data['config'] as Map<String, dynamic>? ?? {};
-    final weekKeys = MealPlanKeys.weekDayKeys(MealPlanKeys.currentWeekId());
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 100),
-      children: [
-        const Text('YOUR WEEKLY SCHEDULE', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: _brandDark)),
-        const SizedBox(height: 16),
-
-        ...weekKeys.map((dayKey) {
-          final dayData = daysMap[dayKey];
-          bool isActive = dayData != null && dayData.isNotEmpty;
-
-          String displayTitle = config['title']?.toString() ?? "Active Plan"; 
-
-          if (isActive) {
-            if (dayData is Map && dayData['title'] != null && dayData['title'].toString().isNotEmpty) {
-              displayTitle = dayData['title'].toString();
-            } 
-          }
-
-          return Card(
-            margin: const EdgeInsets.only(bottom: 12),
-            elevation: isActive ? 2 : 0,
-            color: isActive ? Colors.white : Colors.white.withOpacity(0.6),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: isActive ? _brandTeal : Colors.grey.shade300, width: isActive ? 1.5 : 1),
-            ),
-            child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              title: Text(
-                MealPlanKeys.formatPretty(dayKey),
-                style: TextStyle(fontWeight: isActive ? FontWeight.bold : FontWeight.normal),
-              ),
-              subtitle: Text(
-                isActive ? displayTitle : "No plan set - tap to create", 
-                style: TextStyle(
-                  color: isActive ? _brandTeal : Colors.grey, 
-                  fontWeight: isActive ? FontWeight.w700 : FontWeight.normal
-                ),
-              ),
-              trailing: isActive 
-                ? PopupMenuButton<String>(
-                    onSelected: (v) => v == 'remove' ? _removeDayPlan(dayKey) : _openMealPlanForDay(dayKey),
-                    itemBuilder: (_) => [
-                      const PopupMenuItem(value: 'view', child: Text("View/Edit Day")),
-                      const PopupMenuItem(value: 'remove', child: Text("Remove Day Plan", style: TextStyle(color: Colors.red))),
-                    ],
-                    icon: const Icon(Icons.more_vert, color: _brandTeal),
-                  )
-                : const Icon(Icons.add_circle_outline, color: _brandTeal),
-              onTap: () {
-                if (isActive) {
-                  _openMealPlanForDay(dayKey);
-                } else {
-                  _navigateToBuilder(dayKey: dayKey);
-                }
-              },
-            ),
-          );
-        }),
-        const SizedBox(height: 12),
-        _RemoveButton(label: 'Clear All Active Days', onPressed: _onRemoveWeekPressed),
-
-        const SizedBox(height: 12),
-        Center(
-          child: TextButton(
-            onPressed: _openSavedPlansList,
-            child: const Text("View All Saved Plans", style: TextStyle(color: _brandTeal, fontWeight: FontWeight.bold)),
-          ),
-        ),
-      ],
     );
   }
 }
 
-// ---------- UI HELPERS ----------
+// ---------- UI ----------
 
-class _RemoveButton extends StatelessWidget {
+class _WeekSwitcherHeader extends StatelessWidget {
   final String label;
-  final VoidCallback onPressed;
-  const _RemoveButton({required this.label, required this.onPressed});
+  final String range;
+  final Color brandDark;
+  final bool canGoPrev;
+  final bool canGoNext;
+  final VoidCallback onPrev;
+  final VoidCallback onNext;
 
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: TextButton.icon(
-        onPressed: onPressed,
-        icon: const Icon(Icons.delete_sweep_outlined, color: Colors.red),
-        label: Text(label, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
-      ),
-    );
-  }
-}
-
-class _NoActivePlanView extends StatelessWidget {
-  final VoidCallback onTapCreate;
-  final VoidCallback onTapViewAll; 
-
-  const _NoActivePlanView({
-    required this.onTapCreate,
-    required this.onTapViewAll,
+  const _WeekSwitcherHeader({
+    required this.label,
+    required this.range,
+    required this.brandDark,
+    required this.canGoPrev,
+    required this.canGoNext,
+    required this.onPrev,
+    required this.onNext,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.restaurant_menu, size: 80, color: Colors.grey),
-            const SizedBox(height: 16),
-            const Text(
-              "No Active Meal Plan", 
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.grey)
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: 'Previous week',
+            onPressed: canGoPrev ? onPrev : null,
+            icon: Icon(
+              Icons.chevron_left,
+              color: canGoPrev ? brandDark : brandDark.withOpacity(0.25),
             ),
-            const SizedBox(height: 8),
-            const Text(
-              "Your schedule is empty for this week.",
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 32),
-            
-            // OPTION 1: CREATE
-            SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                onPressed: onTapCreate,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF32998D),
-                  foregroundColor: Colors.white,
-                  shape: const StadiumBorder(),
+          ),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: brandDark.withOpacity(0.85),
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.6,
+                    fontSize: 12,
+                  ),
                 ),
-                child: const Text('CREATE NEW PLAN', style: TextStyle(fontWeight: FontWeight.w900)),
-              ),
+                const SizedBox(height: 4),
+                Text(
+                  range,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: brandDark,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 18,
+                  ),
+                ),
+              ],
             ),
-            
-            const SizedBox(height: 16),
-            const Text("— OR —", style: TextStyle(color: Colors.grey, fontSize: 12)),
-            const SizedBox(height: 16),
+          ),
+          IconButton(
+            tooltip: 'Next week',
+            onPressed: canGoNext ? onNext : null,
+            icon: Icon(
+              Icons.chevron_right,
+              color: canGoNext ? brandDark : brandDark.withOpacity(0.25),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
-            // OPTION 2: ADD
-            SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: OutlinedButton(
-                onPressed: onTapViewAll,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFF32998D),
-                  side: const BorderSide(color: Color(0xFF32998D), width: 2),
-                  shape: const StadiumBorder(),
+class _TopActionsCard extends StatelessWidget {
+  final Color brandDark;
+  final Color brandTeal;
+  final bool weekHasAnything;
+
+  final VoidCallback? onOpenWeek;
+  final VoidCallback onCreateWeekPlan;
+  final VoidCallback onSavedPlans;
+  final VoidCallback onClearWeek;
+
+  const _TopActionsCard({
+    required this.brandDark,
+    required this.brandTeal,
+    required this.weekHasAnything,
+    required this.onOpenWeek,
+    required this.onCreateWeekPlan,
+    required this.onSavedPlans,
+    required this.onClearWeek,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: const [
+          BoxShadow(
+            offset: Offset(0, 10),
+            blurRadius: 22,
+            color: Color.fromRGBO(0, 0, 0, 0.08),
+          )
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'MEAL PLANS',
+            style: TextStyle(
+              color: brandDark,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0.4,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            weekHasAnything ? 'Manage your plans for the week.' : 'No plans scheduled yet.',
+            style: TextStyle(
+              color: Colors.black.withOpacity(0.55),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          Row(
+            children: [
+              Expanded(
+                child: _PillButton(
+                  label: 'OPEN WEEK',
+                  filled: true,
+                  brandTeal: brandTeal,
+                  onTap: weekHasAnything ? (onOpenWeek ?? onCreateWeekPlan) : onCreateWeekPlan,
                 ),
-                child: const Text("ADD FROM SAVED PLANS", style: TextStyle(fontWeight: FontWeight.w900)),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _PillButton(
+                  label: 'CREATE WEEK PLAN',
+                  filled: false,
+                  brandTeal: brandTeal,
+                  onTap: onCreateWeekPlan, // ✅ now shows date picker
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _PillButton(
+            label: 'SAVED PLANS',
+            filled: false,
+            brandTeal: brandTeal,
+            onTap: onSavedPlans,
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: onClearWeek,
+              icon: const Icon(Icons.delete_sweep_outlined, color: Colors.red),
+              label: const Text(
+                'Clear full week',
+                style: TextStyle(color: Colors.red, fontWeight: FontWeight.w800),
               ),
             ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DaySlotCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final Color brandTeal;
+
+  final bool active;
+  final bool disabled;
+  final bool showAdd;
+  final bool isPast;
+
+  final VoidCallback onTap;
+  final VoidCallback? onRemove;
+
+  const _DaySlotCard({
+    required this.title,
+    required this.subtitle,
+    required this.brandTeal,
+    required this.active,
+    required this.disabled,
+    required this.showAdd,
+    required this.isPast,
+    required this.onTap,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool pastStyle = isPast;
+
+    final border = active
+        ? (pastStyle ? Colors.grey.shade400 : brandTeal)
+        : Colors.grey.shade300;
+
+    final bg = disabled
+        ? Colors.white.withOpacity(0.45)
+        : (active
+            ? (pastStyle ? Colors.white.withOpacity(0.80) : Colors.white)
+            : Colors.white.withOpacity(0.70));
+
+    final subtitleColor = active
+        ? (pastStyle ? Colors.black.withOpacity(0.45) : brandTeal)
+        : Colors.black.withOpacity(0.55);
+
+    return Opacity(
+      opacity: disabled ? 0.55 : 1.0,
+      child: Card(
+        margin: const EdgeInsets.only(bottom: 12),
+        elevation: active && !pastStyle ? 2 : 0,
+        color: bg,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: border, width: active ? 1.5 : 1),
+        ),
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          title: Text(
+            title,
+            style: TextStyle(
+              fontWeight: active ? FontWeight.w900 : FontWeight.w800,
+              color: Colors.black.withOpacity(disabled ? 0.55 : 0.90),
+            ),
+          ),
+          subtitle: Text(
+            subtitle,
+            style: TextStyle(
+              color: subtitleColor,
+              fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+            ),
+          ),
+          trailing: disabled
+              ? null
+              : (active
+                  ? PopupMenuButton<String>(
+                      onSelected: (v) {
+                        if (v == 'view') onTap();
+                        if (v == 'remove') onRemove?.call();
+                      },
+                      itemBuilder: (_) {
+                        final items = <PopupMenuEntry<String>>[
+                          const PopupMenuItem(value: 'view', child: Text('View/Edit')),
+                        ];
+
+                        if (onRemove != null) {
+                          items.add(
+                            const PopupMenuItem(
+                              value: 'remove',
+                              child: Text('Remove day plan', style: TextStyle(color: Colors.red)),
+                            ),
+                          );
+                        }
+
+                        return items;
+                      },
+                      icon: Icon(Icons.more_vert, color: brandTeal),
+                    )
+                  : (showAdd
+                      ? Icon(Icons.add_circle_outline, color: brandTeal)
+                      : const SizedBox.shrink())),
+          onTap: disabled ? null : onTap,
+        ),
+      ),
+    );
+  }
+}
+
+class _PillButton extends StatelessWidget {
+  final String label;
+  final bool filled;
+  final VoidCallback onTap;
+  final Color brandTeal;
+
+  const _PillButton({
+    required this.label,
+    required this.filled,
+    required this.onTap,
+    required this.brandTeal,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = filled ? brandTeal : Colors.transparent;
+    final fg = filled ? Colors.white : brandTeal;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          height: 48,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: brandTeal, width: 2),
+          ),
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: fg,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0.2,
+            ),
+          ),
         ),
       ),
     );
