@@ -49,7 +49,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
 
   late final MealPlanController _ctrl;
 
-  // ✅ explicit controller for week swipe / tabs
   late TabController _tabController;
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userDocSub;
@@ -67,17 +66,28 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
 
   Color get _brandDark => const Color(0xFF044246);
   Color get _brandPrimary => const Color(0xFF32998D);
+  Color get _bg => const Color(0xFFECF3F4);
 
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  bool _isFirstDayOfWeekView(String dayKey) {
-    final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
-    if (dayKeys.isEmpty) return false;
-    return dayKeys.first == dayKey;
+  // --------------------------
+  // DATE HELPERS (PAST DAY STATE)
+  // --------------------------
+
+  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  bool _isPastDayKey(String dayKey) {
+    final dt = MealPlanKeys.parseDayKey(dayKey);
+    if (dt == null) return true;
+    return _dateOnly(dt).isBefore(_dateOnly(DateTime.now()));
   }
+
+  // --------------------------
+  // WEEK LABEL
+  // --------------------------
 
   String _monthShort(int m) {
     const months = [
@@ -114,13 +124,11 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
 
     await _ctrl.setWeek(nextWeekId);
 
-    // reset any source listener derived from week-plan id
     _sourcePlanSub?.cancel();
     _sourcePlanSub = null;
     _sourcePlanIdListening = null;
     _sourcePlanTitle = null;
 
-    // reset to start-of-week
     _tabController.animateTo(0);
 
     if (!mounted) return;
@@ -128,110 +136,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
   }
 
   // -------------------------------------------------------
-  // SAVE AND ACTIVATE AS WEEK PLAN (snapshot current active)
-  // -------------------------------------------------------
-  Future<void> _saveAsWeekPlanSnapshot() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    final nameCtrl = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Name this Plan"),
-        content: TextField(
-          controller: nameCtrl,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: "e.g. Family Favourites",
-            labelText: "Plan Name",
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, nameCtrl.text.trim()),
-            style: ElevatedButton.styleFrom(backgroundColor: _brandPrimary),
-            child: const Text("Save & Activate"),
-          ),
-        ],
-      ),
-    );
-
-    if (name == null || name.isEmpty) return;
-
-    // ✅ Build snapshot keyed by actual dayKey (NOT "0..6")
-    final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
-    final Map<String, dynamic> days = {};
-    for (final dk in dayKeys) {
-      final snap = _snapshotDay(dk);
-      if (snap.isNotEmpty) days[dk] = snap;
-      // if empty, omit it (keeps saved plans clean)
-    }
-
-    final snacksPerDay = _snacksPerDayFromWeek();
-    final title = name;
-
-    final payload = <String, dynamic>{
-      'title': title,
-      'type': 'week',
-      'savedAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-      'days': days,
-      'config': <String, dynamic>{
-        'daysToPlan': 7,
-        'snacksPerDay': snacksPerDay,
-        'createdFrom': 'activeWeekSnapshot',
-        'createdFromWeekId': _ctrl.weekId,
-      },
-    };
-
-    try {
-      final docRef = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .collection('savedMealPlans')
-          .add(payload);
-
-      final weekRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .collection('mealPlansWeeks')
-          .doc(_ctrl.weekId);
-
-      // ✅ week plan pointer becomes authoritative
-      final updates = <String, dynamic>{
-        'config.title': title,
-        'config.sourceWeekPlanId': docRef.id,
-        'config.horizon': 'week',
-        'config.mode': 'week',
-        'config.activeMode': 'week',
-        'config.daysToPlan': 7,
-
-        // clear mixed-day pointers (new + legacy)
-        'config.daySources': FieldValue.delete(),
-        'config.dayPlanTitles': FieldValue.delete(),
-        'config.dayPlanSourceIds': FieldValue.delete(),
-
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-
-      await weekRef.update(updates);
-
-      if (!mounted) return;
-      _snack('Saved "$title" and set as active');
-      setState(() {});
-    } catch (e) {
-      if (!mounted) return;
-      _snack('Error saving plan: $e');
-    }
-  }
-
-  // -------------------------------------------------------
-  // ✅ SOURCE / TITLE RESOLUTION (NEW SCHEMA)
+  // ✅ SOURCE / TITLE RESOLUTION
   // -------------------------------------------------------
 
   String? _getWeekSourcePlanId() {
@@ -241,13 +146,11 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     var v = (cfg['sourceWeekPlanId'] ?? '').toString().trim();
     if (v.isNotEmpty) return v;
 
-    // legacy support (safe fallback)
     v = (cfg['sourcePlanId'] ?? '').toString().trim();
     return v.isNotEmpty ? v : null;
   }
 
   String? _dayPlanTitleForDay(String dayKey) {
-    // if week plan is active, day title should not override
     if (_getWeekSourcePlanId() != null) return null;
 
     final rawDays = _ctrl.weekData?['days'];
@@ -261,9 +164,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     return null;
   }
 
-  /// ✅ Canonical:
-  /// - if week plan active => source for every day is config.sourceWeekPlanId
-  /// - else per-day source is config.daySources[dayKey]
   String? _sourcePlanIdForDay(String dayKey) {
     final weekSource = _getWeekSourcePlanId();
     if (weekSource != null && weekSource.trim().isNotEmpty) return weekSource.trim();
@@ -283,7 +183,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // ✅ only listen to WEEK plan title (global)
     final planId = _getWeekSourcePlanId();
     if (planId == null || planId.trim().isEmpty) {
       _sourcePlanSub?.cancel();
@@ -332,6 +231,88 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
 
     return 'Meal plan';
   }
+
+  // -------------------------------------------------------
+  // ✅ WEEK PLAN CYCLE ANCHOR + Day X (resets every 7)
+  // -------------------------------------------------------
+
+  bool _mapHasAnyPlannedEntries(dynamic dayData) {
+    if (dayData == null) return false;
+    if (dayData is Map) {
+      for (final e in dayData.entries) {
+        final k = e.key.toString();
+        if (k == 'title') continue;
+        final v = e.value;
+        if (v is Map && v.isNotEmpty) return true;
+        if (v is List && v.isNotEmpty) return true;
+        if (v is String && v.trim().isNotEmpty) return true;
+        if (v is num) return true;
+        if (v is bool && v) return true;
+      }
+      return false;
+    }
+    if (dayData is String) return dayData.trim().isNotEmpty;
+    return true;
+  }
+
+  String? _getWeekPlanCycleAnchorDayKey() {
+    final cfg = _ctrl.weekData?['config'];
+    if (cfg is! Map) return null;
+
+    final sourceId = _getWeekSourcePlanId();
+    if (sourceId == null || sourceId.trim().isEmpty) return null;
+
+    final cycle =
+        (cfg['weekPlanCycleStartDayKey'] ?? cfg['cycleStartDayKey'])?.toString().trim();
+    if (cycle != null && cycle.isNotEmpty) return cycle;
+
+    final direct = (cfg['weekPlanStartDayKey'] ??
+            cfg['appliedFromDayKey'] ??
+            cfg['startDayKey'])
+        ?.toString()
+        .trim();
+    if (direct != null && direct.isNotEmpty) return direct;
+
+    final weekKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
+
+    final daySources = (cfg['daySources'] is Map) ? (cfg['daySources'] as Map) : null;
+    if (daySources != null) {
+      for (final dk in weekKeys) {
+        final src = (daySources[dk] ?? '').toString().trim();
+        if (src == sourceId) return dk;
+      }
+    }
+
+    final rawDays = _ctrl.weekData?['days'];
+    if (rawDays is Map) {
+      for (final dk in weekKeys) {
+        final v = rawDays[dk];
+        if (_mapHasAnyPlannedEntries(v)) return dk;
+      }
+    }
+
+    return weekKeys.isNotEmpty ? weekKeys.first : null;
+  }
+
+  int? _weekPlanDayNumber({
+    required String dayKey,
+    required String? cycleAnchorDayKey,
+  }) {
+    if (cycleAnchorDayKey == null || cycleAnchorDayKey.trim().isEmpty) return null;
+
+    final anchor = MealPlanKeys.parseDayKey(cycleAnchorDayKey);
+    final current = MealPlanKeys.parseDayKey(dayKey);
+    if (anchor == null || current == null) return null;
+
+    final diff = _dateOnly(current).difference(_dateOnly(anchor)).inDays;
+    if (diff < 0) return null;
+
+    return (diff % 7) + 1;
+  }
+
+  // -------------------------------------------------------
+  // SLOTS + SNAPSHOTS
+  // -------------------------------------------------------
 
   int _snacksPerDayFromWeek() {
     final cfg = _ctrl.weekData?['config'];
@@ -471,6 +452,10 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     MealPlanShoppingSheet.show(context, planData, knownTitles);
   }
 
+  // --------------------------
+  // INIT / DISPOSE
+  // --------------------------
+
   @override
   void initState() {
     super.initState();
@@ -491,7 +476,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     _ctrl.start();
     _ctrl.ensureWeek();
 
-    // init tabs
     _tabController = TabController(length: 7, vsync: this);
 
     final weekKeys = MealPlanKeys.weekDayKeys(resolvedWeekId);
@@ -533,16 +517,16 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     super.dispose();
   }
 
+  // --------------------------
+  // DATA LOADERS
+  // --------------------------
+
   void _startUserDocAllergyListener() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
     _userDocSub?.cancel();
-    _userDocSub = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .snapshots()
-        .listen((snap) {
+    _userDocSub = FirebaseFirestore.instance.collection('users').doc(user.uid).snapshots().listen((snap) {
       final sets = AllergyProfile.buildFromUserDoc(snap.data());
       _ctrl.setAllergySets(
         excludedAllergens: sets.excludedAllergens,
@@ -604,6 +588,10 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     }
   }
 
+  // --------------------------
+  // RECIPE HELPERS
+  // --------------------------
+
   String _swapTextOf(Map<String, dynamic> r) {
     if (r['ingredient_swaps'] != null) return r['ingredient_swaps'].toString();
     if (r['meta'] is Map && r['meta']['ingredient_swaps'] != null) {
@@ -615,11 +603,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
   String _statusTextOf(Map<String, dynamic> recipe) {
     if (_ctrl.excludedAllergens.isEmpty && _ctrl.childAllergens.isEmpty) return 'safe';
 
-    final allAllergies = <String>{
-      ..._ctrl.excludedAllergens,
-      ..._ctrl.childAllergens,
-    }.toList();
-
+    final allAllergies = <String>{..._ctrl.excludedAllergens, ..._ctrl.childAllergens}.toList();
     final res = AllergyEngine.evaluate(
       recipeAllergyTags: const [],
       swapFieldText: _swapTextOf(recipe),
@@ -651,12 +635,11 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     return null;
   }
 
-  // --------------------------
-  // DATE + CALENDAR HELPERS
-  // --------------------------
-
-  String formatDayKeyPretty(String dayKey) => MealPlanKeys.formatPretty(dayKey);
   String _weekdayLetter(DateTime dt) => MealPlanKeys.weekdayLetter(dt);
+
+  // --------------------------
+  // UI RAW DAY FOR TodayMealPlanSection
+  // --------------------------
 
   Map<String, dynamic> _dayRawForUI(String dayKey) {
     const slots = <String>['breakfast', 'lunch', 'dinner', 'snack1', 'snack2'];
@@ -688,7 +671,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
   }
 
   // --------------------------
-  // GLOBAL SAVE BAR (PERSISTENT)
+  // SAVE BAR
   // --------------------------
 
   int _uniqueDirtyRecipeCount() {
@@ -724,7 +707,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     final dirtyDays = _ctrl.dirtyDayKeys().toList();
     if (dirtyDays.isEmpty) return;
 
-    // snapshot before save clears drafts
     final snapshots = <String, Map<String, dynamic>>{};
     for (final dk in dirtyDays) {
       snapshots[dk] = _snapshotDay(dk);
@@ -748,7 +730,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
 
     if (!mounted) return;
     if (dirtyDays.length == 1) {
-      _snack('Saved ${formatDayKeyPretty(dirtyDays.first)}');
+      _snack('Saved ${MealPlanKeys.formatPretty(dirtyDays.first)}');
     } else {
       _snack('Saved ${dirtyDays.length} days');
     }
@@ -794,24 +776,14 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
   }
 
   // --------------------------
-  // NAV: View Today should go to today
-  // --------------------------
-  void _goToTodayView() {
-    setState(() {
-      _focusDayOverride = MealPlanKeys.todayKey();
-      _mode = MealPlanViewMode.today;
-    });
-  }
-
-  // --------------------------
-  // USER ACTIONS
+  // REUSE + CHOOSE + NOTE + CLEAR
   // --------------------------
 
   Future<void> _reuseFromAnotherDay({
     required String dayKey,
     required String slot,
   }) async {
-    final headerLabel = '${_prettySlotLabel(slot)} • ${formatDayKeyPretty(dayKey)}';
+    final headerLabel = '${_prettySlotLabel(slot)} • ${MealPlanKeys.formatPretty(dayKey)}';
 
     final weekDayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
     final currentIndex = weekDayKeys.indexOf(dayKey);
@@ -857,7 +829,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
         builder: (_) => ReuseRecipePage(
           headerLabel: headerLabel,
           candidates: candidates,
-          formatDayPretty: formatDayKeyPretty,
+          formatDayPretty: MealPlanKeys.formatPretty,
         ),
       ),
     );
@@ -884,7 +856,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     final recentKey = '$dayKey|$slot';
     final initialRecent = List<int>.from(_recentBySlot[recentKey] ?? const <int>[]);
 
-    final headerLabel = '${_prettySlotLabel(slot)} • ${formatDayKeyPretty(dayKey)}';
+    final headerLabel = '${_prettySlotLabel(slot)} • ${MealPlanKeys.formatPretty(dayKey)}';
 
     final res = await Navigator.of(context).push<Map<String, dynamic>>(
       MaterialPageRoute(
@@ -981,17 +953,11 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
         builder: (_) => AlertDialog(
           title: const Text('Remove reused item?'),
           content: Text(
-            'This meal is reused from ${formatDayKeyPretty(fromDay)} (${_prettySlotLabel(fromSlot)}).\n\nRemove it?',
+            'This meal is reused from ${MealPlanKeys.formatPretty(fromDay)} (${_prettySlotLabel(fromSlot)}).\n\nRemove it?',
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Remove'),
-            ),
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+            ElevatedButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Remove')),
           ],
         ),
       );
@@ -1005,7 +971,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
       final preview = deps.take(4).map((d) {
         final dk = d['dayKey'] ?? '';
         final sl = d['slot'] ?? '';
-        return '${formatDayKeyPretty(dk)} • ${_prettySlotLabel(sl)}';
+        return '${MealPlanKeys.formatPretty(dk)} • ${_prettySlotLabel(sl)}';
       }).join('\n');
       final more = deps.length > 4 ? '\n…and ${deps.length - 4} more.' : '';
 
@@ -1015,14 +981,8 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
           title: const Text('This meal is reused'),
           content: Text('Removing this will also remove the reused copies:\n\n$preview$more'),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Remove all'),
-            ),
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+            ElevatedButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Remove all')),
           ],
         ),
       );
@@ -1065,7 +1025,8 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     });
   }
 
-  Widget _emptyDayCta(String dayKey, {String? planTitle}) {
+  // ✅ In-week empty day CTA (future/today empty)
+  Widget _emptyDayCta(String dayKey) {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
       children: [
@@ -1108,10 +1069,10 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
                     Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) => MealPlanBuilderScreen(
-  weekId: _ctrl.weekId,
-  entry: MealPlanBuilderEntry.dayOnly,
-  initialSelectedDayKey: dayKey,
-),
+                          weekId: _ctrl.weekId,
+                          entry: MealPlanBuilderEntry.dayOnly,
+                          initialSelectedDayKey: dayKey,
+                        ),
                       ),
                     );
                   },
@@ -1136,20 +1097,71 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
     );
   }
 
-  // ✅ header title for week tabs
+  // ✅ Inactive past day card (no plan)
+  Widget _pastEmptyDayCard(String dayKey) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.65),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.black.withOpacity(0.08), width: 1),
+          ),
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Past day (no plan)',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.black.withOpacity(0.55),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'You can’t add a new plan to past days.',
+                style: TextStyle(
+                  fontSize: 14,
+                  height: 1.3,
+                  color: Colors.black.withOpacity(0.45),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ✅ header title for week tabs (cycle-based Day 1..7)
   String _getCurrentHeaderTitle() {
     if (_ctrl.weekData == null) return '';
 
-    final isGlobal = _getWeekSourcePlanId() != null;
-    if (isGlobal) return _activePlanTitleForCards();
+    final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
+    if (dayKeys.isEmpty) return '';
 
-    final index = _tabController.index;
-    final days = MealPlanKeys.weekDayKeys(_ctrl.weekId);
-    if (index >= 0 && index < days.length) {
-      final dayKey = days[index];
-      return _dayPlanTitleForDay(dayKey) ?? '';
+    final idx = _tabController.index.clamp(0, dayKeys.length - 1);
+    final dayKey = dayKeys[idx];
+
+    final isWeekPlan = _getWeekSourcePlanId() != null;
+
+    if (isWeekPlan) {
+      final base = _activePlanTitleForCards().trim();
+
+      final anchorKey = _getWeekPlanCycleAnchorDayKey();
+      final n = _weekPlanDayNumber(dayKey: dayKey, cycleAnchorDayKey: anchorKey);
+
+      final label = (n != null) ? 'Day $n' : 'Day ${idx + 1}';
+      return base.isEmpty ? label : '$base • $label';
     }
-    return '';
+
+    final t = (_dayPlanTitleForDay(dayKey) ?? '').trim();
+    if (t.isEmpty) return 'Day ${idx + 1}';
+    return '$t • Day ${idx + 1}';
   }
 
   @override
@@ -1184,28 +1196,22 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
           if (data != null) _ensureSourcePlanTitleListener();
 
           final hasGlobalDirty = _ctrl.dirtySlotCount() > 0;
-          final bool isThisWeek = _ctrl.weekId == MealPlanKeys.currentWeekId();
           final bool isAlreadyWeekPlan = _getWeekSourcePlanId() != null;
 
-          final bool showSaveAsWeekInAppBar =
-              !_reviewMode &&
-              isThisWeek &&
-              (effectiveMode == MealPlanViewMode.week) &&
-              !isAlreadyWeekPlan;
-
-          Widget buildColourfulDay(
-            String dayKey, {
-            required String heroTop,
-            required String heroBottom,
-            required bool isWeekMode,
-          }) {
+          Widget buildDay(String dayKey, {required bool isWeekMode}) {
             final dayRaw = _dayRawForUI(dayKey);
-            final allowReuse = isWeekMode && !_isFirstDayOfWeekView(dayKey);
 
-            final isEmpty = dayRaw.isEmpty;
-            if (isWeekMode && isEmpty) {
-              return _emptyDayCta(dayKey, planTitle: null);
+            // ✅ Past-day inactive state when empty
+            if (isWeekMode && dayRaw.isEmpty && _isPastDayKey(dayKey)) {
+              return _pastEmptyDayCard(dayKey);
             }
+
+            // ✅ Week mode empty CTA for today/future empty
+            if (isWeekMode && dayRaw.isEmpty) {
+              return _emptyDayCta(dayKey);
+            }
+
+            final allowReuse = isWeekMode && MealPlanKeys.weekDayKeys(_ctrl.weekId).first != dayKey;
 
             return ListView(
               padding: EdgeInsets.only(bottom: hasGlobalDirty ? 86 : 0),
@@ -1214,23 +1220,26 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
                   todayRaw: dayRaw,
                   recipes: _recipes,
                   favoriteIds: _favoriteIds,
-                  heroTopText: isWeekMode ? '' : heroTop,
-                  heroBottomText: isWeekMode ? '' : heroBottom,
 
-                  // header title is now outside; keep empty here
+                  heroTopText: isWeekMode ? '' : "TODAY’S",
+                  heroBottomText: isWeekMode ? '' : "MEAL PLAN",
                   planTitle: '',
 
                   onBuildMealPlan: () {
+                    // ✅ don't offer build on past days (also blocked by empty past state)
+                    if (_isPastDayKey(dayKey)) return;
+
                     Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) => MealPlanBuilderScreen(
-  weekId: _ctrl.weekId,
-  entry: MealPlanBuilderEntry.dayOnly,
-  initialSelectedDayKey: dayKey,
-),
+                          weekId: _ctrl.weekId,
+                          entry: MealPlanBuilderEntry.dayOnly,
+                          initialSelectedDayKey: dayKey,
+                        ),
                       ),
                     );
                   },
+
                   homeAccordion: true,
                   homeAlwaysExpanded: true,
                   onChooseSlot: (slot) => _chooseRecipe(dayKey: dayKey, slot: slot),
@@ -1251,9 +1260,11 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
           }
 
           return Scaffold(
+            backgroundColor: _bg,
             appBar: AppBar(
+              backgroundColor: Colors.transparent,
               leading: IconButton(
-                icon: Icon(_reviewMode ? Icons.close : Icons.arrow_back),
+                icon: Icon(_reviewMode ? Icons.close : Icons.arrow_back, color: _brandDark),
                 onPressed: () async {
                   final ok = await _handleBack();
                   if (ok && mounted) Navigator.of(context).maybePop();
@@ -1264,21 +1275,9 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
               actions: _reviewMode
                   ? []
                   : [
-                      if (showSaveAsWeekInAppBar)
-                        TextButton(
-                          onPressed: _saveAsWeekPlanSnapshot,
-                          style: TextButton.styleFrom(
-                            foregroundColor: _brandDark,
-                            textStyle: const TextStyle(
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 0.4,
-                            ),
-                          ),
-                          child: const Text('SAVE AS WEEK'),
-                        ),
                       IconButton(
                         tooltip: 'Shopping List',
-                        icon: const Icon(Icons.shopping_cart_outlined),
+                        icon: Icon(Icons.shopping_cart_outlined, color: _brandDark),
                         onPressed: _openShoppingSheet,
                       ),
                     ],
@@ -1289,12 +1288,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
                     children: [
                       () {
                         if (effectiveMode == MealPlanViewMode.today) {
-                          return buildColourfulDay(
-                            todayKey,
-                            heroTop: "TODAY’S",
-                            heroBottom: "MEAL PLAN",
-                            isWeekMode: false,
-                          );
+                          return buildDay(focusDayKey, isWeekMode: false);
                         }
 
                         final dayKeys = MealPlanKeys.weekDayKeys(_ctrl.weekId);
@@ -1309,7 +1303,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
                                 onPrev: () => _shiftWeekBy(-1),
                                 onNext: () => _shiftWeekBy(1),
                               ),
-
                             _WeekPillStripWithController(
                               controller: _tabController,
                               dayKeys: dayKeys,
@@ -1317,8 +1310,6 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
                               brandDark: _brandDark,
                               brandPrimary: _brandPrimary,
                             ),
-
-                            // persistent title area for week view
                             Padding(
                               padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
                               child: Align(
@@ -1333,20 +1324,12 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
                                 ),
                               ),
                             ),
-
                             Expanded(
                               child: TabBarView(
                                 controller: _tabController,
-                                // disable swipe if NOT a week plan
                                 physics: !isAlreadyWeekPlan ? const NeverScrollableScrollPhysics() : null,
                                 children: [
-                                  for (final dayKey in dayKeys)
-                                    buildColourfulDay(
-                                      dayKey,
-                                      heroTop: '',
-                                      heroBottom: '',
-                                      isWeekMode: true,
-                                    ),
+                                  for (final dayKey in dayKeys) buildDay(dayKey, isWeekMode: true),
                                 ],
                               ),
                             ),
@@ -1364,7 +1347,7 @@ class _MealPlanScreenState extends State<MealPlanScreen> with SingleTickerProvid
 }
 
 // -------------------------------------------------------
-// ✅ Week header row (range + chevrons only)
+// UI helpers used by this file
 // -------------------------------------------------------
 
 class _WeekHeaderRow extends StatelessWidget {
@@ -1388,7 +1371,7 @@ class _WeekHeaderRow extends StatelessWidget {
         children: [
           IconButton(
             tooltip: 'Previous week',
-            icon: const Icon(Icons.chevron_left),
+            icon: Icon(Icons.chevron_left, color: brandDark),
             onPressed: onPrev,
           ),
           Expanded(
@@ -1406,7 +1389,7 @@ class _WeekHeaderRow extends StatelessWidget {
           ),
           IconButton(
             tooltip: 'Next week',
-            icon: const Icon(Icons.chevron_right),
+            icon: Icon(Icons.chevron_right, color: brandDark),
             onPressed: onNext,
           ),
         ],
@@ -1414,10 +1397,6 @@ class _WeekHeaderRow extends StatelessWidget {
     );
   }
 }
-
-// -------------------------------------------------------
-// ✅ Pill calendar strip using explicit TabController
-// -------------------------------------------------------
 
 class _WeekPillStripWithController extends StatelessWidget {
   final TabController controller;
@@ -1449,7 +1428,6 @@ class _WeekPillStripWithController extends StatelessWidget {
             return ListView.separated(
               padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
               scrollDirection: Axis.horizontal,
-              physics: const BouncingScrollPhysics(),
               itemCount: dayKeys.length,
               separatorBuilder: (_, __) => const SizedBox(width: 10),
               itemBuilder: (context, i) {
@@ -1525,8 +1503,6 @@ class _PillDayTab extends StatelessWidget {
                 children: [
                   Text(
                     weekday.toUpperCase(),
-                    maxLines: 1,
-                    overflow: TextOverflow.clip,
                     style: TextStyle(
                       fontSize: 11,
                       height: 1.0,

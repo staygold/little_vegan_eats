@@ -187,7 +187,7 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
     _navigateToBuilder(
       weekId: weekId,
       entry: MealPlanBuilderEntry.weekOnly,
-      dayKey: dayKey, // ✅ this becomes the anchor/start day for the week plan builder
+      dayKey: dayKey, // ✅ anchor/start day for week plan builder
     );
   }
 
@@ -196,27 +196,65 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
   Map<String, dynamic> _mapOrEmpty(dynamic v) =>
       (v is Map) ? Map<String, dynamic>.from(v as Map) : <String, dynamic>{};
 
+  bool _isMeaningful(dynamic v) {
+    if (v == null) return false;
+    if (v is Map) return v.isNotEmpty;
+    if (v is List) return v.isNotEmpty;
+    if (v is String) return v.trim().isNotEmpty;
+    if (v is num) return true;
+    if (v is bool) return v; // only count true as meaningful
+    return true; // fallback: if something is stored, treat as meaningful
+  }
+
+  /// ✅ FIX:
+  /// Day-only plans are often stored as refs/ids (strings) not nested maps.
+  /// Treat any non-title meaningful field as “has a plan”.
   bool _dayHasPlan(dynamic dayData) {
     final m = _mapOrEmpty(dayData);
     if (m.isEmpty) return false;
 
-    final keys = m.keys.map((e) => e.toString()).where((k) => k != 'title').toList();
-    if (keys.isEmpty) return false;
+    for (final entry in m.entries) {
+      final k = entry.key.toString();
+      if (k == 'title') continue;
 
-    for (final k in keys) {
-      final v = m[k];
-      if (v is Map && v.isNotEmpty) {
-        return true;
-      }
+      if (_isMeaningful(entry.value)) return true;
     }
+
     return false;
   }
 
+  Stream<bool> _hasAnySavedPlansStream(String uid) {
+    // We only need to know if the library is empty.
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .collection('savedMealPlans')
+        .limit(1)
+        .snapshots()
+        .map((snap) => snap.docs.isNotEmpty);
+  }
+
+  /// ✅ If weekPlanStartDayKey isn't written on the *first* week (common when the builder creates it),
+  /// infer it from the earliest day in THIS week that actually has planned entries.
+  String? _inferWeekPlanStartDayKey({
+    required List<String> weekKeys,
+    required Map<String, dynamic> daysMap,
+  }) {
+    for (final dk in weekKeys) {
+      final dayData = daysMap[dk];
+      if (_dayHasPlan(dayData)) return dk;
+    }
+    return null;
+  }
+
   ({bool isWeekPlan, String title, String? weekStartDayKey}) _resolvePlanMeta(
-    Map<String, dynamic> weekDocData,
-  ) {
+    Map<String, dynamic> weekDocData, {
+    required List<String> weekKeys,
+    required Map<String, dynamic> daysMap,
+  }) {
     final config = _mapOrEmpty(weekDocData['config']);
     final title = (config['title'] ?? '').toString().trim();
+
     final horizon = (config['horizon'] ?? config['mode'] ?? config['activeMode'] ?? '')
         .toString()
         .trim()
@@ -229,19 +267,25 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
             config['startDayKey'])
         ?.toString()
         .trim();
-    final weekStartDayKey = (startKey != null && startKey.isNotEmpty) ? startKey : null;
+    String? weekStartDayKey = (startKey != null && startKey.isNotEmpty) ? startKey : null;
 
     final isWeekPlan = sourceWeekPlanId.isNotEmpty || horizon == 'week';
+
+    // ✅ IMPORTANT FIX:
+    // If we have a week plan but no start key (often the first week),
+    // infer it from the first planned day in this week so Day 1.. displays.
+    if (isWeekPlan && (weekStartDayKey == null || weekStartDayKey.isEmpty)) {
+      weekStartDayKey = _inferWeekPlanStartDayKey(weekKeys: weekKeys, daysMap: daysMap);
+    }
 
     return (
       isWeekPlan: isWeekPlan,
       title: title.isNotEmpty ? title : 'My Week Plan',
-      weekStartDayKey: weekStartDayKey
+      weekStartDayKey: (weekStartDayKey != null && weekStartDayKey.isNotEmpty) ? weekStartDayKey : null,
     );
   }
 
   int? _dayIndexForWeekPlan({
-    required List<String> weekKeys,
     required String dayKey,
     required String? startDayKey,
   }) {
@@ -341,7 +385,10 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("DELETE EVERYTHING", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            child: const Text(
+              "DELETE EVERYTHING",
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),
@@ -369,12 +416,105 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('💥 Everything deleted! Fresh start.')));
 
-      setState(() { _weekOffset = 0; });
+      setState(() {
+        _weekOffset = 0;
+      });
       _triggerWeekCheck();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Nuke failed: $e')));
     }
+  }
+
+  // ---------- EMPTY STATE UI ----------
+
+  Widget _emptyState({
+    required String weekLabel,
+    required VoidCallback onCreate,
+    required VoidCallback onSavedPlans,
+  }) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
+      children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: const [
+              BoxShadow(
+                offset: Offset(0, 10),
+                blurRadius: 22,
+                color: Color.fromRGBO(0, 0, 0, 0.08),
+              )
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'No meal plans yet',
+                style: TextStyle(
+                  color: _brandDark,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Create your first weekly plan to get started. You can also save plans as templates and reuse them later.',
+                style: TextStyle(
+                  color: Colors.black.withOpacity(0.65),
+                  fontWeight: FontWeight.w600,
+                  height: 1.25,
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                height: 52,
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: onCreate,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _brandTeal,
+                    shape: const StadiumBorder(),
+                  ),
+                  child: const Text(
+                    'CREATE A MEAL PLAN',
+                    style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 52,
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: onSavedPlans,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _brandTeal,
+                    side: const BorderSide(color: _brandTeal, width: 2),
+                    shape: const StadiumBorder(),
+                  ),
+                  child: const Text(
+                    'VIEW SAVED PLANS',
+                    style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Week: $weekLabel',
+                style: TextStyle(
+                  color: Colors.black.withOpacity(0.45),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   // ---------- BUILD ----------
@@ -434,138 +574,153 @@ class _PlansHubScreenState extends State<PlansHubScreen> {
             },
           ),
           Expanded(
-            child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('users')
-                  .doc(user.uid)
-                  .collection('mealPlansWeeks')
-                  .doc(weekId)
-                  .snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
+            child: StreamBuilder<bool>(
+              stream: _hasAnySavedPlansStream(user.uid),
+              builder: (context, savedSnap) {
+                final hasSavedPlans = savedSnap.data ?? false;
 
-                final weekExists = snapshot.hasData && snapshot.data != null && snapshot.data!.exists;
-                final data = weekExists ? (snapshot.data!.data() ?? {}) : <String, dynamic>{};
+                return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                  stream: FirebaseFirestore.instance
+                      .collection('users')
+                      .doc(user.uid)
+                      .collection('mealPlansWeeks')
+                      .doc(weekId)
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting ||
+                        savedSnap.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
 
-                final config = _mapOrEmpty(data['config']);
-                final daysMap = _mapOrEmpty(data['days']);
+                    final weekExists = snapshot.hasData && snapshot.data != null && snapshot.data!.exists;
+                    final data = weekExists ? (snapshot.data!.data() ?? {}) : <String, dynamic>{};
 
-                final hasAny = weekExists ? MealPlanRepository.hasAnyPlannedEntries(data) : false;
+                    final config = _mapOrEmpty(data['config']);
+                    final daysMap = _mapOrEmpty(data['days']);
 
-                final meta = _resolvePlanMeta(data);
-                final isWeekPlan = meta.isWeekPlan;
-                final planTitle = meta.title;
-                final startDayKey = meta.weekStartDayKey;
+                    final hasAny = weekExists ? MealPlanRepository.hasAnyPlannedEntries(data) : false;
 
-                final weekPlanPresent = weekExists && isWeekPlan;
-                final dayPlanTitles = _mapOrEmpty(config['dayPlanTitles']);
-
-                return ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 110),
-                  children: [
-                    _TopActionsCard(
-                      brandDark: _brandDark,
-                      brandTeal: _brandTeal,
-                      weekHasAnything: hasAny,
-                      onOpenWeek: hasAny ? () => _openMealPlanWeek(weekId) : null,
-
-                      // ✅ now opens a date picker (today → +14 days) then week-only builder
-                      onCreateWeekPlan: _onCreateWeekPlanPressed,
-
-                      onSavedPlans: _openSavedPlansList,
-                      onClearWeek: () => _onClearWeekPressed(
-                        weekId: weekId,
-                        weekPlanPresent: weekPlanPresent,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-
-                    Text(
-                      'YOUR WEEK',
-                      style: TextStyle(
-                        color: _brandDark,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-
-                    ...weekKeys.map((dayKey) {
-                      final dayData = daysMap[dayKey];
-                      final active = _dayHasPlan(dayData);
-
-                      final isPast = _isPastDay(dayKey);
-                      final canTap = active || !isPast;
-
-                      String subtitle;
-                      if (active) {
-                        if (isWeekPlan) {
-                          final n = _dayIndexForWeekPlan(
-                            weekKeys: weekKeys,
-                            dayKey: dayKey,
-                            startDayKey: startDayKey,
-                          );
-                          subtitle = (n != null) ? '$planTitle · Day $n' : planTitle;
-                          if (isPast) subtitle = 'Past day · $subtitle';
-                        } else {
-                          final titleFromConfig = (dayPlanTitles[dayKey] ?? '').toString().trim();
-                          final titleFromDay = (dayData is Map && dayData['title'] != null)
-                              ? dayData['title'].toString().trim()
-                              : '';
-                          final cfgTitle = (config['title'] ?? '').toString().trim();
-
-                          subtitle = titleFromConfig.isNotEmpty
-                              ? titleFromConfig
-                              : (titleFromDay.isNotEmpty
-                                  ? titleFromDay
-                                  : (cfgTitle.isNotEmpty ? cfgTitle : 'Day plan'));
-                        }
-                      } else {
-                        subtitle = isPast ? 'Past day (can’t add)' : 'No plan set';
-                      }
-
-                      return _DaySlotCard(
-                        title: MealPlanKeys.formatPretty(dayKey),
-                        subtitle: subtitle,
-                        brandTeal: _brandTeal,
-                        active: active,
-                        disabled: !canTap,
-                        isPast: isPast,
-                        showAdd: !active && !isPast,
-                        onTap: () {
-                          if (!canTap) return;
-                          if (active) {
-                            _openMealPlanForDay(weekId, dayKey);
-                          } else {
-                            _navigateToBuilder(
-                              weekId: weekId,
-                              entry: MealPlanBuilderEntry.dayOnly,
-                              dayKey: dayKey,
-                            );
-                          }
-                        },
-                        onRemove: active && !isWeekPlan
-                            ? () => _removeDayPlan(weekId, dayKey)
-                            : null,
+                    // ✅ GLOBAL EMPTY STATE:
+                    // No saved plans AND nothing scheduled in this week
+                    if (!hasSavedPlans && !hasAny) {
+                      return _emptyState(
+                        weekLabel: weekLabel,
+                        onCreate: _onCreateWeekPlanPressed,
+                        onSavedPlans: _openSavedPlansList,
                       );
-                    }).toList(),
+                    }
 
-                    const SizedBox(height: 6),
+                    final meta = _resolvePlanMeta(
+                      data,
+                      weekKeys: weekKeys,
+                      daysMap: daysMap,
+                    );
+                    final isWeekPlan = meta.isWeekPlan;
+                    final planTitle = meta.title;
+                    final startDayKey = meta.weekStartDayKey;
 
-                    if (!hasAny)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 6),
-                        child: Text(
-                          'Tip: Set recurring from Saved Plans to automatically fill future weeks.',
-                          style: TextStyle(
-                            color: Colors.black.withOpacity(0.45),
-                            fontWeight: FontWeight.w700,
+                    final weekPlanPresent = weekExists && isWeekPlan;
+                    final dayPlanTitles = _mapOrEmpty(config['dayPlanTitles']);
+
+                    return ListView(
+                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 110),
+                      children: [
+                        _TopActionsCard(
+                          brandDark: _brandDark,
+                          brandTeal: _brandTeal,
+                          weekHasAnything: hasAny,
+                          onOpenWeek: hasAny ? () => _openMealPlanWeek(weekId) : null,
+                          onCreateWeekPlan: _onCreateWeekPlanPressed,
+                          onSavedPlans: _openSavedPlansList,
+                          onClearWeek: () => _onClearWeekPressed(
+                            weekId: weekId,
+                            weekPlanPresent: weekPlanPresent,
                           ),
                         ),
-                      ),
-                  ],
+                        const SizedBox(height: 14),
+                        Text(
+                          'YOUR WEEK',
+                          style: TextStyle(
+                            color: _brandDark,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+
+                        ...weekKeys.map((dayKey) {
+                          final dayData = daysMap[dayKey];
+                          final active = _dayHasPlan(dayData);
+
+                          final isPast = _isPastDay(dayKey);
+                          final canTap = active || !isPast;
+
+                          String subtitle;
+                          if (active) {
+                            if (isWeekPlan) {
+                              final n = _dayIndexForWeekPlan(
+                                dayKey: dayKey,
+                                startDayKey: startDayKey,
+                              );
+                              subtitle = (n != null) ? '$planTitle · Day $n' : planTitle;
+                              if (isPast) subtitle = 'Past day · $subtitle';
+                            } else {
+                              final titleFromConfig = (dayPlanTitles[dayKey] ?? '').toString().trim();
+                              final titleFromDay = (dayData is Map && dayData['title'] != null)
+                                  ? dayData['title'].toString().trim()
+                                  : '';
+                              final cfgTitle = (config['title'] ?? '').toString().trim();
+
+                              subtitle = titleFromConfig.isNotEmpty
+                                  ? titleFromConfig
+                                  : (titleFromDay.isNotEmpty
+                                      ? titleFromDay
+                                      : (cfgTitle.isNotEmpty ? cfgTitle : 'Day plan'));
+                            }
+                          } else {
+                            subtitle = isPast ? 'Past day (can’t add)' : 'No plan set';
+                          }
+
+                          return _DaySlotCard(
+                            title: MealPlanKeys.formatPretty(dayKey),
+                            subtitle: subtitle,
+                            brandTeal: _brandTeal,
+                            active: active,
+                            disabled: !canTap,
+                            isPast: isPast,
+                            showAdd: !active && !isPast,
+                            onTap: () {
+                              if (!canTap) return;
+                              if (active) {
+                                _openMealPlanForDay(weekId, dayKey);
+                              } else {
+                                _navigateToBuilder(
+                                  weekId: weekId,
+                                  entry: MealPlanBuilderEntry.dayOnly,
+                                  dayKey: dayKey,
+                                );
+                              }
+                            },
+                            onRemove: active && !isWeekPlan ? () => _removeDayPlan(weekId, dayKey) : null,
+                          );
+                        }).toList(),
+
+                        const SizedBox(height: 6),
+
+                        if (!hasAny && hasSavedPlans)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              'Tip: Pick a saved plan and set it to recur to auto-fill future weeks.',
+                              style: TextStyle(
+                                color: Colors.black.withOpacity(0.45),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
                 );
               },
             ),
@@ -708,7 +863,6 @@ class _TopActionsCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 14),
-
           Row(
             children: [
               Expanded(
@@ -725,7 +879,7 @@ class _TopActionsCard extends StatelessWidget {
                   label: 'CREATE WEEK PLAN',
                   filled: false,
                   brandTeal: brandTeal,
-                  onTap: onCreateWeekPlan, // ✅ now shows date picker
+                  onTap: onCreateWeekPlan,
                 ),
               ),
             ],

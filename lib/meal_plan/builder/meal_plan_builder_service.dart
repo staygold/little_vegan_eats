@@ -1,7 +1,7 @@
 // lib/meal_plan/builder/meal_plan_builder_service.dart
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart'; // ✅ Added missing import
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../core/meal_plan_controller.dart';
 import '../core/meal_plan_keys.dart';
@@ -40,30 +40,41 @@ class MealPlanBuilderService {
       slots['breakfast'] = includeBreakfast ? _pick('breakfast') : {'type': 'clear'};
       slots['lunch'] = includeLunch ? _pick('lunch') : {'type': 'clear'};
       slots['dinner'] = includeDinner ? _pick('dinner') : {'type': 'clear'};
+
       final effectiveSnacks = includeSnacks ? snackCount.clamp(0, 2) : 0;
       slots['snack1'] = (effectiveSnacks >= 1) ? _pick('snack') : {'type': 'clear'};
       slots['snack2'] = (effectiveSnacks >= 2) ? _pick('snack') : {'type': 'clear'};
+
       return slots;
     }
 
+    // ----------------------------
+    // Build plan days
+    // ----------------------------
     final builtDays = <String, Map<String, dynamic>>{};
-    
+
     if (isDayPlan) {
       builtDays['template'] = _buildDay();
       builtDays['template']!['title'] = title;
     } else {
-      final start = MealPlanKeys.parseDayKey(weekPlanStartDayKey!)!;
+      if (weekPlanStartDayKey == null || weekPlanStartDayKey.trim().isEmpty) {
+        throw Exception('Missing weekPlanStartDayKey for week plan.');
+      }
+      final start = MealPlanKeys.parseDayKey(weekPlanStartDayKey)!;
       for (int i = 0; i < 7; i++) {
         final d = start.add(Duration(days: i));
         builtDays[MealPlanKeys.dayKey(d)] = _buildDay();
       }
     }
 
+    // ----------------------------
+    // Save template in library
+    // ----------------------------
     final userRef = FirebaseFirestore.instance.collection('users').doc(controller.uid);
     final savedPlanRef = userRef.collection('savedMealPlans').doc();
     final planId = savedPlanRef.id;
 
-    final planData = {
+    final planData = <String, dynamic>{
       'title': title,
       'planType': isDayPlan ? 'day' : 'week',
       'days': builtDays,
@@ -76,11 +87,38 @@ class MealPlanBuilderService {
 
     await savedPlanRef.set(planData);
 
-    final manager = MealPlanManager(auth: FirebaseAuth.instance, firestore: FirebaseFirestore.instance);
-    
-    final startDate = isDayPlan 
-        ? MealPlanKeys.parseDayKey(targetDayKey!)! 
-        : MealPlanKeys.parseDayKey(weekPlanStartDayKey!)!;
+    // ----------------------------
+    // Publish into calendar weeks
+    // ----------------------------
+    final manager = MealPlanManager(
+      auth: FirebaseAuth.instance,
+      firestore: FirebaseFirestore.instance,
+    );
+
+    DateTime startDate;
+    if (isDayPlan) {
+      if (targetDayKey == null || targetDayKey.trim().isEmpty) {
+        throw Exception('Missing targetDayKey for day plan.');
+      }
+      startDate = MealPlanKeys.parseDayKey(targetDayKey)!;
+    } else {
+      startDate = MealPlanKeys.parseDayKey(weekPlanStartDayKey!)!;
+    }
+
+    // ✅ KEY FIX:
+    // For "once" day plans, we still must tell the publisher which weekday to apply.
+    // Otherwise activeWeekdays=null => apply nowhere.
+    final List<int>? effectiveActiveWeekdays;
+    if (isDayPlan) {
+      if (makeRecurring) {
+        effectiveActiveWeekdays = (recurringWeekdays ?? <int>[]);
+      } else {
+        // apply only to the selected day
+        effectiveActiveWeekdays = <int>[startDate.weekday];
+      }
+    } else {
+      effectiveActiveWeekdays = null;
+    }
 
     final weeksToFill = makeRecurring ? 52 : 1;
 
@@ -90,7 +128,7 @@ class MealPlanBuilderService {
       planData: builtDays,
       isWeekPlan: !isDayPlan,
       sourcePlanId: planId,
-      activeWeekdays: isDayPlan ? recurringWeekdays : null,
+      activeWeekdays: effectiveActiveWeekdays,
       weeksToFill: weeksToFill,
     );
   }
