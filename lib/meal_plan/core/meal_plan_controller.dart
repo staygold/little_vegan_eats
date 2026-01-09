@@ -8,7 +8,6 @@ import 'package:flutter/foundation.dart';
 import 'meal_plan_keys.dart';
 import 'meal_plan_repository.dart';
 import 'meal_plan_slots.dart';
-import '../services/meal_plan_manager.dart'; // ✅ legacy recurring manager
 import '../../recipes/allergy_engine.dart';
 
 class MealPlanController extends ChangeNotifier {
@@ -26,19 +25,31 @@ class MealPlanController extends ChangeNotifier {
   final MealPlanRepository _repo;
 
   // -------------------------------------------------------
-  // LEGACY (Week-based) state — kept during migration
+  // Week view state (kept for calendar navigation)
   // -------------------------------------------------------
   String weekId;
-  Map<String, dynamic>? weekData;
+
+  /// Loading is now tied to day-cache + program pointer.
   bool isLoading = true;
 
-  /// dayKey -> slot -> entryMap (legacy drafts, still used by MealPlanScreen)
-  final Map<String, Map<String, Map<String, dynamic>>> _draft = {};
+  /// Effective day cache keyed by dayKey (YYYY-MM-DD).
+  /// Value is the *day doc* shape (may include 'slots', 'type', etc).
+  final Map<String, Map<String, dynamic>?> _dayDocCache = {};
 
-  StreamSubscription<Map<String, dynamic>?>? _weekSub;
+  /// Per-day subs for the currently viewed week
+  final Map<String, StreamSubscription<Map<String, dynamic>?>> _daySubs = {};
+
+  /// Last known effective source for a day (optional, for debugging/UI)
+  final Map<String, String> _daySources = {};
 
   // -------------------------------------------------------
-  // ✅ NEW (Program-based) state — the future
+  // Draft state (still used by MealPlanScreen)
+  // -------------------------------------------------------
+  /// dayKey -> slot -> entryMap
+  final Map<String, Map<String, Map<String, dynamic>>> _draft = {};
+
+  // -------------------------------------------------------
+  // ✅ Program-based state (source of truth)
   // -------------------------------------------------------
   String? _activeProgramId;
   Map<String, dynamic>? _activeProgram;
@@ -72,114 +83,6 @@ class MealPlanController extends ChangeNotifier {
     final dates = p['scheduledDates'];
     if (dates is! List) return false;
     return dates.contains(dateKey);
-  }
-
-  /// Watch a program day doc (dateKey = YYYY-MM-DD).
-  /// Returns null when doc does not exist yet (treat as empty day when planned).
-  Stream<Map<String, dynamic>?> watchProgramDay(String dateKey) {
-    final pid = _activeProgramId;
-    if (pid == null) return const Stream.empty();
-    final dk = dateKey.trim();
-    if (dk.isEmpty) return const Stream.empty();
-    return _repo.watchProgramDay(uid: uid, dateKey: dk);
-  }
-
-  /// Convenience: returns "slots" map from program day doc shape.
-  static Map<String, dynamic> slotsFromProgramDayDoc(Map<String, dynamic>? doc) {
-    if (doc == null) return <String, dynamic>{};
-    final v = doc['slots'];
-    if (v is Map<String, dynamic>) return v;
-    if (v is Map) return Map<String, dynamic>.from(v);
-    return <String, dynamic>{};
-  }
-
-  /// Save program day (writes to users/{uid}/mealProgramDays/{dateKey})
-  Future<void> saveProgramDay({
-    required String dateKey,
-    required Map<String, dynamic> daySlots,
-  }) async {
-    final pid = _activeProgramId;
-    if (pid == null) throw StateError('No active program');
-    final dk = dateKey.trim();
-    if (dk.isEmpty) throw ArgumentError('dateKey is empty');
-
-    await _repo.upsertProgramDay(
-      uid: uid,
-      programId: pid,
-      dateKey: dk,
-      daySlots: daySlots,
-    );
-  }
-
-  /// End the active program pointer (does not delete program docs).
-  Future<void> clearActiveProgram() async {
-    await _repo.setActiveProgramId(uid: uid, programId: null);
-    // subs will update state to null via watcher
-  }
-
-  // -------------------------------------------------------
-  // ✅ Legacy recurring state (kept for now, will be removed)
-  // -------------------------------------------------------
-  String? _activeRecurringWeekPlanId;
-  String? get activeRecurringWeekPlanId => _activeRecurringWeekPlanId;
-
-  Future<void> refreshRecurringSettings() async {
-    _activeRecurringWeekPlanId =
-        await _repo.getActiveRecurringWeekPlanId(uid: uid);
-    notifyListeners();
-  }
-
-  // -------------------------------------------------------
-  // ✅ GENERATE PLAN STRUCTURE (LEGACY builder helper)
-  // -------------------------------------------------------
-  Map<String, dynamic> generatePlanData({
-    required bool wantsBreakfast,
-    required bool wantsLunch,
-    required bool wantsDinner,
-    required int snackCount, // 0, 1, or 2
-    required String? planName,
-    required bool isWeek,
-  }) {
-    final Map<String, dynamic> dayStructure = {};
-
-    dayStructure['breakfast'] = wantsBreakfast ? null : {'type': 'clear'};
-    dayStructure['lunch'] = wantsLunch ? null : {'type': 'clear'};
-    dayStructure['dinner'] = wantsDinner ? null : {'type': 'clear'};
-
-    if (snackCount == 0) {
-      dayStructure['snack1'] = {'type': 'clear'};
-      dayStructure['snack2'] = {'type': 'clear'};
-    } else if (snackCount == 1) {
-      dayStructure['snack1'] = null;
-      dayStructure['snack2'] = {'type': 'clear'};
-    } else {
-      dayStructure['snack1'] = null;
-      dayStructure['snack2'] = null;
-    }
-
-    final timestamp = FieldValue.serverTimestamp();
-
-    if (!isWeek) {
-      return {
-        'title': (planName?.trim().isNotEmpty == true) ? planName : 'My Day Plan',
-        'type': 'day',
-        'savedAt': timestamp,
-        'updatedAt': timestamp,
-        'day': dayStructure,
-      };
-    } else {
-      final Map<String, dynamic> weekDays = {};
-      for (int i = 0; i < 7; i++) {
-        weekDays[i.toString()] = dayStructure;
-      }
-      return {
-        'title': (planName?.trim().isNotEmpty == true) ? planName : 'My Week Plan',
-        'type': 'week',
-        'savedAt': timestamp,
-        'updatedAt': timestamp,
-        'days': weekDays,
-      };
-    }
   }
 
   // -------------------------------------------------------
@@ -264,7 +167,7 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // Lifecycle
+  // Lifecycle helpers
   // -------------------------------------------------------
   String get uid {
     final u = _auth.currentUser;
@@ -272,69 +175,80 @@ class MealPlanController extends ChangeNotifier {
     return u.uid;
   }
 
-  /// ✅ LEGACY:
-  /// Do NOT use "any map exists" logic here — that causes ghost plans.
+  /// “Has plan” now means: any meaningful content in the current viewed week
+  /// OR (optionally) having an active program (even if the week view is empty).
   bool get hasActivePlan {
-    final data = weekData;
-    if (data == null) return false;
-    return _weekHasMeaningfulPlanData(data);
+    // If you want this to reflect "program exists even if week is empty", keep this:
+    if (hasActiveProgram) return true;
+
+    final dayKeys = MealPlanKeys.weekDayKeys(weekId);
+    for (final dk in dayKeys) {
+      final doc = _dayDocCache[dk];
+      final slots = slotsFromAnyDayDoc(doc);
+      if (_dayHasMeaningfulSlots(slots)) return true;
+    }
+    return false;
   }
 
-  /// Start watchers.
-  /// During migration we watch BOTH:
-  /// - legacy week doc (existing UI)
-  /// - active program pointer + program doc (new UI)
+  // -------------------------------------------------------
+  // Start/Stop (NEW)
+  // -------------------------------------------------------
   void start() {
-    // LEGACY week watcher
-    _weekSub?.cancel();
-    isLoading = true;
-
-    _weekSub = _repo.watchWeek(uid: uid, weekId: weekId).listen((data) {
-      weekData = data;
-      isLoading = false;
-      notifyListeners();
-    });
-
-    // NEW program pointer watcher
+    // Program pointer watcher
     _programIdSub?.cancel();
     _programSub?.cancel();
+
+    isLoading = true;
 
     _programIdSub = _repo.watchActiveProgramId(uid: uid).listen((pid) {
       final cleaned = (pid ?? '').trim();
       final next = cleaned.isEmpty ? null : cleaned;
 
       if (next == _activeProgramId) return;
+
       _activeProgramId = next;
       _activeProgram = null;
-      notifyListeners();
 
+      // program doc watcher
       _programSub?.cancel();
       if (_activeProgramId != null) {
-        _programSub =
-            _repo.watchProgram(uid: uid, programId: _activeProgramId!).listen((p) {
+        _programSub = _repo
+            .watchProgram(uid: uid, programId: _activeProgramId!)
+            .listen((p) {
           _activeProgram = p;
+          _rebuildWeekDayWatchers(); // program changes can affect effective days
           notifyListeners();
         });
+      } else {
+        _rebuildWeekDayWatchers();
+        notifyListeners();
       }
     });
 
-    // Best-effort legacy recurring settings refresh (doesn't block)
-    refreshRecurringSettings();
+    // Kick watchers for the initial week
+    _rebuildWeekDayWatchers();
   }
 
   Future<void> stop() async {
-    await _weekSub?.cancel();
-    _weekSub = null;
-
     await _programIdSub?.cancel();
     _programIdSub = null;
 
     await _programSub?.cancel();
     _programSub = null;
+
+    for (final sub in _daySubs.values) {
+      await sub.cancel();
+    }
+    _daySubs.clear();
+    _dayDocCache.clear();
+    _daySources.clear();
+
+    isLoading = true;
   }
 
+  /// No-op now (legacy week docs removed)
   Future<void> ensureWeek() async {
-    await _repo.ensureWeekExists(uid: uid, weekId: weekId);
+    // intentionally empty
   }
 
   Future<void> setWeek(String newWeekId) async {
@@ -342,112 +256,180 @@ class MealPlanController extends ChangeNotifier {
     if (cleaned.isEmpty || cleaned == weekId) return;
 
     weekId = cleaned;
-    weekData = null;
-    isLoading = true;
     _draft.clear();
 
+    _rebuildWeekDayWatchers();
     notifyListeners();
-    start();
-    await ensureWeek();
   }
 
-  // -------------------------------------------------------
-  // ✅ Recurring write helpers (LEGACY)
-  // -------------------------------------------------------
-  Future<void> setPlanRecurring({
-    required String planId,
-    required String planType, // "day" | "week"
-    required bool enabled,
-    List<int>? weekdays,
-    String? anchorDayKey,
-  }) async {
-    final pt = planType.trim().toLowerCase();
-    if (pt != 'day' && pt != 'week') {
-      throw Exception('Invalid planType: $planType');
+  void _rebuildWeekDayWatchers() {
+    final needed = MealPlanKeys.weekDayKeys(weekId).toSet();
+
+    // Cancel subs we no longer need
+    final toRemove = _daySubs.keys.where((k) => !needed.contains(k)).toList();
+    for (final dk in toRemove) {
+      _daySubs[dk]?.cancel();
+      _daySubs.remove(dk);
+      _dayDocCache.remove(dk);
+      _daySources.remove(dk);
     }
 
-    if (enabled) {
-      if (pt == 'day') {
-        final clean = (weekdays ?? [])
-            .map((e) => e is int ? e : int.tryParse(e.toString()) ?? 0)
-            .where((e) => e >= 1 && e <= 7)
-            .toSet()
-            .toList()
-          ..sort();
+    // Add missing subs
+    for (final dk in needed) {
+      if (_daySubs.containsKey(dk)) continue;
 
-        if (clean.isEmpty) {
-          throw Exception('Recurring day plan requires at least one weekday.');
+      final sub = _repo
+          .watchEffectiveDay(
+            uid: uid,
+            dateKey: dk,
+            programId: _activeProgramId,
+          )
+          .listen((doc) {
+        _dayDocCache[dk] = doc;
+
+        final src = (doc?['_effectiveSource'] ?? '').toString().trim();
+        if (src.isNotEmpty) _daySources[dk] = src;
+
+        // Once we have *some* values for the 7 days, consider ourselves "not loading".
+        if (isLoading) {
+          final all = MealPlanKeys.weekDayKeys(weekId);
+          final haveAny = all.any((k) => _dayDocCache.containsKey(k));
+          if (haveAny) isLoading = false;
         }
 
-        final manager =
-            MealPlanManager(auth: _auth, firestore: FirebaseFirestore.instance);
-
-        await manager.setSavedPlanRecurring(
-          planId: planId,
-          planType: 'day',
-          enabled: true,
-          weekdays: clean,
-        );
-
-        await manager.applyRecurringDayPlanForward(
-          savedDayPlanId: planId,
-          weekdays: clean,
-        );
-        return;
-      }
-
-      if (pt == 'week') {
-        final a = (anchorDayKey ?? '').trim();
-        if (a.isEmpty) {
-          throw Exception('Recurring week plan requires an anchorDayKey.');
-        }
-
-        await _repo.setSavedPlanRecurring(
-          uid: uid,
-          planId: planId,
-          enabled: true,
-          planType: 'week',
-          weekAnchorDateKey: a,
-          weekdays: null,
-        );
-
-        await _repo.setActiveRecurringWeekPlanId(uid: uid, planId: planId);
-        _activeRecurringWeekPlanId = planId;
         notifyListeners();
-        return;
-      }
+      });
+
+      _daySubs[dk] = sub;
     }
 
-    // DISABLING
-    if (pt == 'day') {
-      final manager =
-          MealPlanManager(auth: _auth, firestore: FirebaseFirestore.instance);
-
-      await manager.stopRecurringDayPlan(
-        savedPlanId: planId,
-        weekdays: [1, 2, 3, 4, 5, 6, 7],
-      );
-    } else {
-      await _repo.setSavedPlanRecurring(
-        uid: uid,
-        planId: planId,
-        enabled: false,
-        planType: pt,
-        weekAnchorDateKey: null,
-        weekdays: null,
-      );
-    }
-
-    if (pt == 'week' && _activeRecurringWeekPlanId == planId) {
-      await _repo.setActiveRecurringWeekPlanId(uid: uid, planId: null);
-      _activeRecurringWeekPlanId = null;
-    }
-
-    notifyListeners();
+    // If no subs (shouldn't happen), stop loading anyway
+    if (_daySubs.isEmpty) isLoading = false;
   }
 
   // -------------------------------------------------------
-  // Meaningful plan detection (LEGACY prevents "ghost plans")
+  // Program day helpers (still useful to call directly)
+  // -------------------------------------------------------
+  Stream<Map<String, dynamic>?> watchProgramDay(String dateKey) {
+    final pid = _activeProgramId;
+    if (pid == null) return const Stream.empty();
+
+    final dk = dateKey.trim();
+    if (dk.isEmpty) return const Stream.empty();
+
+    return _repo.watchProgramDayInProgram(
+      uid: uid,
+      programId: pid,
+      dateKey: dk,
+    );
+  }
+
+  static Map<String, dynamic> slotsFromProgramDayDoc(Map<String, dynamic>? doc) {
+    if (doc == null) return <String, dynamic>{};
+    final v = doc['slots'];
+    if (v is Map<String, dynamic>) return v;
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return <String, dynamic>{};
+  }
+
+  Future<void> saveProgramDay({
+    required String dateKey,
+    required Map<String, dynamic> daySlots,
+  }) async {
+    final pid = _activeProgramId;
+    if (pid == null) throw StateError('No active program');
+
+    final dk = dateKey.trim();
+    if (dk.isEmpty) throw ArgumentError('dateKey is empty');
+
+    await _repo.upsertProgramDay(
+      uid: uid,
+      programId: pid,
+      dateKey: dk,
+      daySlots: daySlots,
+    );
+  }
+
+  Future<void> clearActiveProgram() async {
+    await _repo.setActiveProgramId(uid: uid, programId: null);
+  }
+
+  // -------------------------------------------------------
+  // ✅ GENERATE PLAN STRUCTURE (builder helper)
+  // -------------------------------------------------------
+  Map<String, dynamic> generatePlanData({
+    required bool wantsBreakfast,
+    required bool wantsLunch,
+    required bool wantsDinner,
+    required int snackCount, // 0, 1, or 2
+    required String? planName,
+    required bool isWeek,
+  }) {
+    final Map<String, dynamic> dayStructure = {};
+
+    dayStructure['breakfast'] = wantsBreakfast ? null : {'type': 'clear'};
+    dayStructure['lunch'] = wantsLunch ? null : {'type': 'clear'};
+    dayStructure['dinner'] = wantsDinner ? null : {'type': 'clear'};
+
+    if (snackCount == 0) {
+      dayStructure['snack1'] = {'type': 'clear'};
+      dayStructure['snack2'] = {'type': 'clear'};
+    } else if (snackCount == 1) {
+      dayStructure['snack1'] = null;
+      dayStructure['snack2'] = {'type': 'clear'};
+    } else {
+      dayStructure['snack1'] = null;
+      dayStructure['snack2'] = null;
+    }
+
+    final timestamp = FieldValue.serverTimestamp();
+
+    if (!isWeek) {
+      return {
+        'title': (planName?.trim().isNotEmpty == true) ? planName : 'My Day Plan',
+        'type': 'day',
+        'savedAt': timestamp,
+        'updatedAt': timestamp,
+        'day': dayStructure,
+      };
+    } else {
+      final Map<String, dynamic> weekDays = {};
+      for (int i = 0; i < 7; i++) {
+        weekDays[i.toString()] = dayStructure;
+      }
+      return {
+        'title': (planName?.trim().isNotEmpty == true) ? planName : 'My Week Plan',
+        'type': 'week',
+        'savedAt': timestamp,
+        'updatedAt': timestamp,
+        'days': weekDays,
+      };
+    }
+  }
+
+  // -------------------------------------------------------
+  // Day doc slot extraction (supports both shapes)
+  // -------------------------------------------------------
+  static Map<String, dynamic> slotsFromAnyDayDoc(Map<String, dynamic>? doc) {
+    if (doc == null) return <String, dynamic>{};
+
+    // Preferred shape: { slots: { breakfast: ..., ... } }
+    final v = doc['slots'];
+    if (v is Map<String, dynamic>) return v;
+    if (v is Map) return Map<String, dynamic>.from(v);
+
+    // Fallback shape: doc itself contains slot keys
+    final out = <String, dynamic>{};
+    for (final slot in MealPlanSlots.order) {
+      if (doc.containsKey(slot)) out[slot] = doc[slot];
+      if (slot == 'snack1' && doc.containsKey('snack_1')) out['snack1'] = doc['snack_1'];
+      if (slot == 'snack2' && doc.containsKey('snack_2')) out['snack2'] = doc['snack_2'];
+    }
+    return out;
+  }
+
+  // -------------------------------------------------------
+  // Meaningful plan detection (reused)
   // -------------------------------------------------------
   int? _asInt(dynamic v) {
     if (v is int) return v;
@@ -473,7 +455,10 @@ class MealPlanController extends ChangeNotifier {
   }
 
   bool _slotHasRealContent(Map m) {
-    final type = (m['type'] ?? m['kind'] ?? '').toString().trim().toLowerCase();
+    final type = (m['type'] ?? m['kind'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
 
     if (type == 'clear' || type == 'cleared') return false;
 
@@ -539,158 +524,8 @@ class MealPlanController extends ChangeNotifier {
     return false;
   }
 
-  bool _weekHasMeaningfulPlanData(Map<String, dynamic> week) {
-    final days = week['days'];
-    if (days is! Map) return false;
-
-    final cfg = week['config'];
-    final daysToPlan = (cfg is Map) ? _asInt(cfg['daysToPlan']) : null;
-    final isDayPlan = (daysToPlan ?? 0) == 1;
-
-    if (isDayPlan) {
-      final tk = MealPlanKeys.todayKey();
-      final today = (days[tk] is Map)
-          ? Map<String, dynamic>.from(days[tk] as Map)
-          : <String, dynamic>{};
-      return _dayHasMeaningfulSlots(today);
-    }
-
-    for (final entry in days.entries) {
-      final v = entry.value;
-      if (v is Map) {
-        final m = Map<String, dynamic>.from(v as Map);
-        if (_dayHasMeaningfulSlots(m)) return true;
-      }
-    }
-    return false;
-  }
-
   // -------------------------------------------------------
-  // Activation / Deletion Logic (LEGACY)
-  // -------------------------------------------------------
-  Future<void> activateSavedPlan({
-    required Map<String, dynamic> savedPlan,
-  }) async {
-    final targetDates = MealPlanKeys.weekDayKeys(weekId);
-
-    final rawConfig = savedPlan['config'];
-    final config = (rawConfig is Map)
-        ? Map<String, dynamic>.from(rawConfig)
-        : <String, dynamic>{};
-
-    final v = config['daysToPlan'];
-    final daysToPlan = (v is int) ? v : int.tryParse(v?.toString() ?? '');
-    final isDayPlan = (daysToPlan ?? 0) == 1;
-
-    final sourceDays = savedPlan['days'] as Map<String, dynamic>? ?? {};
-    final Map<String, Map<String, dynamic>> newActiveDays = {};
-
-    if (isDayPlan) {
-      final tk = (config['targetDayKey'] ?? '').toString().trim();
-      final targetDayKey = tk.isNotEmpty ? tk : targetDates.first;
-
-      final finalDayKey =
-          targetDates.contains(targetDayKey) ? targetDayKey : targetDates.first;
-
-      Map<String, dynamic>? dayData;
-      if (sourceDays['0'] is Map) {
-        dayData = Map<String, dynamic>.from(sourceDays['0'] as Map);
-      } else {
-        for (final v in sourceDays.values) {
-          if (v is Map) {
-            dayData = Map<String, dynamic>.from(v);
-            break;
-          }
-        }
-      }
-
-      if (dayData != null) {
-        newActiveDays[finalDayKey] = dayData;
-      }
-
-      if (newActiveDays.isEmpty) return;
-
-      final cfg = <String, dynamic>{
-        ...config,
-        'daysToPlan': 1,
-        'targetDayKey': finalDayKey
-      };
-
-      final sourcePlanId = (cfg['sourcePlanId'] ?? '').toString().trim();
-
-      await _repo.overrideWeekPlan(
-        uid: uid,
-        weekId: weekId,
-        newDays: newActiveDays,
-        config: cfg,
-        sourcePlanId: sourcePlanId.isEmpty ? null : sourcePlanId,
-      );
-
-      notifyListeners();
-      return;
-    }
-
-    // WEEK PLAN
-    int index = 0;
-
-    final sortedKeys = sourceDays.keys.map((k) => k.toString()).toList();
-    sortedKeys.sort((a, b) {
-      final ai = int.tryParse(a);
-      final bi = int.tryParse(b);
-      if (ai != null && bi != null) return ai.compareTo(bi);
-      return a.compareTo(b);
-    });
-
-    for (final dateKey in targetDates) {
-      if (index >= sortedKeys.length) break;
-
-      final sourceKey = sortedKeys[index];
-      final sourceDayData = sourceDays[sourceKey];
-
-      if (sourceDayData is Map) {
-        newActiveDays[dateKey] = Map<String, dynamic>.from(sourceDayData);
-      }
-      index++;
-    }
-
-    if (newActiveDays.isEmpty) return;
-
-    final cfg = <String, dynamic>{...config, 'daysToPlan': 7};
-
-    final sourcePlanId = (cfg['sourcePlanId'] ?? '').toString().trim();
-
-    await _repo.overrideWeekPlan(
-      uid: uid,
-      weekId: weekId,
-      newDays: newActiveDays,
-      config: cfg,
-      sourcePlanId: sourcePlanId.isEmpty ? null : sourcePlanId,
-    );
-
-    notifyListeners();
-  }
-
-  Future<void> clearPlan() async {
-    await _repo.deleteWeek(uid: uid, weekId: weekId);
-
-    final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
-    await userRef.set(
-      {
-        'activeSavedMealPlanId': FieldValue.delete(),
-      },
-      SetOptions(merge: true),
-    );
-
-    await _repo.setActiveRecurringWeekPlanId(uid: uid, planId: null);
-    _activeRecurringWeekPlanId = null;
-
-    weekData = null;
-    _draft.clear();
-    notifyListeners();
-  }
-
-  // -------------------------------------------------------
-  // Parsing / Entries (LEGACY)
+  // Parsing / Entries (now sourced from effective day cache)
   // -------------------------------------------------------
   int? recipeIdFromAny(dynamic raw) {
     if (raw is int) return raw;
@@ -758,11 +593,11 @@ class MealPlanController extends ChangeNotifier {
     return null;
   }
 
+  /// Returns parsed entry from the effective day cache (adhoc > program).
   Map<String, dynamic>? firestoreEntry(String dayKey, String slot) {
-    final data = weekData;
-    if (data == null) return null;
-    final day = MealPlanRepository.dayMapFromWeek(data, dayKey);
-    return _parseEntry(_lookupSlot(day, slot));
+    final doc = _dayDocCache[dayKey];
+    final slots = slotsFromAnyDayDoc(doc);
+    return _parseEntry(_lookupSlot(slots, slot));
   }
 
   Map<String, dynamic>? draftEntry(String dayKey, String slot) => _draft[dayKey]?[slot];
@@ -794,7 +629,7 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // Reuse resolution (LEGACY)
+  // Reuse resolution
   // -------------------------------------------------------
   Map<String, dynamic>? effectiveResolvedEntry(
     String dayKey,
@@ -843,7 +678,7 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // Draft Editing (LEGACY)
+  // Draft Editing
   // -------------------------------------------------------
   void setDraftRecipe(
     String dayKey,
@@ -911,17 +746,9 @@ class MealPlanController extends ChangeNotifier {
     final d = _draft[dayKey];
     if (d == null || d.isEmpty) return out;
 
-    final data = weekData;
-    if (data == null) {
-      out.addAll(d.keys);
-      return out;
-    }
-
     for (final e in d.entries) {
       final current = firestoreEntry(dayKey, e.key);
-      if (!_entryEquals(current, e.value)) {
-        out.add(e.key);
-      }
+      if (!_entryEquals(current, e.value)) out.add(e.key);
     }
     return out;
   }
@@ -936,8 +763,6 @@ class MealPlanController extends ChangeNotifier {
   bool hasDraftChanges(String dayKey) {
     final d = _draft[dayKey];
     if (d == null || d.isEmpty) return false;
-    final data = weekData;
-    if (data == null) return true;
 
     for (final e in d.entries) {
       final current = firestoreEntry(dayKey, e.key);
@@ -983,29 +808,46 @@ class MealPlanController extends ChangeNotifier {
     final dayDraft = _draft[dayKey];
     if (dayDraft == null || dayDraft.isEmpty) return;
 
-    final existing = MealPlanRepository.dayMapFromWeek(weekData ?? {}, dayKey) ?? {};
-    final merged = <String, dynamic>{...existing};
+    final existingDoc = _dayDocCache[dayKey];
+    final existingSlots = slotsFromAnyDayDoc(existingDoc);
+
+    final merged = <String, dynamic>{...existingSlots};
 
     for (final e in dayDraft.entries) {
       final type = (e.value['type'] ?? '').toString();
       if (type == 'clear') {
-        merged[e.key] = {'type': 'cleared'};
+        // Store as clear in the new model
+        merged[e.key] = {'type': 'clear'};
       } else {
         merged[e.key] = e.value;
       }
     }
 
-    await _repo.saveDay(
-      uid: uid,
-      weekId: weekId,
-      dayKey: dayKey,
-      daySlots: merged,
-    );
+    // Save destination:
+    // - if date is part of active program => write program day
+    // - else => write adhoc day
+    if (_activeProgramId != null && isDatePlanned(dayKey)) {
+      await _repo.upsertProgramDay(
+        uid: uid,
+        programId: _activeProgramId!,
+        dateKey: dayKey,
+        daySlots: merged,
+      );
+    } else {
+      await _repo.upsertAdhocDay(
+        uid: uid,
+        dateKey: dayKey,
+        daySlots: merged,
+      );
+    }
 
     _draft.remove(dayKey);
     notifyListeners();
   }
 
+  // -------------------------------------------------------
+  // Reuse cascading helpers
+  // -------------------------------------------------------
   List<Map<String, String>> reuseDependents({
     required String fromDayKey,
     required String fromSlot,
@@ -1021,7 +863,8 @@ class MealPlanController extends ChangeNotifier {
         final from = entryReuseFrom(e);
         if (from == null) continue;
 
-        if (from['dayKey'] == fromDayKey && _normSlot(from['slot']!) == fromSlotNorm) {
+        if (from['dayKey'] == fromDayKey &&
+            _normSlot(from['slot']!) == fromSlotNorm) {
           out.add({'dayKey': dk, 'slot': slot});
         }
       }
@@ -1041,6 +884,101 @@ class MealPlanController extends ChangeNotifier {
       final sl = d['slot']!;
       setDraftClear(dk, sl);
     }
+    notifyListeners();
+  }
+
+  // -------------------------------------------------------
+  // Legacy “saved plan activation” (rewired to adhoc writes)
+  // -------------------------------------------------------
+  /// Applies a legacy-style savedPlan map onto the current viewed week
+  /// by writing ad-hoc days for those dates.
+  Future<void> activateSavedPlan({
+    required Map<String, dynamic> savedPlan,
+  }) async {
+    final targetDates = MealPlanKeys.weekDayKeys(weekId);
+
+    final rawConfig = savedPlan['config'];
+    final config = (rawConfig is Map)
+        ? Map<String, dynamic>.from(rawConfig)
+        : <String, dynamic>{};
+
+    final v = config['daysToPlan'];
+    final daysToPlan = (v is int) ? v : int.tryParse(v?.toString() ?? '');
+    final isDayPlan = (daysToPlan ?? 0) == 1;
+
+    final sourceDays = savedPlan['days'] as Map<String, dynamic>? ?? {};
+    final Map<String, Map<String, dynamic>> newDaysByDate = {};
+
+    if (isDayPlan) {
+      final tk = (config['targetDayKey'] ?? '').toString().trim();
+      final targetDayKey = tk.isNotEmpty ? tk : targetDates.first;
+
+      final finalDayKey =
+          targetDates.contains(targetDayKey) ? targetDayKey : targetDates.first;
+
+      Map<String, dynamic>? dayData;
+      if (sourceDays['0'] is Map) {
+        dayData = Map<String, dynamic>.from(sourceDays['0'] as Map);
+      } else {
+        for (final vv in sourceDays.values) {
+          if (vv is Map) {
+            dayData = Map<String, dynamic>.from(vv);
+            break;
+          }
+        }
+      }
+
+      if (dayData != null) newDaysByDate[finalDayKey] = dayData;
+    } else {
+      // Week plan mapping numeric keys to week dates
+      int index = 0;
+
+      final sortedKeys = sourceDays.keys.map((k) => k.toString()).toList();
+      sortedKeys.sort((a, b) {
+        final ai = int.tryParse(a);
+        final bi = int.tryParse(b);
+        if (ai != null && bi != null) return ai.compareTo(bi);
+        return a.compareTo(b);
+      });
+
+      for (final dateKey in targetDates) {
+        if (index >= sortedKeys.length) break;
+
+        final sourceKey = sortedKeys[index];
+        final sourceDayData = sourceDays[sourceKey];
+
+        if (sourceDayData is Map) {
+          newDaysByDate[dateKey] = Map<String, dynamic>.from(sourceDayData);
+        }
+        index++;
+      }
+    }
+
+    if (newDaysByDate.isEmpty) return;
+
+    // Apply as adhoc overrides (safe, reversible, doesn’t mutate program template)
+    for (final entry in newDaysByDate.entries) {
+      final dateKey = entry.key;
+      final slots = Map<String, dynamic>.from(entry.value);
+      await _repo.upsertAdhocDay(uid: uid, dateKey: dateKey, daySlots: slots);
+    }
+
+    notifyListeners();
+  }
+
+  /// Clears ad-hoc overrides for the current viewed week and drafts.
+  /// (Does NOT delete the program.)
+  Future<void> clearPlan() async {
+    final dayKeys = MealPlanKeys.weekDayKeys(weekId);
+    for (final dk in dayKeys) {
+      try {
+        await _repo.deleteAdhocDay(uid: uid, dateKey: dk);
+      } catch (_) {
+        // ignore if not present
+      }
+    }
+
+    _draft.clear();
     notifyListeners();
   }
 
@@ -1091,7 +1029,10 @@ class MealPlanController extends ChangeNotifier {
 
     if (v == null && r['taxonomies'] is Map) {
       final tax = r['taxonomies'];
-      v = tax['course'] ?? tax['recipe_course'] ?? tax['wprm_course'] ?? tax['category'];
+      v = tax['course'] ??
+          tax['recipe_course'] ??
+          tax['wprm_course'] ??
+          tax['category'];
     }
 
     if (v == null) return null;

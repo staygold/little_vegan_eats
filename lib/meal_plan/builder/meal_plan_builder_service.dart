@@ -124,31 +124,31 @@ class MealPlanBuilderService {
     required int snackCount,
     bool skipPast = true,
   }) async {
-    final firestore = FirebaseFirestore.instance;
-    final repo = MealPlanRepository(firestore);
+    final repo = MealPlanRepository(FirebaseFirestore.instance);
     final random = Random();
 
-    final oldSet = oldScheduledDates.map((e) => e.toString()).toSet();
+    final oldSet = oldScheduledDates.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
     final todayKey = MealPlanKeys.todayKey();
 
     final added = <String>[];
     for (final dk in newScheduledDates) {
-      final clean = dk.toString().trim();
+      final clean = dk.trim();
       if (clean.isEmpty) continue;
       if (oldSet.contains(clean)) continue;
       if (skipPast && clean.compareTo(todayKey) < 0) continue;
+      if (MealPlanKeys.parseDayKey(clean) == null) continue;
       added.add(clean);
     }
 
     if (added.isEmpty) return 0;
     if (availableRecipes.isEmpty) return 0;
 
+    // ✅ deterministic creation order
+    added.sort();
+
     int created = 0;
 
     for (final dateKey in added) {
-      // Validate format
-      if (MealPlanKeys.parseDayKey(dateKey) == null) continue;
-
       // Only create if missing
       final docRef = repo.programDayDoc(
         uid: controller.uid,
@@ -205,8 +205,7 @@ class MealPlanBuilderService {
     String? title,
     bool overwrite = true,
   }) async {
-    final firestore = FirebaseFirestore.instance;
-    final repo = MealPlanRepository(firestore);
+    final repo = MealPlanRepository(FirebaseFirestore.instance);
     final random = Random();
 
     final cleanDateKey = dateKey.trim();
@@ -272,16 +271,14 @@ class MealPlanBuilderService {
     required int snackCount,
   }) async {
     final random = Random();
-    final firestore = FirebaseFirestore.instance;
-    final repo = MealPlanRepository(firestore);
+    final repo = MealPlanRepository(FirebaseFirestore.instance);
 
     final cleanTitle = title.trim().isEmpty ? 'My Plan' : title.trim();
     final cleanWeekdays = weekdays
-        .map((e) => e is int ? e : int.tryParse(e.toString()) ?? 0)
-        .where((e) => e >= 1 && e <= 7)
-        .toSet()
-        .toList()
-      ..sort();
+    .where((d) => d >= 1 && d <= 7)
+    .toSet()
+    .toList()
+  ..sort();
 
     if (cleanWeekdays.isEmpty) {
       throw Exception('Please select at least one weekday.');

@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'meal_plan_controller.dart';
+import 'meal_plan_keys.dart';
+import 'meal_plan_slots.dart';
 
 class MealPlanReviewService {
   // ------------------------------------------------------------
@@ -19,20 +21,21 @@ class MealPlanReviewService {
   // Core logic
   // ------------------------------------------------------------
 
-  /// Checks whether the current meal plan contains
+  /// Checks whether the currently viewed week contains
   /// any recipes that are no longer allowed under
   /// the current allergy rules.
+  ///
+  /// Uses controller's effective day sources (adhoc > program),
+  /// not legacy weekData.
   static bool mealPlanHasConflicts({
     required MealPlanController ctrl,
     required Map<String, dynamic>? Function(int id) recipeById,
   }) {
-    final week = ctrl.weekData;
-    if (week == null) return false;
+    final dayKeys = MealPlanKeys.weekDayKeys(ctrl.weekId);
 
-    for (final day in week.values) {
-      if (day is! Map) continue;
-
-      for (final entry in day.values) {
+    for (final dayKey in dayKeys) {
+      for (final slot in MealPlanSlots.order) {
+        final entry = ctrl.firestoreEntry(dayKey, slot);
         final rid = ctrl.entryRecipeId(entry);
         if (rid == null) continue;
 
@@ -74,25 +77,21 @@ class MealPlanReviewService {
   // UI prompt
   // ------------------------------------------------------------
 
-  /// Checks Firestore and prompts the user if a review
-  /// has been marked as needed.
-  ///
-  /// Call this from:
-  /// - App home
-  /// - Meal plan screen
-  /// - After login
   static Future<void> checkAndPromptIfNeeded(BuildContext context) async {
     final doc = _userDoc();
     if (doc == null) return;
 
     final snap = await doc.get();
     final data = snap.data() ?? {};
-    final review = data['mealPlanReview'];
 
-    final needed = (review is Map && review['needed'] == true);
+    final rawReview = data['mealPlanReview'];
+    final review =
+        (rawReview is Map<String, dynamic>) ? rawReview : <String, dynamic>{};
+
+    final needed = review['needed'] == true;
     if (!needed) return;
 
-    final reason = (review is Map && review['reason'] is String)
+    final reason = (review['reason'] is String)
         ? review['reason'] as String
         : 'Allergies have changed. Your meal plan may need reviewing.';
 
