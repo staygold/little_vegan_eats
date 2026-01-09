@@ -10,8 +10,6 @@ import '../recipes/recipe_search_screen.dart';
 
 import '../meal_plan/core/meal_plan_keys.dart';
 import '../meal_plan/core/meal_plan_review_service.dart';
-import '../meal_plan/core/meal_plan_repository.dart';
-import '../meal_plan/core/meal_plan_controller.dart';
 import '../meal_plan/builder/meal_plan_builder_screen.dart';
 import '../recipes/home_collection_rail.dart';
 import '../meal_plan/widgets/today_meal_plan_section.dart';
@@ -34,9 +32,6 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, dynamic>> _recipes = [];
   bool _recipesLoading = true;
 
-  MealPlanController? _mealCtrl;
-  bool _bootstrappedWeek = false;
-
   // Favourites
   StreamSubscription<User?>? _authFavSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
@@ -46,7 +41,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _loadRecipesAndBootstrap();
+    _loadRecipes();
     _listenToFavorites();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -59,8 +54,6 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _authFavSub?.cancel();
     _favSub?.cancel();
-    _mealCtrl?.stop();
-    _mealCtrl = null;
     super.dispose();
   }
 
@@ -74,44 +67,23 @@ class _HomeScreenState extends State<HomeScreen> {
     return '${d.year}-$mm-$dd';
   }
 
-  String _todayKey() => _dateKey(_dateOnly(DateTime.now()));
-
-  String _weekId() => MealPlanKeys.currentWeekId();
+  /// ✅ After 8pm, "today" becomes tomorrow (home UX rule).
+  String _effectiveHomeDayKey() {
+    final now = DateTime.now();
+    final base = _dateOnly(now);
+    final effective = now.hour >= 20 ? base.add(const Duration(days: 1)) : base;
+    return _dateKey(effective);
+  }
 
   // ---------- RECIPES ----------
 
-  Future<void> _loadRecipesAndBootstrap() async {
+  Future<void> _loadRecipes() async {
     try {
       _recipes = await RecipeRepository.ensureRecipesLoaded();
     } catch (_) {
       _recipes = [];
     } finally {
       if (mounted) setState(() => _recipesLoading = false);
-    }
-
-    await _bootstrapMealPlanIfNeeded();
-  }
-
-  Future<void> _bootstrapMealPlanIfNeeded() async {
-    if (!mounted) return;
-    if (_bootstrappedWeek) return;
-
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    _mealCtrl ??= MealPlanController(
-      auth: FirebaseAuth.instance,
-      repo: MealPlanRepository(FirebaseFirestore.instance),
-      initialWeekId: _weekId(),
-    );
-
-    _mealCtrl!.start();
-    _bootstrappedWeek = true;
-
-    try {
-      await _mealCtrl!.ensureWeek();
-    } catch (_) {
-      // Silent fail
     }
   }
 
@@ -172,7 +144,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // ---------- FIRESTORE STREAMS ----------
+  // ---------- FIRESTORE STREAMS (Programs + Days) ----------
 
   DocumentReference<Map<String, dynamic>>? _userDoc() {
     final user = FirebaseAuth.instance.currentUser;
@@ -180,16 +152,56 @@ class _HomeScreenState extends State<HomeScreen> {
     return FirebaseFirestore.instance.collection('users').doc(user.uid);
   }
 
-  Stream<DocumentSnapshot<Map<String, dynamic>>>? _weekStream() {
+  /// users/{uid}/mealPlan/settings
+  DocumentReference<Map<String, dynamic>>? _programSettingsDoc() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return null;
 
     return FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
-        .collection('mealPlansWeeks')
-        .doc(_weekId())
+        .collection('mealPlan')
+        .doc('settings');
+  }
+
+  /// users/{uid}/mealPrograms/{programId}/mealProgramDays/{dayKey}
+  Stream<DocumentSnapshot<Map<String, dynamic>>>? _programDayStream({
+    required String programId,
+    required String dayKey,
+  }) {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return null;
+
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('mealPrograms')
+        .doc(programId)
+        .collection('mealProgramDays')
+        .doc(dayKey)
         .snapshots();
+  }
+
+  /// ✅ users/{uid}/mealAdhocDays/{dayKey}
+  Stream<DocumentSnapshot<Map<String, dynamic>>>? _adhocDayStream({
+    required String dayKey,
+  }) {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return null;
+
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('mealAdhocDays')
+        .doc(dayKey)
+        .snapshots();
+  }
+
+  Map<String, dynamic> _slotsFromDayDoc(Map<String, dynamic> dayData) {
+    final rawSlots = dayData['slots'];
+    return (rawSlots is Map)
+        ? Map<String, dynamic>.from(rawSlots)
+        : <String, dynamic>{};
   }
 
   String? _extractFirstName(Map<String, dynamic> data) {
@@ -223,9 +235,21 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => MealPlanBuilderScreen(
-          weekId: _weekId(),
-          // If your builder supports an entry mode enum, you can pass it here:
-          // entry: MealPlanBuilderEntry.choose,
+          weekId: MealPlanKeys.currentWeekId(),
+        ),
+      ),
+    );
+  }
+
+  void _openAdhocBuilder(BuildContext context, String dayKey) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MealPlanBuilderScreen(
+          weekId: MealPlanKeys.weekIdForDate(
+            MealPlanKeys.parseDayKey(dayKey) ?? DateTime.now(),
+          ),
+          entry: MealPlanBuilderEntry.adhocDay,
+          initialSelectedDayKey: dayKey,
         ),
       ),
     );
@@ -281,13 +305,13 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final userDoc = _userDoc();
-    final weekStream = _weekStream();
+    final settingsDoc = _programSettingsDoc();
 
     if (_recipesLoading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    if (userDoc == null || weekStream == null) {
+    if (userDoc == null || settingsDoc == null) {
       return const Scaffold(
         body: Center(child: Text('Log in to see your home feed')),
       );
@@ -300,6 +324,8 @@ class _HomeScreenState extends State<HomeScreen> {
       topRight: Radius.circular(20),
     );
 
+    final effectiveDayKey = _effectiveHomeDayKey();
+
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: userDoc.snapshots(),
       builder: (context, userSnap) {
@@ -307,127 +333,268 @@ class _HomeScreenState extends State<HomeScreen> {
         final firstName = _extractFirstName(userData);
 
         return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-          stream: weekStream,
-          builder: (context, snap) {
-            if (snap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(
-                body: Center(child: CircularProgressIndicator()),
-              );
-            }
+          stream: settingsDoc.snapshots(),
+          builder: (context, settingsSnap) {
+            final settings = settingsSnap.data?.data() ?? <String, dynamic>{};
 
-            final data = snap.data?.data() ?? <String, dynamic>{};
-            final days = data['days'];
-            final todayKey = _todayKey();
+            final activeProgramId =
+                (settings['activeProgramId'] ?? '').toString().trim();
 
-            final Map<String, dynamic> todayRaw =
-                (days is Map && days[todayKey] is Map)
-                    ? Map<String, dynamic>.from(days[todayKey] as Map)
-                    : <String, dynamic>{};
-
-            final mealPlanPanelBg = AppColors.brandDark;
-
-            // ✅ Always open MealPlanScreen in WEEK view from Home
-            final VoidCallback onOpenFullPlan = () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => MealPlanScreen(
-                      weekId: _weekId(),
-                      focusDayKey: todayKey,
-                      initialViewMode: MealPlanViewMode.week,
-                    ),
-                  ),
-                );
-
-            return Scaffold(
-              backgroundColor: railBg,
-              body: ListView(
-                padding: EdgeInsets.zero,
-                children: [
-                  HomeSearchSection(
-                    firstName: firstName,
-                    showGreeting: true,
-                    onSearchTap: () => _openSearch(context),
-                    quickActions: [
-                      QuickActionItem(
-                        label: 'Latest',
-                        asset: 'assets/images/icons/latest.svg',
-                        onTap: () => _openLatest(context),
-                      ),
-                      QuickActionItem(
-                        label: 'Popular',
-                        asset: 'assets/images/icons/popular.svg',
-                        onTap: () => _openPopular(context),
-                      ),
-                      QuickActionItem(
-                        label: 'Mains',
-                        asset: 'assets/images/icons/mains.svg',
-                        onTap: () => _openCourse(
-                          context,
-                          'mains',
-                          'Mains',
-                          'Family meals that actually land',
+            // ✅ If no program at all: keep the existing "build plan" behaviour.
+            if (activeProgramId.isEmpty) {
+              return Scaffold(
+                backgroundColor: railBg,
+                body: ListView(
+                  padding: EdgeInsets.zero,
+                  children: [
+                    HomeSearchSection(
+                      firstName: firstName,
+                      showGreeting: true,
+                      onSearchTap: () => _openSearch(context),
+                      quickActions: [
+                        QuickActionItem(
+                          label: 'Latest',
+                          asset: 'assets/images/icons/latest.svg',
+                          onTap: () => _openLatest(context),
                         ),
-                      ),
-                      QuickActionItem(
-                        label: 'Snacks',
-                        asset: 'assets/images/icons/snacks.svg',
-                        onTap: () => _openCourse(
-                          context,
-                          'snacks',
-                          'Snacks',
-                          'Lunchbox + between-meal favourites',
+                        QuickActionItem(
+                          label: 'Popular',
+                          asset: 'assets/images/icons/popular.svg',
+                          onTap: () => _openPopular(context),
                         ),
-                      ),
-                    ],
-                  ),
-                  Container(
-                    color: mealPlanPanelBg,
-                    padding: const EdgeInsets.only(top: 12),
-                    child: Material(
-                      color: railBg,
-                      shape: const RoundedRectangleBorder(borderRadius: topRadius),
-                      clipBehavior: Clip.antiAlias,
-                      child: TodayMealPlanSection(
-                        todayRaw: todayRaw,
-                        recipes: _recipes,
-                        favoriteIds: _favoriteIds,
-                        heroTopText: "HERE'S SOME IDEAS",
-                        heroBottomText: "FOR TODAY",
-                        homeAccordion: true,
-
-                        // ✅ ALWAYS WEEK
-                        onOpenWeek: onOpenFullPlan,
-                        onOpenMealPlan: null,
-                        onOpenToday: null,
-
-                        onBuildMealPlan: () => _openBuilder(context),
-                      ),
-                    ),
-                  ),
-                  Container(
-                    color: railBg,
-                    padding: const EdgeInsets.only(top: 0, bottom: 40),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        HomeCollectionRail(
-                          title: '15 MINUTE MEALS',
-                          collectionSlug: '15-minute-meals',
-                          recipes: _recipes,
-                          favoriteIds: _favoriteIds,
+                        QuickActionItem(
+                          label: 'Mains',
+                          asset: 'assets/images/icons/mains.svg',
+                          onTap: () => _openCourse(
+                            context,
+                            'mains',
+                            'Mains',
+                            'Family meals that actually land',
+                          ),
                         ),
-                        const SizedBox(height: 12),
-                        HomeCollectionRail(
-                          title: 'FIRST FOODS',
-                          collectionSlug: 'first-foods',
-                          recipes: _recipes,
-                          favoriteIds: _favoriteIds,
+                        QuickActionItem(
+                          label: 'Snacks',
+                          asset: 'assets/images/icons/snacks.svg',
+                          onTap: () => _openCourse(
+                            context,
+                            'snacks',
+                            'Snacks',
+                            'Lunchbox + between-meal favourites',
+                          ),
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-              ),
+                    Container(
+                      color: AppColors.brandDark,
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Material(
+                        color: railBg,
+                        shape: const RoundedRectangleBorder(
+                          borderRadius: topRadius,
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: TodayMealPlanSection(
+                          todayRaw: const <String, dynamic>{},
+                          recipes: _recipes,
+                          favoriteIds: _favoriteIds,
+                          heroTopText: "HERE'S SOME IDEAS",
+                          heroBottomText: "FOR TODAY",
+                          homeAccordion: true,
+                          onOpenWeek: null,
+                          onOpenMealPlan: null,
+                          onOpenToday: null,
+                          onBuildMealPlan: () => _openBuilder(context),
+                          programmeActive: false,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      color: railBg,
+                      padding: const EdgeInsets.only(top: 0, bottom: 40),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          HomeCollectionRail(
+                            title: '15 MINUTE MEALS',
+                            collectionSlug: '15-minute-meals',
+                            recipes: _recipes,
+                            favoriteIds: _favoriteIds,
+                          ),
+                          const SizedBox(height: 12),
+                          HomeCollectionRail(
+                            title: 'FIRST FOODS',
+                            collectionSlug: 'first-foods',
+                            recipes: _recipes,
+                            favoriteIds: _favoriteIds,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                ),
+              );
+            }
+
+            // ✅ Program exists. We must resolve “effective slots”:
+            // 1) If adhoc day exists -> use it.
+            // 2) Else use program day.
+            final adhocStream = _adhocDayStream(dayKey: effectiveDayKey);
+            final programStream = _programDayStream(
+              programId: activeProgramId,
+              dayKey: effectiveDayKey,
+            );
+
+            if (adhocStream == null || programStream == null) {
+              return const Scaffold(
+                body: Center(child: Text('Log in to see your home feed')),
+              );
+            }
+
+            return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              stream: adhocStream,
+              builder: (context, adhocSnap) {
+                final adhocData = adhocSnap.data?.data();
+                final adhocSlots =
+                    adhocData == null ? <String, dynamic>{} : _slotsFromDayDoc(adhocData);
+
+                return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                  stream: programStream,
+                  builder: (context, progSnap) {
+                    final progData = progSnap.data?.data();
+                    final progSlots =
+                        progData == null ? <String, dynamic>{} : _slotsFromDayDoc(progData);
+
+                    final bool adhocExists = adhocSnap.data?.exists == true;
+final bool programDayExists = progSnap.data?.exists == true;
+
+final Map<String, dynamic> effectiveSlots =
+    adhocExists ? adhocSlots : (programDayExists ? progSlots : <String, dynamic>{});
+
+final bool dayInProgramme = adhocExists || programDayExists;
+
+                    final VoidCallback onOpenFullPlan = () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => MealPlanScreen(
+                            weekId: MealPlanKeys.weekIdForDate(
+                              MealPlanKeys.parseDayKey(effectiveDayKey) ?? DateTime.now(),
+                            ),
+                            focusDayKey: effectiveDayKey,
+                          ),
+                        ),
+                      );
+                    };
+
+                    return Scaffold(
+                      backgroundColor: railBg,
+                      body: ListView(
+                        padding: EdgeInsets.zero,
+                        children: [
+                          HomeSearchSection(
+                            firstName: firstName,
+                            showGreeting: true,
+                            onSearchTap: () => _openSearch(context),
+                            quickActions: [
+                              QuickActionItem(
+                                label: 'Latest',
+                                asset: 'assets/images/icons/latest.svg',
+                                onTap: () => _openLatest(context),
+                              ),
+                              QuickActionItem(
+                                label: 'Popular',
+                                asset: 'assets/images/icons/popular.svg',
+                                onTap: () => _openPopular(context),
+                              ),
+                              QuickActionItem(
+                                label: 'Mains',
+                                asset: 'assets/images/icons/mains.svg',
+                                onTap: () => _openCourse(
+                                  context,
+                                  'mains',
+                                  'Mains',
+                                  'Family meals that actually land',
+                                ),
+                              ),
+                              QuickActionItem(
+                                label: 'Snacks',
+                                asset: 'assets/images/icons/snacks.svg',
+                                onTap: () => _openCourse(
+                                  context,
+                                  'snacks',
+                                  'Snacks',
+                                  'Lunchbox + between-meal favourites',
+                                ),
+                              ),
+                            ],
+                          ),
+                          Container(
+                            color: AppColors.brandDark,
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Material(
+                              color: railBg,
+                              shape: const RoundedRectangleBorder(
+                                borderRadius: topRadius,
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: TodayMealPlanSection(
+                                todayRaw: effectiveSlots,
+                                recipes: _recipes,
+                                favoriteIds: _favoriteIds,
+                                heroTopText: "HERE'S SOME IDEAS",
+                                heroBottomText: "FOR TODAY",
+                                homeAccordion: true,
+
+                                onOpenWeek: onOpenFullPlan,
+                                onOpenMealPlan: null,
+                                onOpenToday: null,
+
+                                // ✅ keep build-plan CTA available, but section will NOT use it
+                                // when programmeActive=true and onAddAdhocDay is provided.
+                                onBuildMealPlan: () => _openBuilder(context),
+
+                                // ✅ this is the key fix
+                                programmeActive: true,
+
+                                // ✅ Home doesn’t yet know programme weekdays; treat as “in programme”
+                                // so the empty state becomes “add one-off day” when empty.
+                                dayInProgramme: dayInProgramme,
+
+
+                                // ✅ this is what makes the section show “ADD ONE-OFF DAY” when empty
+                                onAddAdhocDay: () => _openAdhocBuilder(context, effectiveDayKey),
+                              ),
+                            ),
+                          ),
+                          Container(
+                            color: railBg,
+                            padding: const EdgeInsets.only(top: 0, bottom: 40),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                HomeCollectionRail(
+                                  title: '15 MINUTE MEALS',
+                                  collectionSlug: '15-minute-meals',
+                                  recipes: _recipes,
+                                  favoriteIds: _favoriteIds,
+                                ),
+                                const SizedBox(height: 12),
+                                HomeCollectionRail(
+                                  title: 'FIRST FOODS',
+                                  collectionSlug: 'first-foods',
+                                  recipes: _recipes,
+                                  favoriteIds: _favoriteIds,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
             );
           },
         );

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../../recipes/recipe_detail_screen.dart';
 import '../../theme/app_theme.dart';
+import '../core/meal_plan_keys.dart';
 import 'meal_plan_entry_parser.dart';
 
 class TodayMealPlanSection extends StatelessWidget {
@@ -18,13 +19,12 @@ class TodayMealPlanSection extends StatelessWidget {
     this.onOpenToday,
     this.onOpenWeek,
 
-    // ✅ used when there is no plan yet
+    // ✅ used when there is no plan yet (no active programme)
     this.onBuildMealPlan,
     this.heroTopText = "TODAY’S",
     this.heroBottomText = "MEAL PLAN",
 
     // ✅ Optional plan title
-    // ✅ IMPORTANT: We now show this in BOTH home + non-home headers when provided
     this.planTitle,
 
     // ✅ controls whether we render the "home accordion" version
@@ -44,11 +44,22 @@ class TodayMealPlanSection extends StatelessWidget {
     this.homeSectionTitleSize,
     this.homeSectionTitleWeight,
 
-    // ✅ copy for empty state
+    // ✅ copy for "no programme" empty state
     this.emptyTitle = 'Build your first meal plan',
     this.emptyBody =
         'Choose what you want to include and we’ll generate a plan for you.',
     this.emptyButtonText = 'BUILD MEAL PLAN',
+
+    // ✅ NEW: programme awareness
+    this.programmeActive = false,
+    this.dayInProgramme = true,
+    this.onAddAdhocDay,
+
+    // ✅ copy for "programme active but not scheduled today"
+    this.notScheduledTitle = 'No meal scheduled for this day',
+    this.notScheduledBody =
+        'Your programme is active, but today isn’t one of your selected days.',
+    this.notScheduledButtonText = 'ADD ONE-OFF DAY',
   });
 
   final Map<String, dynamic> todayRaw;
@@ -59,7 +70,7 @@ class TodayMealPlanSection extends StatelessWidget {
   final VoidCallback? onOpenToday;
   final VoidCallback? onOpenWeek;
 
-  /// When there is no plan yet, show CTA that calls this
+  /// When there is no programme yet, show CTA that calls this
   final VoidCallback? onBuildMealPlan;
 
   final String heroTopText;
@@ -77,7 +88,6 @@ class TodayMealPlanSection extends StatelessWidget {
   final Future<void> Function(String slot)? onClearSlot;
 
   /// ✅ Called when user taps "ADD ANOTHER SNACK".
-  /// MealPlanScreen should open the Choose flow for snack2.
   final Future<void> Function()? onAddAnotherSnack;
 
   final bool canSave;
@@ -89,6 +99,15 @@ class TodayMealPlanSection extends StatelessWidget {
   final String emptyTitle;
   final String emptyBody;
   final String emptyButtonText;
+
+  // ✅ Programme awareness
+  final bool programmeActive;
+  final bool dayInProgramme;
+  final VoidCallback? onAddAdhocDay;
+
+  final String notScheduledTitle;
+  final String notScheduledBody;
+  final String notScheduledButtonText;
 
   bool get _editable =>
       onInspireSlot != null ||
@@ -375,6 +394,18 @@ class TodayMealPlanSection extends StatelessWidget {
     }
   }
 
+  // ✅ Pretty reuse label: "Reused from Thu 8 Jan • Lunch"
+  String _prettyReuseLabel(Map<String, String> meta) {
+    final dk = (meta['dayKey'] ?? '').toString().trim();
+    final sl = (meta['slot'] ?? '').toString().trim();
+
+    final prettyDay =
+        dk.isNotEmpty ? MealPlanKeys.formatPretty(dk) : 'Unknown day';
+    final prettySlot = sl.isNotEmpty ? _slotLabel(sl) : 'Meal';
+
+    return 'Reused from $prettyDay • $prettySlot';
+  }
+
   Widget _mealCard({
     required BuildContext context,
     required String slotKey,
@@ -402,8 +433,8 @@ class TodayMealPlanSection extends StatelessWidget {
                 note,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style:
-                    (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+                style: (theme.textTheme.titleMedium ?? const TextStyle())
+                    .copyWith(
                   color: _primaryText,
                   fontWeight: FontWeight.w700,
                 ),
@@ -421,7 +452,7 @@ class TodayMealPlanSection extends StatelessWidget {
       );
     }
 
-    // 2. EMPTY STATE
+    // 2. EMPTY SLOT
     if (_isEmptyOrClear(entry)) {
       return Container(
         height: 86,
@@ -468,8 +499,7 @@ class TodayMealPlanSection extends StatelessWidget {
 
         String labelText = displaySlotLabel ?? _slotLabel(slotKey);
         if (reuseMeta != null) {
-          final dk = reuseMeta['dayKey'] ?? reuseMeta['fromDayKey'];
-          if (dk != null) labelText = 'Reused from $dk';
+          labelText = _prettyReuseLabel(reuseMeta);
         }
 
         return InkWell(
@@ -491,8 +521,8 @@ class TodayMealPlanSection extends StatelessWidget {
                   height: double.infinity,
                   child: thumb == null
                       ? Center(
-                          child:
-                              Icon(Icons.restaurant_menu, color: _primaryText),
+                          child: Icon(Icons.restaurant_menu,
+                              color: _primaryText),
                         )
                       : Stack(
                           fit: StackFit.expand,
@@ -582,9 +612,7 @@ class TodayMealPlanSection extends StatelessWidget {
     // 4. FALLBACK (reuse only)
     final reuseMeta = MealPlanEntryParser.entryReuseFrom(entry);
     if (reuseMeta != null) {
-      final dk = reuseMeta['dayKey'] ?? reuseMeta['fromDayKey'] ?? '?';
-      final sl = reuseMeta['slot'] ?? reuseMeta['fromSlot'] ?? '';
-      final label = 'Reused from $dk • ${displaySlotLabel ?? _slotLabel(sl)}';
+      final label = _prettyReuseLabel(reuseMeta);
 
       return Container(
         height: 86,
@@ -615,9 +643,8 @@ class TodayMealPlanSection extends StatelessWidget {
                     label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style:
-                        (theme.textTheme.bodyMedium ?? const TextStyle())
-                            .copyWith(
+                    style: (theme.textTheme.bodyMedium ?? const TextStyle())
+                        .copyWith(
                       color: _primaryText.withOpacity(0.85),
                       fontWeight: FontWeight.w600,
                     ),
@@ -752,9 +779,10 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   // -----------------------------
-  // EMPTY CTA
+  // EMPTY STATES
   // -----------------------------
-  Widget _emptyState(BuildContext context) {
+
+  Widget _emptyProgrammeNotScheduled(BuildContext context) {
     return Container(
       color: _homePanelBgConst,
       child: Column(
@@ -762,7 +790,30 @@ class TodayMealPlanSection extends StatelessWidget {
         children: [
           _heroHeader(context),
           Padding(
-            padding: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
+            padding:
+                const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
+            child: _EmptyCtaCard(
+              title: notScheduledTitle,
+              body: notScheduledBody,
+              buttonText: notScheduledButtonText,
+              onPressed: onAddAdhocDay,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _emptyNoProgrammeYet(BuildContext context) {
+    return Container(
+      color: _homePanelBgConst,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _heroHeader(context),
+          Padding(
+            padding:
+                const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
             child: _EmptyCtaCard(
               title: emptyTitle,
               body: emptyBody,
@@ -780,9 +831,16 @@ class TodayMealPlanSection extends StatelessWidget {
   // -----------------------------
   Widget _nonHomeSection(BuildContext context) {
     final parsed = _parsedBySlot();
+    final hasPlanned = _hasAnyPlannedEntry(parsed);
 
-    if (!_hasAnyPlannedEntry(parsed) && onBuildMealPlan != null) {
-      return _emptyState(context);
+    // ✅ programme exists but today not in programme and nothing adhoc
+    if (!hasPlanned && programmeActive && !dayInProgramme && onAddAdhocDay != null) {
+      return _emptyProgrammeNotScheduled(context);
+    }
+
+    // ✅ no programme yet
+    if (!hasPlanned && onBuildMealPlan != null && !programmeActive) {
+      return _emptyNoProgrammeYet(context);
     }
 
     final breakfast = parsed['breakfast'];
@@ -847,9 +905,16 @@ class TodayMealPlanSection extends StatelessWidget {
   // -----------------------------
   Widget _homeSection(BuildContext context) {
     final parsed = _parsedBySlot();
+    final hasPlanned = _hasAnyPlannedEntry(parsed);
 
-    if (!_hasAnyPlannedEntry(parsed) && onBuildMealPlan != null) {
-      return _emptyState(context);
+    // ✅ programme exists but today not in programme and nothing adhoc
+    if (!hasPlanned && programmeActive && !dayInProgramme && onAddAdhocDay != null) {
+      return _emptyProgrammeNotScheduled(context);
+    }
+
+    // ✅ no programme yet
+    if (!hasPlanned && onBuildMealPlan != null && !programmeActive) {
+      return _emptyNoProgrammeYet(context);
     }
 
     final breakfast = parsed['breakfast'];
