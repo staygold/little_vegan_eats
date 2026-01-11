@@ -1,186 +1,179 @@
 // lib/recipes/allergy_engine.dart
+import 'allergy_keys.dart';
 
-enum AllergyStatus {
-  safe,
-  swapRequired,
-  notSuitable,
+/// How the UI chooses which people to consider when filtering.
+/// (Used by recipe pages / filters UI, not required by MealPlanController.)
+enum SuitabilityMode { wholeFamily, allChildren, specificPeople }
+
+class AllergiesSelection {
+  final bool enabled;
+  final SuitabilityMode mode;
+
+  /// Selected people (when mode == specificPeople)
+  final Set<String> personIds;
+
+  /// If true: allow recipes that are "swap required"
+  final bool includeSwaps;
+
+  const AllergiesSelection({
+    this.enabled = true,
+    this.mode = SuitabilityMode.wholeFamily,
+    this.personIds = const <String>{},
+    this.includeSwaps = false,
+  });
+
+  int get activeCount {
+    if (!enabled) return 0;
+    int n = 1; // enabled
+    if (includeSwaps) n += 1;
+    return n;
+  }
+
+  AllergiesSelection copyWith({
+    bool? enabled,
+    SuitabilityMode? mode,
+    Set<String>? personIds,
+    bool? includeSwaps,
+  }) {
+    return AllergiesSelection(
+      enabled: enabled ?? this.enabled,
+      mode: mode ?? this.mode,
+      personIds: personIds ?? this.personIds,
+      includeSwaps: includeSwaps ?? this.includeSwaps,
+    );
+  }
 }
+
+enum AllergyStatus { safe, swapRequired, notSuitable }
 
 class AllergyResult {
   final AllergyStatus status;
-  final List<String> detectedAllergens;
-  final String? swapDisplay; // New system text (from custom field)
-  final List<String> swapNotes; // Old system text (generated from keywords)
 
-  const AllergyResult({
-    required this.status,
-    required this.detectedAllergens,
-    this.swapDisplay,
-    this.swapNotes = const [],
-  });
+  /// Optional hint you can populate later if you want UI copy.
+  final String? swapHint;
+
+  const AllergyResult({required this.status, this.swapHint});
 }
 
+/// ✅ V1 engine: ONLY uses
+/// - recipe allergy tags (canonicalized)
+/// - swap field text (free text mentioning allergens / keys)
+///
+/// There is NO ingredient scanning in this file.
 class AllergyEngine {
-  // ===========================================================================
-  // 🟢 NEW SYSTEM (Tag-Based) - Fast & CMS Controlled
-  // ===========================================================================
-
-  static const Map<String, List<String>> _validationKeywords = {
-    'soy': ['soy', 'tofu', 'tempeh', 'miso', 'tamari', 'shoyu'],
-    'peanut': ['peanut', 'pb'],
-    'tree_nut': ['almond', 'cashew', 'walnut', 'pecan', 'hazelnut', 'pistachio', 'nut'],
-    'sesame': ['sesame', 'tahini'],
-    'gluten': ['wheat', 'flour', 'bread', 'pasta', 'noodle', 'couscous', 'barley', 'rye', 'gluten'],
-    'dairy': ['milk', 'cheese', 'cream', 'yogurt', 'butter', 'ghee', 'dairy', 'whey', 'casein'],
-    'egg': ['egg', 'mayo', 'meringue'],
-  };
-
-  /// ✅ NEW METHOD: Checks WPRM Tags & Swap Field (Used by Recipe List)
+  /// Evaluate a recipe against user allergies using:
+  /// - recipeAllergyTags: list of allergy tags applied to the recipe (strings or slugs)
+  /// - swapFieldText: text where you might mention swappable allergens (e.g. "swap soy milk...")
+  /// - userAllergies: list of allergy strings from the user profile
+  ///
+  /// Rules:
+  /// - If user has no allergies -> safe
+  /// - If recipe has no allergy tags -> safe (nothing to match against)
+  /// - If a user allergy is present in recipe tags:
+  ///     - if also present in swap text -> swapRequired
+  ///     - otherwise -> notSuitable
   static AllergyResult evaluate({
     required List<String> recipeAllergyTags,
     required String swapFieldText,
     required List<String> userAllergies,
   }) {
-    final recipeTagsLower = recipeAllergyTags.map((t) => t.toLowerCase()).toSet();
-    final swapsLower = swapFieldText.toLowerCase();
-    
-    final conflicts = <String>[];
-    for (final allergy in userAllergies) {
-      if (recipeTagsLower.any((t) => t.contains(allergy.toLowerCase()))) {
-        conflicts.add(allergy);
+    if (userAllergies.isEmpty) {
+      return const AllergyResult(status: AllergyStatus.safe);
+    }
+
+    final recipeKeys = _canonicalizeRecipeTags(recipeAllergyTags);
+    if (recipeKeys.isEmpty) {
+      // No tag signal -> can't decide anything unsafe in v1.
+      return const AllergyResult(status: AllergyStatus.safe);
+    }
+
+    final swapKeys = _extractSwapKeys(swapFieldText);
+
+    bool anyBlocked = false;
+    bool anySwappable = false;
+
+    for (final raw in userAllergies) {
+      final k = AllergyKeys.normalize(raw);
+      if (k == null) continue;
+
+      // Only matters if the recipe is tagged with this allergy key.
+      if (!recipeKeys.contains(k)) continue;
+
+      // If swap text mentions it, treat as swappable.
+      if (swapKeys.contains(k)) {
+        anySwappable = true;
+      } else {
+        anyBlocked = true;
       }
     }
 
-    if (conflicts.isEmpty) {
-      return const AllergyResult(status: AllergyStatus.safe, detectedAllergens: []);
+    if (anyBlocked) {
+      return const AllergyResult(status: AllergyStatus.notSuitable);
     }
-
-    if (swapsLower.trim().isEmpty) {
-      return AllergyResult(status: AllergyStatus.notSuitable, detectedAllergens: conflicts);
+    if (anySwappable) {
+      return const AllergyResult(status: AllergyStatus.swapRequired);
     }
-
-    bool allConflictsCovered = true;
-    for (final allergy in conflicts) {
-      final keywords = _validationKeywords[allergy] ?? [allergy];
-      final hasFix = keywords.any((k) => swapsLower.contains(k));
-      if (!hasFix) {
-        allConflictsCovered = false;
-        break; 
-      }
-    }
-
-    if (allConflictsCovered) {
-      return AllergyResult(
-        status: AllergyStatus.swapRequired,
-        detectedAllergens: conflicts,
-        swapDisplay: swapFieldText,
-      );
-    }
-
-    return AllergyResult(status: AllergyStatus.notSuitable, detectedAllergens: conflicts);
+    return const AllergyResult(status: AllergyStatus.safe);
   }
 
-  // ===========================================================================
-  // 🟡 OLD SYSTEM (Text-Scanning) - Kept for Legacy Support (Meal Plan)
-  // ===========================================================================
-
-  static const Map<String, List<String>> _legacyKeywords = {
-    'soy': ['soy', 'soya', 'soy milk', 'tofu', 'tempeh', 'edamame', 'miso', 'tamari', 'shoyu', 'soy sauce'],
-    'peanut': ['peanut', 'peanuts', 'peanut butter'],
-    'tree_nut': ['almond', 'cashew', 'walnut', 'pecan', 'hazelnut', 'pistachio', 'macadamia'],
-    'sesame': ['sesame', 'tahini'],
-    'gluten': ['wheat', 'flour', 'bread', 'pasta', 'noodles', 'soy sauce'],
-    'coconut': ['coconut', 'coconut milk', 'coconut cream', 'coconut oil'],
-    'seed': ['sunflower', 'sunflower seed', 'pumpkin seed'],
-  };
-
-  static const List<_LegacySwapRule> _legacySwapRules = [
-    _LegacySwapRule(
-      allergen: 'soy', triggers: ['soy milk'],
-      replacements: ['oat milk', 'rice milk', 'coconut milk', 'almond milk'],
-      noteTemplate: 'Soy milk → {replacement}',
-    ),
-    _LegacySwapRule(
-      allergen: 'peanut', triggers: ['peanut butter'],
-      replacements: ['sunflower seed butter'],
-      noteTemplate: 'Peanut butter → {replacement}',
-    ),
-  ];
-
-  /// ⚠️ LEGACY METHOD: Scans Ingredient Text (Used by Meal Plan Controller)
-  /// This keeps your app building while we transition fully to tags.
-  static AllergyResult evaluateRecipe({
-    required String ingredientsText,
-    required List<String> childAllergies,
-    required bool includeSwapRecipes,
+  /// Convenience: convert evaluate() result into "allowed" based on UI preference.
+  /// - allowSwaps=false => only SAFE passes
+  /// - allowSwaps=true  => SAFE + SWAP_REQUIRED pass
+  static bool isAllowed({
+    required List<String> recipeAllergyTags,
+    required String swapFieldText,
+    required List<String> userAllergies,
+    required bool allowSwaps,
   }) {
-    final text = ingredientsText.toLowerCase();
-    final detected = <String>[];
+    final res = evaluate(
+      recipeAllergyTags: recipeAllergyTags,
+      swapFieldText: swapFieldText,
+      userAllergies: userAllergies,
+    );
 
-    for (final allergen in childAllergies) {
-      final keys = _legacyKeywords[allergen];
-      if (keys == null || keys.isEmpty) continue;
-      if (_containsAny(text, keys)) detected.add(allergen);
-    }
-
-    if (detected.isEmpty) {
-      return const AllergyResult(status: AllergyStatus.safe, detectedAllergens: []);
-    }
-
-    if (!includeSwapRecipes) {
-      return AllergyResult(status: AllergyStatus.notSuitable, detectedAllergens: detected);
-    }
-
-    final swapNotes = <String>[];
-    final covered = <String>{};
-
-    for (final allergen in detected) {
-      final rules = _legacySwapRules.where((r) => r.allergen == allergen);
-      if (rules.isEmpty) continue;
-
-      for (final r in rules) {
-        if (!_containsAny(text, r.triggers)) continue;
-        // Simple pick first replacement for legacy logic
-        final replacement = r.replacements.first; 
-        swapNotes.add(r.noteTemplate.replaceAll('{replacement}', replacement));
-        covered.add(allergen);
-        break; 
-      }
-    }
-
-    final allCovered = detected.every(covered.contains);
-    
-    if (allCovered && swapNotes.isNotEmpty) {
-      return AllergyResult(
-        status: AllergyStatus.swapRequired,
-        detectedAllergens: detected,
-        swapNotes: swapNotes,
-        swapDisplay: swapNotes.join(', '), // Map to new field for safety
-      );
-    }
-
-    return AllergyResult(status: AllergyStatus.notSuitable, detectedAllergens: detected, swapNotes: swapNotes);
-  }
-
-  static bool _containsAny(String text, List<String> needles) {
-    for (final needle in needles) {
-      if (text.contains(needle)) return true;
-    }
+    if (res.status == AllergyStatus.safe) return true;
+    if (allowSwaps && res.status == AllergyStatus.swapRequired) return true;
     return false;
   }
-}
 
-// Internal Legacy Types
-class _LegacySwapRule {
-  final String allergen;
-  final List<String> triggers;
-  final List<String> replacements;
-  final String noteTemplate;
+  /// Canonicalize recipe tags into normalized allergy keys.
+  static Set<String> _canonicalizeRecipeTags(List<String> tags) {
+    final out = <String>{};
+    for (final t in tags) {
+      final k = AllergyKeys.normalize(t);
+      if (k != null) out.add(k);
+    }
+    return out;
+  }
 
-  const _LegacySwapRule({
-    required this.allergen,
-    required this.triggers,
-    required this.replacements,
-    required this.noteTemplate,
-  });
+  /// Extract allergy keys from swap text.
+  ///
+  /// Strategy:
+  /// 1) direct substring match for known keys (fast path)
+  /// 2) token scan + normalize() for synonyms
+  static Set<String> _extractSwapKeys(String text) {
+    final s = text.toLowerCase();
+    if (s.trim().isEmpty) return <String>{};
+
+    final out = <String>{};
+
+    // 1) direct key mentions
+    for (final k in AllergyKeys.allKeys) {
+      if (s.contains(k.toLowerCase())) out.add(k);
+    }
+
+    // 2) token scan for synonyms that normalize()
+    final tokens = s
+        .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+        .split(RegExp(r'\s+'))
+        .where((x) => x.trim().isNotEmpty)
+        .toList();
+
+    for (final tok in tokens) {
+      final k = AllergyKeys.normalize(tok);
+      if (k != null) out.add(k);
+    }
+
+    return out;
+  }
 }

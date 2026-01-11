@@ -9,6 +9,9 @@ import 'core/meal_plan_controller.dart';
 import 'core/meal_plan_keys.dart';
 import 'core/meal_plan_repository.dart';
 
+import '../recipes/family_profile_repository.dart';
+
+
 class SavedMealPlansScreen extends StatefulWidget {
   const SavedMealPlansScreen({super.key});
 
@@ -197,9 +200,12 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
 
     // Controller is only used for candidate selection + allergy filtering helpers.
     final controller = MealPlanController(
-      auth: FirebaseAuth.instance,
-      repo: MealPlanRepository(FirebaseFirestore.instance),
-    );
+  auth: FirebaseAuth.instance,
+  repo: MealPlanRepository(FirebaseFirestore.instance),
+  profileRepo: FamilyProfileRepository(),
+);
+
+controller.start(); // ✅ REQUIRED
 
     final service = MealPlanBuilderService(controller);
     final prefs = _mealPrefsFromProgram(program);

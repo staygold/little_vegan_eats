@@ -10,7 +10,7 @@ import '../core/meal_plan_repository.dart';
 import '../core/meal_plan_log.dart' as mplog;
 
 // -------------------------------------------------------
-// ✅ Leftovers ledger model (top-level; Dart forbids nested classes)
+// Leftovers ledger model (top-level; Dart forbids nested classes)
 // -------------------------------------------------------
 class _LeftoverBatch {
   final int recipeId;
@@ -52,7 +52,6 @@ class MealPlanBuilderService {
   }
 
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
-
   DateTime _addDays(DateTime d, int days) => d.add(Duration(days: days));
 
   List<String> _buildScheduledDates({
@@ -120,9 +119,9 @@ class MealPlanBuilderService {
   }
 
   // -------------------------------------------------------
-  // Batch cooking reuse tracking (existing)
+  // Batch cooking reuse tracking
+  // recipeId -> first served date
   // -------------------------------------------------------
-  // recipeId -> first served date (DateTime)
   Map<int, DateTime> _firstUsedDates = {};
 
   void _noteFirstUseIfMissing(int recipeId, DateTime servingDate) {
@@ -134,15 +133,12 @@ class MealPlanBuilderService {
   }
 
   // -------------------------------------------------------
-  // ✅ Leftovers ledger (ITEM serving_mode only)
+  // Leftovers ledger (ITEM serving_mode only)
   // -------------------------------------------------------
   static const String _servingModeItem = 'item';
-
   final List<_LeftoverBatch> _leftovers = <_LeftoverBatch>[];
 
-  void _resetLeftovers() {
-    _leftovers.clear();
-  }
+  void _resetLeftovers() => _leftovers.clear();
 
   Map<String, dynamic> _recipeRoot(Map<String, dynamic> recipe) {
     final r = (recipe['recipe'] is Map)
@@ -193,28 +189,6 @@ class MealPlanBuilderService {
       if (id == recipeId) return r;
     }
     return null;
-  }
-
-  // Household counts
-  Future<int> _loadAdultCount() async {
-    try {
-      final snap = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(controller.uid)
-          .get();
-      final d = snap.data();
-      final v = d?['adultCount'] ?? d?['adults'] ?? d?['householdAdults'];
-      if (v is int) return max(1, v);
-      final parsed = int.tryParse(v?.toString().trim() ?? '');
-      return max(1, parsed ?? 2);
-    } catch (_) {
-      return 2;
-    }
-  }
-
-  int _kidCountFromChildren(List<dynamic>? children) {
-    if (children == null) return 0;
-    return children.where((c) => c is Map).length;
   }
 
   int _itemsMadeBase(Map<String, dynamic> recipe) {
@@ -329,186 +303,10 @@ class MealPlanBuilderService {
   }
 
   // -------------------------------------------------------
-  // ✅ Child profile loading (program children only had childKey)
-  // -------------------------------------------------------
-  bool _childrenHaveDob(List<dynamic>? children) {
-    if (children == null) return false;
-    for (final c in children) {
-      if (c is! Map) continue;
-      final hasDobYear = c['dobYear'] is int;
-      final hasDobMonth = c['dobMonth'] is int;
-      if (hasDobYear && hasDobMonth) return true;
-
-      final raw = c['birthDate'] ??
-          c['birthdate'] ??
-          c['dob'] ??
-          c['dateOfBirth'] ??
-          c['date_of_birth'];
-      if (raw != null) return true;
-    }
-    return false;
-  }
-
-  Future<List<dynamic>?> _resolveChildrenProfile(List<dynamic>? children) async {
-    if (_childrenHaveDob(children)) return children;
-
-    final fs = FirebaseFirestore.instance;
-    final uid = controller.uid;
-
-    // 0) users/{uid}
-    try {
-      final userSnap = await fs.collection('users').doc(uid).get();
-      final data = userSnap.data();
-      final c = data?['children'];
-      if (c is List && _childrenHaveDob(c)) return c;
-    } catch (_) {}
-
-    // 2) mealPlan/settings
-    try {
-      final settingsSnap =
-          await fs.collection('users').doc(uid).collection('mealPlan').doc(
-                'settings',
-              ).get();
-
-      final data = settingsSnap.data();
-      final c = data?['children'];
-      if (c is List && _childrenHaveDob(c)) return c;
-    } catch (_) {}
-
-    // 3) mealPlansWeeks/{currentWeekId}
-    try {
-      final weekId = MealPlanKeys.currentWeekId();
-      final weekSnap =
-          await fs.collection('users').doc(uid).collection('mealPlansWeeks').doc(
-                weekId,
-              ).get();
-
-      final data = weekSnap.data();
-      final c = data?['children'];
-      if (c is List && _childrenHaveDob(c)) return c;
-    } catch (_) {}
-
-    return children;
-  }
-
-  Future<void> _persistChildrenSnapshotToProgram({
-    required String programId,
-    required List<dynamic>? children,
-  }) async {
-    if (children == null || children.isEmpty) return;
-
-    try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(controller.uid)
-          .collection('mealPrograms')
-          .doc(programId)
-          .set(
-        {'children': children},
-        SetOptions(merge: true),
-      );
-    } catch (_) {}
-  }
-
-  // -------------------------------------------------------
-  // Baby snack rule (first foods)
+  // Baby snack rule markers (entries)
   // -------------------------------------------------------
   bool _isSnackSlot(String slot) =>
       slot == 'snack' || slot == 'snack1' || slot == 'snack2';
-
-  int _ageInMonthsLocal({
-    required int dobYear,
-    required int dobMonth,
-    required DateTime onDate,
-  }) {
-    return (onDate.year - dobYear) * 12 + (onDate.month - dobMonth);
-  }
-
-  ({int year, int month})? _extractDobYearMonth(Map c) {
-    final y = c['dobYear'];
-    final m = c['dobMonth'];
-    if (y is int && m is int && m >= 1 && m <= 12) return (year: y, month: m);
-
-    final y2 = c['dob_year'];
-    final m2 = c['dob_month'];
-    if (y2 is int && m2 is int && m2 >= 1 && m2 <= 12) return (year: y2, month: m2);
-
-    final raw = c['birthDate'] ??
-        c['birthdate'] ??
-        c['dob'] ??
-        c['dateOfBirth'] ??
-        c['date_of_birth'];
-
-    DateTime? dt;
-    if (raw is Timestamp) dt = raw.toDate();
-    if (raw is DateTime) dt = raw;
-    if (raw is String) {
-      try {
-        dt = DateTime.parse(raw.length == 7 ? '$raw-01' : raw);
-      } catch (_) {
-        dt = null;
-      }
-    }
-    if (raw is Map) {
-      final ry = raw['year'];
-      final rm = raw['month'];
-      if (ry is int && rm is int && rm >= 1 && rm <= 12) {
-        return (year: ry, month: rm);
-      }
-    }
-
-    if (dt == null) return null;
-    return (year: dt.year, month: dt.month);
-  }
-
-  String? _extractChildKey(Map c) {
-    final v = (c['childKey'] ?? c['id'] ?? c['key'] ?? c['uid'] ?? '').toString().trim();
-    return v.isEmpty ? null : v;
-  }
-
-  String _extractChildName(Map c) =>
-      (c['name'] ?? c['childName'] ?? '').toString().trim();
-
-  ({String childKey, String childName})? _youngestBabyChild(
-    List<dynamic>? children,
-    DateTime servingDate, {
-    required int babyThresholdMonths,
-  }) {
-    if (children == null || children.isEmpty) return null;
-
-    int? bestAgeMonths;
-    String? bestChildKey;
-    String bestChildName = '';
-
-    for (final c in children) {
-      if (c is! Map) continue;
-
-      final childKey = _extractChildKey(c);
-      if (childKey == null) continue;
-
-      final dob = _extractDobYearMonth(c);
-      if (dob == null) continue;
-
-      final ageMonths = _ageInMonthsLocal(
-        dobYear: dob.year,
-        dobMonth: dob.month,
-        onDate: servingDate,
-      );
-
-      if (bestAgeMonths == null || ageMonths < bestAgeMonths!) {
-        bestAgeMonths = ageMonths;
-        bestChildKey = childKey;
-        bestChildName = _extractChildName(c);
-      }
-    }
-
-    if (bestAgeMonths == null || bestChildKey == null) return null;
-
-    if (bestAgeMonths! < babyThresholdMonths) {
-      return (childKey: bestChildKey, childName: bestChildName);
-    }
-    return null;
-  }
 
   Map<String, dynamic> _firstFoodsSnackEntry({
     required String childKey,
@@ -537,8 +335,46 @@ class MealPlanBuilderService {
         'reason': 'no_suitable_meals_baby',
       };
 
+  ({String childKey, String childName})? _youngestBabyChild(
+    List<dynamic>? children,
+    DateTime servingDate, {
+    required int babyThresholdMonths,
+  }) {
+    if (children == null || children.isEmpty) return null;
+
+    int? bestAgeMonths;
+    String? bestChildKey;
+    String bestChildName = '';
+
+    for (final c in children) {
+      if (c is! Map) continue;
+      final m = Map<String, dynamic>.from(c);
+
+      final key = (m['childKey'] ?? m['id'] ?? m['key'] ?? m['uid'] ?? '')
+          .toString()
+          .trim();
+      if (key.isEmpty) continue;
+
+      // Let the AgeEngine parse (dobYear/dobMonth OR timestamp/string)
+      final age = MealPlanAgeEngine.ageInMonths(child: m, now: servingDate);
+      if (age == null) continue;
+
+      if (bestAgeMonths == null || age < bestAgeMonths!) {
+        bestAgeMonths = age;
+        bestChildKey = key;
+        bestChildName = (m['name'] ?? m['childName'] ?? '').toString().trim();
+      }
+    }
+
+    if (bestAgeMonths == null || bestChildKey == null) return null;
+    if (bestAgeMonths! < babyThresholdMonths) {
+      return (childKey: bestChildKey, childName: bestChildName);
+    }
+    return null;
+  }
+
   // -------------------------------------------------------
-  // Slot generation helpers
+  // Slot generation
   // -------------------------------------------------------
   Map<String, dynamic> _pick(
     Random random,
@@ -559,6 +395,7 @@ class MealPlanBuilderService {
 
     final isSnack = _isSnackSlot(slot);
 
+    // Baby snack behaviour
     if (baby != null && isSnack) {
       mplog.MealPlanLog.i(
         'PICK_BABY_SNACK slot=$slot audience=$audience day=${_toDateKey(servingDate)} '
@@ -566,14 +403,14 @@ class MealPlanBuilderService {
         key: 'pickBabySnack:$slot:${_toDateKey(servingDate)}',
       );
 
-      final candidates = controller.getCandidatesForSlot(
+      final candidates = controller.getCandidatesForSlotUnified(
         slot,
         availableRecipes,
         audience: audience,
         servingDate: servingDate,
         firstUsedDates: _firstUsedDates,
         babyThresholdMonths: babyThresholdMonths,
-        children: children,
+        childrenOverride: children,
       );
 
       mplog.MealPlanLog.i(
@@ -645,6 +482,7 @@ class MealPlanBuilderService {
         };
       }
 
+      // No candidates -> first foods marker entry
       return _firstFoodsSnackEntry(
         childKey: baby.childKey,
         childName: baby.childName,
@@ -652,6 +490,7 @@ class MealPlanBuilderService {
       );
     }
 
+    // Baby + kids-audience + non-snack => blocked
     if (baby != null && !isSnack && audience == _audKids) {
       mplog.MealPlanLog.i(
         'PICK_BABY_BLOCK slot=$slot audience=$audience day=${_toDateKey(servingDate)} nonSnack',
@@ -665,14 +504,15 @@ class MealPlanBuilderService {
       );
     }
 
-    final candidates = controller.getCandidatesForSlot(
+    // Normal pick (ONE ENGINE)
+    final candidates = controller.getCandidatesForSlotUnified(
       slot,
       availableRecipes,
       audience: audience,
       servingDate: servingDate,
       firstUsedDates: _firstUsedDates,
       babyThresholdMonths: babyThresholdMonths,
-      children: children,
+      childrenOverride: children,
     );
 
     mplog.MealPlanLog.d(
@@ -842,7 +682,7 @@ class MealPlanBuilderService {
   }
 
   // -------------------------------------------------------
-  // ✅ Backfill new program-day docs when schedule changes
+  // Backfill new program-day docs when schedule changes
   // -------------------------------------------------------
   Future<int> backfillNewProgramDays({
     required String programId,
@@ -856,16 +696,15 @@ class MealPlanBuilderService {
     required int snackCount,
     bool skipPast = true,
     Map<String, String>? mealAudiences,
-    List<dynamic>? children,
     int babyThresholdMonths = MealPlanAgeEngine.defaultBabyThresholdMonths,
   }) async {
     final repo = MealPlanRepository(FirebaseFirestore.instance);
     final random = Random();
     final aud = _normalizeMealAudiences(mealAudiences);
 
-    final childrenProfile = await _resolveChildrenProfile(children);
-    final adultCount = await _loadAdultCount();
-    final kidCount = _kidCountFromChildren(childrenProfile);
+    final childrenProfile = controller.childrenEffectiveOrNull;
+    final adultCount = controller.adultCount;
+    final kidCount = controller.kidCount;
 
     final oldSet = oldScheduledDates
         .map((e) => e.trim())
@@ -936,36 +775,14 @@ class MealPlanBuilderService {
         daySlots: daySlots,
       );
 
-      final slots = (daySlots['slots'] is Map)
-          ? Map<String, dynamic>.from(daySlots['slots'] as Map)
-          : daySlots;
-
-      final typeCounts = <String, int>{};
-      for (final v in slots.values) {
-        if (v is Map) {
-          final t = (v['type'] ?? 'unknown').toString();
-          typeCounts[t] = (typeCounts[t] ?? 0) + 1;
-        }
-      }
-
-      mplog.MealPlanLog.i(
-        'BACKFILL_WRITE program=$programId day=$dateKey types=$typeCounts',
-        key: 'backfillWrite:$programId:$dateKey',
-      );
-
       created++;
     }
-
-    await _persistChildrenSnapshotToProgram(
-      programId: programId,
-      children: childrenProfile,
-    );
 
     return created;
   }
 
   // -------------------------------------------------------
-  // ✅ ONE-OFF (ad-hoc) day only (NO program activation)
+  // ONE-OFF (ad-hoc) day only
   // -------------------------------------------------------
   Future<void> buildAdhocDay({
     required String dateKey,
@@ -975,7 +792,6 @@ class MealPlanBuilderService {
     required bool includeDinner,
     required int snackCount,
     Map<String, String>? mealAudiences,
-    List<dynamic>? children,
     int babyThresholdMonths = MealPlanAgeEngine.defaultBabyThresholdMonths,
     String? title,
     bool overwrite = true,
@@ -984,9 +800,9 @@ class MealPlanBuilderService {
     final random = Random();
     final aud = _normalizeMealAudiences(mealAudiences);
 
-    final childrenProfile = await _resolveChildrenProfile(children);
-    final adultCount = await _loadAdultCount();
-    final kidCount = _kidCountFromChildren(childrenProfile);
+    final childrenProfile = controller.childrenEffectiveOrNull;
+    final adultCount = controller.adultCount;
+    final kidCount = controller.kidCount;
 
     final cleanDateKey = dateKey.trim();
     if (cleanDateKey.isEmpty) throw Exception('Invalid day key.');
@@ -994,11 +810,6 @@ class MealPlanBuilderService {
       throw Exception('Invalid day key.');
     }
     if (availableRecipes.isEmpty) throw Exception('No recipes available.');
-
-    mplog.MealPlanLog.i(
-      'ADHOC_BUILD day=$cleanDateKey recipes=${availableRecipes.length} snackCount=$snackCount threshold=$babyThresholdMonths',
-      key: 'adhocBuild:$cleanDateKey',
-    );
 
     final docRef = repo.adhocDayDoc(uid: controller.uid, dateKey: cleanDateKey);
 
@@ -1034,27 +845,10 @@ class MealPlanBuilderService {
       daySlots: daySlots,
       title: title,
     );
-
-    final slots = (daySlots['slots'] is Map)
-        ? Map<String, dynamic>.from(daySlots['slots'] as Map)
-        : daySlots;
-
-    final typeCounts = <String, int>{};
-    for (final v in slots.values) {
-      if (v is Map) {
-        final t = (v['type'] ?? 'unknown').toString();
-        typeCounts[t] = (typeCounts[t] ?? 0) + 1;
-      }
-    }
-
-    mplog.MealPlanLog.i(
-      'ADHOC_WRITE day=$cleanDateKey types=$typeCounts',
-      key: 'adhocWrite:$cleanDateKey',
-    );
   }
 
   // -------------------------------------------------------
-  // ✅ Programs-only: Build + Activate
+  // Programs-only: Build + Activate
   // -------------------------------------------------------
   Future<void> buildAndActivate({
     required String title,
@@ -1068,41 +862,15 @@ class MealPlanBuilderService {
     required bool includeSnacks,
     required int snackCount,
     Map<String, String>? mealAudiences,
-    List<dynamic>? children,
     int babyThresholdMonths = MealPlanAgeEngine.defaultBabyThresholdMonths,
   }) async {
-    mplog.MealPlanLog.i(
-      'BUILD_START title="${title.trim()}" start=$startDayKey weeks=$weeks weekdays=$weekdays '
-      'includeB=$includeBreakfast includeL=$includeLunch includeD=$includeDinner '
-      'includeSnacks=$includeSnacks snackCount=$snackCount threshold=$babyThresholdMonths recipes=${availableRecipes.length}',
-      key: 'buildStart:$startDayKey',
-    );
-
     final random = Random();
     final repo = MealPlanRepository(FirebaseFirestore.instance);
     final aud = _normalizeMealAudiences(mealAudiences);
 
-    mplog.MealPlanLog.i(
-      'MEAL_AUDIENCES normalized=$aud raw=${mealAudiences ?? {}}',
-      key: 'mealAudiences:$startDayKey',
-    );
-
-    final childrenProfile = await _resolveChildrenProfile(children);
-    final adultCount = await _loadAdultCount();
-    final kidCount = _kidCountFromChildren(childrenProfile);
-
-    final ffHeuristic = availableRecipes.where((r) {
-      final s = r.toString().toLowerCase();
-      return s.contains('first-foods') ||
-          s.contains('first foods') ||
-          s.contains('first_foods');
-    }).length;
-
-    mplog.MealPlanLog.d(
-      'RECIPE_POOL total=${availableRecipes.length} firstFoodsHeuristic=$ffHeuristic '
-      'includeSnacks=$includeSnacks snackCount=$snackCount threshold=$babyThresholdMonths',
-      key: 'recipePool:$startDayKey',
-    );
+    final childrenProfile = controller.childrenEffectiveOrNull;
+    final adultCount = controller.adultCount;
+    final kidCount = controller.kidCount;
 
     final cleanTitle = title.trim().isEmpty ? 'My Plan' : title.trim();
     final cleanWeekdays =
@@ -1139,17 +907,6 @@ class MealPlanBuilderService {
       scheduledDates: scheduledDates,
     );
 
-    mplog.MealPlanLog.i(
-      'PROGRAM_CREATED id=$programId title="$cleanTitle" start=$startDateKey end=$endDateKey '
-      'scheduled=${scheduledDates.length} weekdays=$cleanWeekdays includeSnacks=$includeSnacks snackCount=$snackCount',
-      key: 'programCreated:$programId',
-    );
-
-    await _persistChildrenSnapshotToProgram(
-      programId: programId,
-      children: childrenProfile,
-    );
-
     await repo.setActiveProgramId(uid: controller.uid, programId: programId);
 
     _resetReuseTracking();
@@ -1180,28 +937,6 @@ class MealPlanBuilderService {
         dateKey: dateKey,
         daySlots: daySlots,
       );
-
-      final slots = (daySlots['slots'] is Map)
-          ? Map<String, dynamic>.from(daySlots['slots'] as Map)
-          : daySlots;
-
-      final typeCounts = <String, int>{};
-      for (final v in slots.values) {
-        if (v is Map) {
-          final t = (v['type'] ?? 'unknown').toString();
-          typeCounts[t] = (typeCounts[t] ?? 0) + 1;
-        }
-      }
-
-      mplog.MealPlanLog.i(
-        'PROGRAM_WRITE program=$programId day=$dateKey types=$typeCounts',
-        key: 'programWrite:$programId:$dateKey',
-      );
     }
-
-    mplog.MealPlanLog.i(
-      'BUILD_DONE program=$programId daysWritten=${scheduledDates.length}',
-      key: 'buildDone:$programId',
-    );
   }
 }

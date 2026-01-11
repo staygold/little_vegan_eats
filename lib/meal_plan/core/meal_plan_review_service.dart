@@ -1,3 +1,4 @@
+// lib/meal_plan/core/meal_plan_review_service.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -18,17 +19,14 @@ class MealPlanReviewService {
   }
 
   static Map<String, dynamic> _asStringDynamicMap(dynamic v) {
-    if (v is Map) {
-      return Map<String, dynamic>.from(v);
-    }
+    if (v is Map) return Map<String, dynamic>.from(v);
     return <String, dynamic>{};
   }
 
   /// ✅ Decide if a plan is actually active/existing.
-  /// Keep this conservative: return true if *any* known plan signal exists.
-  /// You can tighten this later to just `activeProgramId != null` if you want.
+  /// Conservative: return true if *any* known plan signal exists.
   static bool _hasActivePlanFromUserDoc(Map<String, dynamic> data) {
-    // Common patterns
+    // Preferred: program-based
     final activeProgramId = data['activeProgramId'];
     if (activeProgramId != null && activeProgramId.toString().trim().isNotEmpty) {
       return true;
@@ -42,16 +40,14 @@ class MealPlanReviewService {
 
     // Some apps store a top-level mealPlan object when any plan exists
     final mealPlan = data['mealPlan'];
-    if (mealPlan is Map && mealPlan.isNotEmpty) {
-      return true;
-    }
+    if (mealPlan is Map && mealPlan.isNotEmpty) return true;
 
     // Some apps store programs list/map
     final programs = data['programs'];
     if (programs is List && programs.isNotEmpty) return true;
     if (programs is Map && programs.isNotEmpty) return true;
 
-    // Fallback: if legacy week data exists (optional)
+    // Legacy / fallback
     final weeks = data['weeks'];
     if (weeks is Map && weeks.isNotEmpty) return true;
 
@@ -62,6 +58,10 @@ class MealPlanReviewService {
   // Core logic
   // ------------------------------------------------------------
 
+  /// Returns true if any currently planned recipe is no longer allowed
+  /// (e.g. allergy changes).
+  ///
+  /// NOTE: This reads only Firestore entries (not drafts).
   static bool mealPlanHasConflicts({
     required MealPlanController ctrl,
     required Map<String, dynamic>? Function(int id) recipeById,
@@ -77,9 +77,8 @@ class MealPlanReviewService {
         final recipe = recipeById(rid);
         if (recipe == null) continue;
 
-        if (!ctrl.recipeAllowed(recipe)) {
-          return true;
-        }
+        // ✅ Single source of truth (controller wraps unified engine)
+        if (!ctrl.recipeAllowed(recipe)) return true;
       }
     }
 
@@ -107,14 +106,17 @@ class MealPlanReviewService {
       final hasPlan = _hasActivePlanFromUserDoc(data);
       if (!hasPlan) return;
 
-      await doc.set({
-        'mealPlanReview': {
-          'needed': true,
-          'reason': 'Allergies updated for $changedForLabel',
+      await doc.set(
+        {
+          'mealPlanReview': {
+            'needed': true,
+            'reason': 'Allergies updated for $changedForLabel',
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
           'updatedAt': FieldValue.serverTimestamp(),
         },
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+        SetOptions(merge: true),
+      );
     } catch (e) {
       // Never crash caller (profile save).
       debugPrint('MealPlanReviewService.markNeedsReview ignored error: $e');
@@ -148,10 +150,13 @@ class MealPlanReviewService {
       if (!hasPlan) {
         if (needed) {
           // Clear stale flag quietly
-          await doc.set({
-            'mealPlanReview': {'needed': false},
-            'updatedAt': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
+          await doc.set(
+            {
+              'mealPlanReview': {'needed': false},
+              'updatedAt': FieldValue.serverTimestamp(),
+            },
+            SetOptions(merge: true),
+          );
         }
         return;
       }
@@ -160,7 +165,7 @@ class MealPlanReviewService {
 
       final reason =
           (review['reason'] is String && (review['reason'] as String).trim().isNotEmpty)
-              ? review['reason'] as String
+              ? (review['reason'] as String).trim()
               : 'Allergies have changed. Your meal plan may need reviewing.';
 
       if (!context.mounted) return;
@@ -206,10 +211,13 @@ class MealPlanReviewService {
       }
 
       // Clear flag (do not overwrite reason/updatedAt)
-      await doc.set({
-        'mealPlanReview': {'needed': false},
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      await doc.set(
+        {
+          'mealPlanReview': {'needed': false},
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
     } catch (e) {
       debugPrint('MealPlanReviewService.checkAndPromptIfNeeded ignored error: $e');
     }

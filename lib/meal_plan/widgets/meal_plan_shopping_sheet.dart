@@ -4,16 +4,18 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../lists/shopping_repo.dart';
+import '../../recipes/family_profile_repository.dart';
 import '../../recipes/recipe_repository.dart';
 import '../../recipes/serving_engine.dart';
 import '../../utils/text.dart'; // ✅ stripHtml parity with RecipeDetailScreen
 import '../core/meal_plan_keys.dart';
 import '../core/meal_plan_slots.dart';
 import '../../app/sub_header_bar.dart';
+import '../../recipes/family_profile.dart';
+
 
 class _S {
   static const Color bg = Color(0xFFECF3F4);
@@ -87,16 +89,21 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
   int _step = 0;
   final PageController _pageCtrl = PageController();
 
+
+
   // Plan selection
   final Set<String> _selectedKeys = {};
   final Map<String, int> _slotToRecipeId = {};
   late Map<int, String> _titles;
 
+  // Family profile repo (defaults only)
+  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
+
   // Family profile defaults (used ONLY to seed shared cards)
   int _profileAdults = 2;
   int _profileKids = 1;
-  StreamSubscription<User?>? _authSub;
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _profileSub;
+  StreamSubscription<FamilyProfile>? _familySub;
+
 
   // Per-card state (shared recipes)
   final Map<String, int> _adultsByKey = {};
@@ -131,8 +138,7 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
 
   @override
   void dispose() {
-    _authSub?.cancel();
-    _profileSub?.cancel();
+    _familySub?.cancel();
     _pageCtrl.dispose();
     _listNameCtrl.dispose();
     super.dispose();
@@ -143,63 +149,47 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
   // ---------------------------------------------------------------------------
 
   void _wireFamilyProfile() {
-    _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
-      _profileSub?.cancel();
+  _familySub?.cancel();
 
-      if (user == null) {
-        if (!mounted) return;
-        setState(() {
-          _profileAdults = 2;
-          _profileKids = 1;
-        });
-        return;
+  _familySub = _familyRepo.watchFamilyProfile().listen((family) {
+    final adultCount = family.adults
+        .where((p) => p.name.trim().isNotEmpty)
+        .length;
+
+    final kidCount = family.children
+        .where((p) => p.name.trim().isNotEmpty)
+        .length;
+
+    final nextAdults = adultCount > 0 ? adultCount : 1;
+    final nextKids = kidCount;
+
+    if (!mounted) return;
+
+    setState(() {
+      _profileAdults = nextAdults;
+      _profileKids = nextKids;
+
+      // Apply defaults to any shared-recipe cards the user hasn't touched yet
+      for (final key in _slotToRecipeId.keys) {
+        final rid = _slotToRecipeId[key];
+        if (rid == null) continue;
+        final isItem = _isItemModeById[rid] == true;
+        if (isItem) continue;
+
+        if (!_touchedPeopleKeys.contains(key)) {
+          _adultsByKey[key] = _adultsByKey[key] ?? _profileAdults;
+          _kidsByKey[key] = _kidsByKey[key] ?? _profileKids;
+        }
       }
-
-      final docRef =
-          FirebaseFirestore.instance.collection('users').doc(user.uid);
-      _profileSub = docRef.snapshots().listen((snap) {
-        final data = snap.data();
-        if (data == null) return;
-
-        final adults = (data['adults'] as List?) ?? const [];
-        final children = (data['children'] as List?) ?? const [];
-
-        final adultCount = adults
-            .where((e) =>
-                e is Map &&
-                (e['name'] ?? '').toString().trim().isNotEmpty)
-            .length;
-        final kidCount = children
-            .where((e) =>
-                e is Map &&
-                (e['name'] ?? '').toString().trim().isNotEmpty)
-            .length;
-
-        final nextAdults = adultCount > 0 ? adultCount : 1;
-        final nextKids = kidCount;
-
-        if (!mounted) return;
-
-        setState(() {
-          _profileAdults = nextAdults;
-          _profileKids = nextKids;
-
-          // Apply defaults to any shared-recipe cards the user hasn't touched yet
-          for (final key in _slotToRecipeId.keys) {
-            final rid = _slotToRecipeId[key];
-            if (rid == null) continue;
-            final isItem = _isItemModeById[rid] == true;
-            if (isItem) continue;
-
-            if (!_touchedPeopleKeys.contains(key)) {
-              _adultsByKey[key] = _adultsByKey[key] ?? _profileAdults;
-              _kidsByKey[key] = _kidsByKey[key] ?? _profileKids;
-            }
-          }
-        });
-      });
     });
-  }
+  }, onError: (_) {
+    if (!mounted) return;
+    setState(() {
+      _profileAdults = 2;
+      _profileKids = 1;
+    });
+  });
+}
 
   // ---------------------------------------------------------------------------
   // Plan parsing
@@ -463,11 +453,13 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     final recipe = _recipeMapById[rid];
     if (recipe == null) return needs;
 
-    final scale = _recommendedScaleForShared(recipe: recipe, adults: adults, kids: kids);
+    final scale =
+        _recommendedScaleForShared(recipe: recipe, adults: adults, kids: kids);
     if ((scale - 1.0).abs() < 0.001) return needs;
 
-    final label =
-        (scale - 0.5).abs() < 0.001 ? 'Half batch' : '${_fmtMultiplier(scale)} batch';
+    final label = (scale - 0.5).abs() < 0.001
+        ? 'Half batch'
+        : '${_fmtMultiplier(scale)} batch';
     return '$needs • Using $label';
   }
 
@@ -544,7 +536,9 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     final a = rawAmount.trim();
     if (a.isEmpty || (mult - 1.0).abs() < 0.0000001) return a;
 
-    final mX = RegExp(r'^\s*([0-9]+(?:\.\d+)?)(\s*x\s*)$', caseSensitive: false).firstMatch(a);
+    final mX = RegExp(r'^\s*([0-9]+(?:\.\d+)?)(\s*x\s*)$',
+            caseSensitive: false)
+        .firstMatch(a);
     if (mX != null) return '${_fmtSmart(double.parse(mX.group(1)!) * mult)} x';
 
     final mPrefix = RegExp(
@@ -562,7 +556,10 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
 
     final mNum = RegExp(r'^\s*([0-9]+(?:\.\d+)?)').firstMatch(a);
     if (mNum != null) {
-      return a.replaceFirst(mNum.group(1)!, _fmtSmart(double.parse(mNum.group(1)!) * mult)).trim();
+      return a
+          .replaceFirst(
+              mNum.group(1)!, _fmtSmart(double.parse(mNum.group(1)!) * mult))
+          .trim();
     }
 
     return a;
@@ -574,8 +571,9 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
   ) {
     if (recipe == null) return const [];
 
-    final ingredientsFlat =
-        (recipe['ingredients_flat'] is List) ? (recipe['ingredients_flat'] as List) : const [];
+    final ingredientsFlat = (recipe['ingredients_flat'] is List)
+        ? (recipe['ingredients_flat'] as List)
+        : const [];
     if (ingredientsFlat.isEmpty) return const [];
 
     final out = <ShoppingIngredient>[];
@@ -591,14 +589,16 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
 
       final notes = stripHtml((row['notes'] ?? '').toString()).trim();
 
-      final metricAmount = _scaledAmount((row['amount'] ?? '').toString(), scale).trim();
+      final metricAmount =
+          _scaledAmount((row['amount'] ?? '').toString(), scale).trim();
       final metricUnit = (row['unit'] ?? '').toString().trim();
 
       String usAmount = '';
       String usUnit = '';
       if (_rowHasConverted2(row)) {
         final c2 = _converted2(row);
-        usAmount = _scaledAmount((c2?['amount'] ?? '').toString(), scale).trim();
+        usAmount =
+            _scaledAmount((c2?['amount'] ?? '').toString(), scale).trim();
         usUnit = (c2?['unit'] ?? '').toString().trim();
       }
 
@@ -650,7 +650,8 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
 
         final ingredientScale = _ingredientScaleForKey(key, rid);
 
-        final ingredients = _ingredientsToShoppingIngredientsExact(recipe, ingredientScale);
+        final ingredients =
+            _ingredientsToShoppingIngredientsExact(recipe, ingredientScale);
         if (ingredients.isEmpty) continue;
 
         final title = _titles[rid] ?? 'Recipe';
@@ -746,13 +747,15 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
               decoration: BoxDecoration(
                 color: _S.bg,
-                border: Border(top: BorderSide(color: Colors.black.withOpacity(0.06))),
+                border:
+                    Border(top: BorderSide(color: Colors.black.withOpacity(0.06))),
               ),
               child: SizedBox(
                 height: 52,
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: _selectedKeys.isEmpty || _isLoading ? null : _goToStep2,
+                  onPressed:
+                      _selectedKeys.isEmpty || _isLoading ? null : _goToStep2,
                   style: ElevatedButton.styleFrom(shape: const StadiumBorder()),
                   child: Text('Add ${_selectedKeys.length} recipes to shopping list'),
                 ),
@@ -924,9 +927,8 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
 
   Widget _buildDayTab(String dayKey) {
     // Pull the keys for THIS day only
-    final keysForDay = _slotToRecipeId.keys
-        .where((k) => k.startsWith('$dayKey|'))
-        .toList();
+    final keysForDay =
+        _slotToRecipeId.keys.where((k) => k.startsWith('$dayKey|')).toList();
 
     if (keysForDay.isEmpty) {
       return ListView(
@@ -1152,7 +1154,8 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
                     hintText: 'e.g. Week 1 Shop',
                     filled: true,
                     fillColor: Colors.white,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(color: Colors.black.withOpacity(0.10)),
@@ -1163,12 +1166,15 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.black.withOpacity(0.22), width: 1.4),
+                      borderSide:
+                          BorderSide(color: Colors.black.withOpacity(0.22), width: 1.4),
                     ),
                   ),
                   onSubmitted: (_) {
                     final name = _listNameCtrl.text.trim();
-                    if (name.isNotEmpty && !_isLoading) _executeAdd(newListName: name);
+                    if (name.isNotEmpty && !_isLoading) {
+                      _executeAdd(newListName: name);
+                    }
                   },
                 ),
                 const SizedBox(height: 10),
@@ -1186,7 +1192,8 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
                         ? const SizedBox(
                             width: 18,
                             height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
                           )
                         : const Text('Create & add'),
                   ),

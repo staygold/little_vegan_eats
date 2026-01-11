@@ -10,6 +10,9 @@ import '../core/meal_plan_repository.dart';
 import '../meal_plan_screen.dart';
 import 'meal_plan_builder_service.dart';
 
+import '../../recipes/family_profile_repository.dart';
+
+
 /// Controls how this builder is launched
 enum MealPlanBuilderEntry { dayOnly, weekOnly, choose, adhocDay }
 
@@ -166,10 +169,13 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
       if (recipes.isEmpty) throw Exception('No recipes available.');
 
       final controller = MealPlanController(
-        auth: FirebaseAuth.instance,
-        repo: MealPlanRepository(FirebaseFirestore.instance),
-        initialWeekId: widget.weekId,
-      );
+  auth: FirebaseAuth.instance,
+  repo: MealPlanRepository(FirebaseFirestore.instance),
+  profileRepo: FamilyProfileRepository(),
+  initialWeekId: widget.weekId,
+);
+
+controller.start(); // ✅ REQUIRED
 
       final builder = MealPlanBuilderService(controller);
 
@@ -252,13 +258,16 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
       final recipes = await RecipeRepository.ensureRecipesLoaded();
       if (recipes.isEmpty) throw Exception('No recipes available.');
 
-      final controller = MealPlanController(
-        auth: FirebaseAuth.instance,
-        repo: MealPlanRepository(FirebaseFirestore.instance),
-        initialWeekId: widget.weekId,
-      );
+     final controller = MealPlanController(
+  auth: FirebaseAuth.instance,
+  repo: MealPlanRepository(FirebaseFirestore.instance),
+  profileRepo: FamilyProfileRepository(),
+  initialWeekId: widget.weekId,
+);
 
-      final builder = MealPlanBuilderService(controller);
+controller.start(); // ✅ REQUIRED – THIS IS THE BUG
+
+final builder = MealPlanBuilderService(controller);
 
       await builder.buildAndActivate(
         title: _planNameController.text.trim().isNotEmpty

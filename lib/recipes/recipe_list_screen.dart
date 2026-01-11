@@ -1,5 +1,6 @@
 // lib/recipes/recipe_list_screen.dart
 import 'dart:async';
+import 'dart:ui' show FontVariation;
 
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
@@ -10,45 +11,24 @@ import '../utils/text.dart';
 import 'recipe_detail_screen.dart';
 import 'recipe_cache.dart';
 import 'recipe_repository.dart';
+
 import 'allergy_engine.dart';
-import '../recipes/allergy_keys.dart';
+import 'allergy_keys.dart';
+
+import 'family_profile.dart';
+import 'profile_person.dart';
+import 'recipe_index.dart';
+import 'recipe_rules_engine.dart';
 
 import '../shared/search_pill.dart';
 import 'widgets/recipe_card.dart';
-import 'widgets/recipe_filters_ui.dart'; // ✅ Gets Multi-Select Models from here
+import 'widgets/recipe_filters_ui.dart';
+
+// ✅ repo source of truth for family
+import 'family_profile_repository.dart';
 
 /// Minimal local unawaited helper
 void unawaited(Future<void> f) {}
-
-class _RecipeIndex {
-  final int id;
-  final String titleLower;
-  final String ingredientsText;
-  final String ingredientsLower;
-  final List<String> courses;
-  final List<String> collections; // ✅ should be NAMES
-  final List<String> cuisines;
-  final List<String> suitable;
-  final List<String> nutrition;
-
-  // ✅ Fields for New Swap Logic
-  final List<String> allergyTags; // names are fine
-  final String swapText;
-
-  _RecipeIndex({
-    required this.id,
-    required this.titleLower,
-    required this.ingredientsText,
-    required this.ingredientsLower,
-    required this.courses,
-    required this.collections,
-    required this.cuisines,
-    required this.suitable,
-    required this.nutrition,
-    required this.allergyTags,
-    required this.swapText,
-  });
-}
 
 class _CStyle {
   static const bool showSubtitle = false;
@@ -101,7 +81,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   RecipeFilterSelection _filters = const RecipeFilterSelection();
 
-  // ✅ Multi-Select Ready
   AllergiesSelection _allergies = const AllergiesSelection(
     enabled: true,
     mode: SuitabilityMode.wholeFamily,
@@ -111,7 +90,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   List<Map<String, dynamic>> _visible = [];
   final Map<int, ({String? tag, String? swapHint})> _tagById = {};
 
-  // Maps
+  // taxonomy maps
   Map<String, String> _courseIdToName = {};
   Map<String, String> _courseSlugToName = {};
   Map<String, String> _collectionIdToName = {};
@@ -131,7 +110,8 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   bool _termsLoaded = false;
   DateTime? _cacheUpdatedAt;
   bool _loadedFromCache = false;
-  final Map<int, _RecipeIndex> _indexById = {};
+
+  final Map<int, RecipeIndex> _indexById = {};
   bool _indexReady = false;
 
   List<String> _courseOptionsCached = const ['All'];
@@ -140,14 +120,17 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   List<String> _suitableOptionsCached = const ['All'];
   List<String> _nutritionOptionsCached = const ['All'];
 
-  // Household
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userSub;
+  // household (repo-driven)
+  StreamSubscription<FamilyProfile>? _userSub;
+  StreamSubscription<User?>? _authHouseSub; // ✅ FIX: handle cold-start auth restore
   bool _loadingHousehold = true;
   String? _householdError;
-  final List<ProfilePerson> _adults = [];
-  final List<ProfilePerson> _children = [];
+  FamilyProfile _family = const FamilyProfile(adults: [], children: []);
 
-  // Favourites
+  // ✅ repo instance (source of truth)
+  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
+
+  // favourites
   StreamSubscription<User?>? _authFavSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
   bool _loadingFavs = true;
@@ -156,14 +139,12 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   // ------------------------
   // Helpers
   // ------------------------
-
+  // NOTE: no longer used for household (repo handles it), but left intact to avoid wider edits
   DocumentReference<Map<String, dynamic>>? _userDoc() {
     final u = FirebaseAuth.instance.currentUser;
     if (u == null) return null;
     return FirebaseFirestore.instance.collection('users').doc(u.uid);
   }
-
-  List<ProfilePerson> get _allPeople => [..._adults, ..._children];
 
   bool get _filtersAreDefault =>
       _filters.course == 'All' &&
@@ -202,7 +183,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     return buf.toString().trim();
   }
 
-  // ✅ New Swap Logic Helper
   String _swapTextOf(Map<String, dynamic> r) {
     if (r['recipe'] is Map) {
       final recipeData = r['recipe'] as Map;
@@ -224,7 +204,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   }
 
   String? _canonicalAllergyKey(String raw) => AllergyKeys.normalize(raw);
-  String _prettyAllergy(String key) => AllergyKeys.label(key);
 
   Future<void> _upgradeItemsFromCacheIfNewer() async {
     try {
@@ -277,7 +256,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     return mapped.where((s) => s.trim().isNotEmpty).toSet().toList()..sort();
   }
 
-  // ✅ Collections helper: prefer nested recipe.tags.collections NAMES (like CoursePage fix)
   List<String> _collectionNamesFromRecipeTags(Map<String, dynamic> r) {
     try {
       final recipe = r['recipe'];
@@ -307,7 +285,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   List<String> _coursesOf(Map<String, dynamic> r) =>
       _termsOfField(r, 'wprm_course', _courseIdToName);
 
-  // ✅ FIX: collections should be names; fall back to mapping IDs if tags missing
   List<String> _collectionsOf(Map<String, dynamic> r) {
     final fromTags = _collectionNamesFromRecipeTags(r);
     if (fromTags.isNotEmpty) return fromTags;
@@ -323,9 +300,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
   List<String> _nutritionTagsOf(Map<String, dynamic> r) =>
       _termsOfField(r, 'wprm_nutrition_tag', _nutritionIdToName);
 
-  // ✅ Allergy tags are better from recipe.tags.allergies (names) but this mapping is OK if your term endpoint exists.
   List<String> _allergyTagsOf(Map<String, dynamic> r) {
-    // prefer nested names if present
     try {
       final recipe = r['recipe'];
       if (recipe is Map && recipe['tags'] is Map) {
@@ -344,7 +319,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       }
     } catch (_) {}
 
-    // fallback: map ids from top-level wprm_allergies
     return _termsOfField(r, 'wprm_allergies', _allergenIdToName);
   }
 
@@ -380,6 +354,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   void _maybeFinishBoot() {
     if (!_recipesLoaded) return;
+
     _applyInitialCourseIfNeeded();
     _applyInitialCollectionIfNeeded();
 
@@ -412,6 +387,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   @override
   void dispose() {
+    _authHouseSub?.cancel(); // ✅ FIX
     _userSub?.cancel();
     _authFavSub?.cancel();
     _favSub?.cancel();
@@ -440,6 +416,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         });
         return;
       }
+
       final col = FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -471,70 +448,49 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   bool _isFavorited(int? recipeId) => recipeId != null && _favoriteIds.contains(recipeId);
 
+  // ✅ FIXED: still repo-driven, but now auth-safe (cold start / logout / login)
   void _listenToHousehold() {
-    final doc = _userDoc();
-    if (doc == null) {
-      setState(() {
-        _loadingHousehold = false;
-        _householdError = null;
-        _adults.clear();
-        _children.clear();
-      });
-      return;
-    }
-    setState(() {
-      _loadingHousehold = true;
-      _householdError = null;
-    });
-
+    _authHouseSub?.cancel();
     _userSub?.cancel();
-    _userSub = doc.snapshots().listen(
-      (snap) {
-        final data = snap.data() ?? {};
-        final rawAdults = (data['adults'] as List?) ?? [];
-        final rawChildren = (data['children'] as List?) ?? [];
 
-        final adults = <ProfilePerson>[];
-        final children = <ProfilePerson>[];
+    if (mounted) {
+      setState(() {
+        _loadingHousehold = true;
+        _householdError = null;
+      });
+    }
 
-        void parse(List raw, List<ProfilePerson> target, PersonType type, String prefix) {
-          for (var i = 0; i < raw.length; i++) {
-            final p = raw[i];
-            if (p is! Map) continue;
-            final name = (p['name'] ?? '').toString().trim();
-            if (name.isEmpty) continue;
-            final hasAllergies = (p['hasAllergies'] == true);
-            final parsed = <String>[];
-            if (p['allergies'] is List) {
-              for (final x in p['allergies']) {
-                final k = _canonicalAllergyKey(x.toString());
-                if (k != null) parsed.add(k);
-              }
-            }
-            target.add(ProfilePerson(
-              id: '${prefix}_$i',
-              type: type,
-              name: name,
-              hasAllergies: hasAllergies,
-              allergies: hasAllergies ? (parsed.toSet().toList()..sort()) : [],
-            ));
-          }
-        }
+    _authHouseSub = FirebaseAuth.instance.authStateChanges().listen((u) {
+      _userSub?.cancel();
 
-        parse(rawAdults, adults, PersonType.adult, 'adult');
-        parse(rawChildren, children, PersonType.child, 'child');
-
+      if (u == null) {
         if (!mounted) return;
         setState(() {
-          _adults..clear()..addAll(adults);
-          _children..clear()..addAll(children);
           _loadingHousehold = false;
           _householdError = null;
+          _family = const FamilyProfile(adults: [], children: []);
+        });
 
+        if (_allergies.enabled || _query.trim().isNotEmpty || !_filtersAreDefault) {
+          _recomputeVisible();
+        }
+        return;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _loadingHousehold = true;
+        _householdError = null;
+      });
+
+      _userSub = _familyRepo.watchFamilyProfile().listen(
+        (nextFamily) {
+          // keep selection valid (same logic as before)
           if (_allergies.mode == SuitabilityMode.specificPeople) {
             final ids = _allergies.personIds
-                .where((id) => _allPeople.any((p) => p.id == id))
+                .where((id) => nextFamily.allPeople.any((p) => p.id == id))
                 .toSet();
+
             if (ids.isEmpty) {
               _allergies = _allergies.copyWith(
                 mode: SuitabilityMode.wholeFamily,
@@ -545,40 +501,27 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
               _allergies = _allergies.copyWith(personIds: ids);
             }
           }
-        });
 
-        if (_allergies.enabled || _query.trim().isNotEmpty || !_filtersAreDefault) {
-          _recomputeVisible();
-        }
-      },
-      onError: (e) {
-        if (!mounted) return;
-        setState(() {
-          _loadingHousehold = false;
-          _householdError = e.toString();
-        });
-      },
-    );
-  }
+          if (!mounted) return;
+          setState(() {
+            _family = nextFamily;
+            _loadingHousehold = false;
+            _householdError = null;
+          });
 
-  String _activeAllergiesLabelFor(List<ProfilePerson> people) {
-    final set = <String>{};
-    for (final p in people) {
-      if (p.hasAllergies && p.allergies.isNotEmpty) set.addAll(p.allergies);
-    }
-    return set.toList().map(_prettyAllergy).join(', ');
-  }
-
-  List<ProfilePerson> _activeProfilesForAllergies() {
-    if (!_allergies.enabled) return _allPeople;
-    switch (_allergies.mode) {
-      case SuitabilityMode.wholeFamily:
-        return _allPeople;
-      case SuitabilityMode.allChildren:
-        return _children;
-      case SuitabilityMode.specificPeople:
-        return _allPeople.where((x) => _allergies.personIds.contains(x.id)).toList();
-    }
+          if (_allergies.enabled || _query.trim().isNotEmpty || !_filtersAreDefault) {
+            _recomputeVisible();
+          }
+        },
+        onError: (e) {
+          if (!mounted) return;
+          setState(() {
+            _loadingHousehold = false;
+            _householdError = e.toString();
+          });
+        },
+      );
+    });
   }
 
   Future<void> _loadTerms() async {
@@ -647,7 +590,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
         _nutritionIdToName = nutritionById;
         _nutritionSlugToName = nutritionBySlug;
         _allergenIdToName = allergenById;
-
         _termsLoaded = true;
       });
 
@@ -698,20 +640,27 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
     }
     if (!force && _indexReady && _indexById.length == _items.length) return;
 
-    final cSet = <String>{}, colSet = <String>{}, cuiSet = <String>{}, sSet = <String>{}, nSet = <String>{};
+    final cSet = <String>{};
+    final colSet = <String>{};
+    final cuiSet = <String>{};
+    final sSet = <String>{};
+    final nSet = <String>{};
+
     _indexById.clear();
 
     for (final r in _items) {
       final id = r['id'];
       if (id is! int) continue;
 
-      final idx = _RecipeIndex(
+      final ingredientsText = _ingredientsTextOf(r);
+
+      final idx = RecipeIndex(
         id: id,
         titleLower: _titleOf(r).toLowerCase(),
-        ingredientsText: _ingredientsTextOf(r),
-        ingredientsLower: _ingredientsTextOf(r).toLowerCase(),
+        ingredientsText: ingredientsText,
+        ingredientsLower: ingredientsText.toLowerCase(),
         courses: _coursesOf(r),
-        collections: _collectionsOf(r), // ✅ now names
+        collections: _collectionsOf(r),
         cuisines: _cuisinesOf(r),
         suitable: _suitableForOf(r),
         nutrition: _nutritionTagsOf(r),
@@ -749,70 +698,6 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
   String _clampToOptions(String c, List<String> o) => o.contains(c) ? c : 'All';
 
-  bool _isAllowedForPerson({required ProfilePerson p, required _RecipeIndex ix}) {
-    if (!p.hasAllergies || p.allergies.isEmpty) return true;
-
-    final res = AllergyEngine.evaluate(
-      recipeAllergyTags: ix.allergyTags,
-      swapFieldText: ix.swapText,
-      userAllergies: p.allergies,
-    );
-
-    if (res.status == AllergyStatus.safe) return true;
-    if (_allergies.includeSwaps && res.status == AllergyStatus.swapRequired) return true;
-    return false;
-  }
-
-  ({String? tag, String? swapHint}) _tagForRecipe({
-    required _RecipeIndex ix,
-    required List<ProfilePerson> activeProfiles,
-  }) {
-    final anyActive =
-        activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
-    if (!anyActive) return (tag: null, swapHint: null);
-
-    bool anySwap = false;
-    bool anyNotSuitable = false;
-
-    for (final p in activeProfiles) {
-      if (!p.hasAllergies || p.allergies.isEmpty) continue;
-
-      final res = AllergyEngine.evaluate(
-        recipeAllergyTags: ix.allergyTags,
-        swapFieldText: ix.swapText,
-        userAllergies: p.allergies,
-      );
-
-      if (res.status == AllergyStatus.notSuitable) {
-        anyNotSuitable = true;
-      } else if (res.status == AllergyStatus.swapRequired) {
-        anySwap = true;
-      }
-    }
-
-    if (anyNotSuitable) return (tag: '⛔ Not suitable', swapHint: null);
-
-    if (anySwap) {
-      final label = activeProfiles.length > 1
-          ? '⚠️ Swap required (one or more)'
-          : '⚠️ Swap required';
-      return (tag: label, swapHint: null);
-    }
-
-    if (_allergies.mode == SuitabilityMode.specificPeople) {
-      if (activeProfiles.length == 1) {
-        return (tag: '✅ Safe for ${activeProfiles.first.name}', swapHint: null);
-      }
-      if (activeProfiles.length > 1) {
-        return (tag: '✅ Safe for ${activeProfiles.length} selected', swapHint: null);
-      }
-    }
-    if (_allergies.mode == SuitabilityMode.allChildren) {
-      return (tag: '✅ Safe for all children', swapHint: null);
-    }
-    return (tag: '✅ Safe for whole family', swapHint: null);
-  }
-
   void _recomputeVisible() {
     if (!_indexReady) return;
     final q = _query.trim().toLowerCase();
@@ -827,7 +712,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       return;
     }
 
-    final activeProfiles = _allergies.enabled ? _activeProfilesForAllergies() : _allPeople;
+    final activeProfiles = _family.activeProfilesFor(_allergies);
     final hasAnyAllergies = _allergies.enabled &&
         activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
 
@@ -846,21 +731,29 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       if (_filters.nutritionTag != 'All' && !ix.nutrition.contains(_filters.nutritionTag)) continue;
       if (_filters.collection != 'All' && !ix.collections.contains(_filters.collection)) continue;
 
-      if (q.isNotEmpty &&
-          !ix.titleLower.contains(q) &&
-          !ix.ingredientsLower.contains(q)) continue;
+      if (q.isNotEmpty && !ix.titleLower.contains(q) && !ix.ingredientsLower.contains(q)) {
+        continue;
+      }
 
       if (hasAnyAllergies) {
         bool allowed = true;
         for (final p in activeProfiles) {
-          if (!_isAllowedForPerson(p: p, ix: ix)) {
+          if (!RecipeRulesEngine.isAllowedForPerson(
+            p: p,
+            ix: ix,
+            selection: _allergies,
+          )) {
             allowed = false;
             break;
           }
         }
         if (!allowed) continue;
 
-        nextTags[id] = _tagForRecipe(ix: ix, activeProfiles: activeProfiles);
+        nextTags[id] = RecipeRulesEngine.tagForRecipe(
+          ix: ix,
+          activeProfiles: activeProfiles,
+          selection: _allergies,
+        );
       }
 
       next.add(r);
@@ -907,7 +800,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       );
     }
 
-    final activeProfiles = _allergies.enabled ? _activeProfilesForAllergies() : _allPeople;
+    final activeProfiles = _family.activeProfilesFor(_allergies);
     final hasAnyAllergies = activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
 
     return Column(
@@ -948,8 +841,8 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                 suitableForOptions: _suitableOptionsCached,
                 nutritionOptions: _nutritionOptionsCached,
                 collectionOptions: _collectionOptionsCached,
-                adults: _adults,
-                children: _children,
+                adults: _family.adults,
+                children: _family.children,
                 lockCourse: widget.lockCourse ?? false,
                 lockCollection: widget.lockCollection ?? false,
                 householdLoading: _loadingHousehold,
@@ -971,7 +864,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
                   alignment: Alignment.centerLeft,
                   child: Text(
                     hasAnyAllergies
-                        ? 'Allergies considered: ${_activeAllergiesLabelFor(activeProfiles)}'
+                        ? 'Allergies considered: ${RecipeRulesEngine.activeAllergiesLabelFor(activeProfiles)}'
                         : 'No allergies saved.',
                     style: _CStyle.meta(context),
                   ),

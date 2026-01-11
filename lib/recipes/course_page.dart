@@ -15,13 +15,18 @@ import '../shared/search_pill.dart';
 
 // ✅ reuse filters UI + shared types
 import 'widgets/recipe_filters_ui.dart';
+import 'profile_person.dart';
 
 // ✅ recipe card
 import 'widgets/recipe_card.dart';
 
 // ✅ allergy engine
 import 'allergy_engine.dart';
-import '../recipes/allergy_keys.dart';
+import 'allergy_keys.dart';
+
+// ✅ repo source of truth for family (minimal change)
+import 'family_profile_repository.dart';
+import 'family_profile.dart';
 
 class _CStyle {
   static const bool showSubtitle = false;
@@ -104,7 +109,8 @@ class _CoursePageState extends State<CoursePage> {
   List<String> _collectionOptions = const ['All'];
 
   // Household
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userSub;
+  StreamSubscription<FamilyProfile>? _userSub; // ✅ now repo-driven
+  StreamSubscription<User?>? _authHouseSub; // ✅ auth-safe like recipe list
   bool _loadingHousehold = true;
   String? _householdError;
 
@@ -112,6 +118,9 @@ class _CoursePageState extends State<CoursePage> {
   final List<ProfilePerson> _children = [];
 
   List<ProfilePerson> get _allPeople => [..._adults, ..._children];
+
+  // ✅ repo instance (source of truth)
+  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
 
   @override
   void initState() {
@@ -124,7 +133,8 @@ class _CoursePageState extends State<CoursePage> {
   void dispose() {
     _authSub?.cancel();
     _favSub?.cancel();
-    _userSub?.cancel();
+    _authHouseSub?.cancel(); // ✅
+    _userSub?.cancel(); // ✅
     _searchCtrl.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -215,98 +225,82 @@ class _CoursePageState extends State<CoursePage> {
   String? _canonicalAllergyKey(String raw) => AllergyKeys.normalize(raw);
   String _prettyAllergy(String key) => AllergyKeys.label(key);
 
+  // ✅ updated: repo-driven + auth-safe (minimal change)
   void _listenToHousehold() {
-    final doc = _userDoc();
-    if (doc == null) {
+    _authHouseSub?.cancel();
+    _userSub?.cancel();
+
+    if (mounted) {
       setState(() {
-        _loadingHousehold = false;
+        _loadingHousehold = true;
         _householdError = null;
-        _adults.clear();
-        _children.clear();
       });
-      return;
     }
 
-    setState(() {
-      _loadingHousehold = true;
-      _householdError = null;
-    });
+    _authHouseSub = FirebaseAuth.instance.authStateChanges().listen((u) {
+      _userSub?.cancel();
 
-    _userSub?.cancel();
-    _userSub = doc.snapshots().listen(
-      (snap) {
-        final data = snap.data() ?? {};
-        final rawAdults = (data['adults'] as List?) ?? [];
-        final rawChildren = (data['children'] as List?) ?? [];
-
-        final adults = <ProfilePerson>[];
-        final children = <ProfilePerson>[];
-
-        void parse(List raw, List<ProfilePerson> target, PersonType type,
-            String prefix) {
-          for (var i = 0; i < raw.length; i++) {
-            final p = raw[i];
-            if (p is! Map) continue;
-            final name = (p['name'] ?? '').toString().trim();
-            if (name.isEmpty) continue;
-            final hasAllergies = (p['hasAllergies'] == true);
-            final parsed = <String>[];
-            if (p['allergies'] is List) {
-              for (final x in p['allergies']) {
-                final k = _canonicalAllergyKey(x.toString());
-                if (k != null) parsed.add(k);
-              }
-            }
-            target.add(ProfilePerson(
-              id: '${prefix}_$i',
-              type: type,
-              name: name,
-              hasAllergies: hasAllergies,
-              allergies: hasAllergies
-                  ? (parsed.toSet().toList()..sort())
-                  : [],
-            ));
-          }
-        }
-
-        parse(rawAdults, adults, PersonType.adult, 'adult');
-        parse(rawChildren, children, PersonType.child, 'child');
-
+      if (u == null) {
         if (!mounted) return;
-
         setState(() {
-          _adults..clear()..addAll(adults);
-          _children..clear()..addAll(children);
           _loadingHousehold = false;
           _householdError = null;
-
-          // ✅ FIXED: Correct Multi-Select Logic (specificPeople)
-          if (_allergies.mode == SuitabilityMode.specificPeople) {
-            final valid = _allergies.personIds
-                .where((id) => _allPeople.any((p) => p.id == id))
-                .toSet();
-            if (valid.isEmpty) {
-              _allergies = _allergies.copyWith(
-                mode: SuitabilityMode.wholeFamily,
-                personIds: {},
-                includeSwaps: false,
-              );
-            } else {
-              _allergies = _allergies.copyWith(personIds: valid);
-            }
-          }
+          _adults.clear();
+          _children.clear();
         });
-
         _recomputeVisible();
-      },
-      onError: (e) {
-        if (!mounted) return;
-        setState(() {
-          _loadingHousehold = false;
-          _householdError = e.toString();
-        });
-      },
-    );
+        return;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _loadingHousehold = true;
+        _householdError = null;
+      });
+
+      _userSub = _familyRepo.watchFamilyProfile().listen(
+        (nextFamily) {
+          if (!mounted) return;
+
+          setState(() {
+            _adults
+              ..clear()
+              ..addAll(nextFamily.adults);
+            _children
+              ..clear()
+              ..addAll(nextFamily.children);
+
+            _loadingHousehold = false;
+            _householdError = null;
+
+            // ✅ FIXED: Correct Multi-Select Logic (specificPeople)
+            if (_allergies.mode == SuitabilityMode.specificPeople) {
+              final valid = _allergies.personIds
+                  .where((id) => _allPeople.any((p) => p.id == id))
+                  .toSet();
+              if (valid.isEmpty) {
+                _allergies = _allergies.copyWith(
+                  mode: SuitabilityMode.wholeFamily,
+                  personIds: const <String>{},
+                  includeSwaps: false,
+                );
+              } else {
+                _allergies = _allergies.copyWith(personIds: valid);
+              }
+            }
+          });
+
+          _recomputeVisible();
+        },
+        onError: (e) {
+          if (!mounted) return;
+          setState(() {
+            _loadingHousehold = false;
+            _householdError = e.toString();
+          });
+        },
+      );
+    });
   }
 
   // ✅ FIXED: Correct Multi-Select Logic

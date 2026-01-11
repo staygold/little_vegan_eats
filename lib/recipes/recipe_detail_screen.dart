@@ -2,13 +2,12 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; 
+import 'package:flutter/services.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:cached_network_image/cached_network_image.dart'; 
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../theme/app_theme.dart';
 import '../utils/text.dart';
@@ -21,6 +20,10 @@ import '../app/no_bounce_scroll_behavior.dart';
 
 import '../lists/shopping_list_picker_sheet.dart';
 import '../lists/shopping_repo.dart';
+
+// ✅ Family profile now comes from the repo (single source of truth)
+import '../recipes/family_profile_repository.dart';
+import '../recipes/family_profile.dart';
 
 class _RText {
   static const String font = 'Montserrat';
@@ -266,12 +269,14 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   int _profileKids = 1;
   double _scale = 1.0;
 
+  /// 1 = Metric (default), 2 = US (if conversion exists)
   int _unitSystem = 1;
 
+  /// ✅ Only used to decide whether to show the "ALLERGY SWAPS" section.
   bool _profileHasAllergies = false;
 
-  StreamSubscription<User?>? _authSub;
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _profileSub;
+  // ✅ single subscription via repo
+  StreamSubscription<FamilyProfile>? _familySub;
 
   final ScrollController _scrollCtrl = ScrollController();
   double _scrollY = 0;
@@ -302,92 +307,63 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
   @override
   void dispose() {
-    _authSub?.cancel();
-    _profileSub?.cancel();
+    _familySub?.cancel();
     _scrollCtrl.dispose();
     super.dispose();
   }
 
   void _wireFamilyProfile() {
-    _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
-      _profileSub?.cancel();
+    final repo = FamilyProfileRepository();
 
-      if (user == null) {
-        if (!mounted) return;
-        setState(() {
-          _profileAdults = 2;
-          _profileKids = 1;
-          _profileHasAllergies = false;
-        });
-        return;
+    _familySub = repo.watchFamilyProfile().listen((family) {
+      int namedCount(List list) {
+        return list.where((p) {
+          try {
+            final name = (p.name ?? '').toString().trim();
+            return name.isNotEmpty;
+          } catch (_) {
+            return false;
+          }
+        }).length;
       }
 
-      final docRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
-      _profileSub = docRef.snapshots().listen((snap) {
-        final data = snap.data();
-        if (data == null) return;
-
-        final adults = (data['adults'] as List?) ?? const [];
-        final children = (data['children'] as List?) ?? const [];
-
-        final adultCount =
-            adults.where((e) => e is Map && (e['name'] ?? '').toString().trim().isNotEmpty).length;
-        final kidCount =
-            children.where((e) => e is Map && (e['name'] ?? '').toString().trim().isNotEmpty).length;
-
-        bool hasAllergies = false;
-
-        bool memberHasAllergies(Map m) {
-          final list1 = m['allergies'];
-          final list2 = m['selectedAllergies'];
-          if ((list1 is List && list1.isNotEmpty) || (list2 is List && list2.isNotEmpty)) return true;
-
-          final map1 = m['allergyMap'];
-          final map2 = m['allergiesMap'];
-          if ((map1 is Map && map1.values.any((v) => v == true)) ||
-              (map2 is Map && map2.values.any((v) => v == true))) return true;
-
-          return false;
-        }
-
-        for (final a in adults) {
-          if (a is Map && memberHasAllergies(a)) {
-            hasAllergies = true;
-            break;
+      bool anyAllergies(List list) {
+        return list.any((p) {
+          try {
+            return p.hasAllergies == true;
+          } catch (_) {
+            return false;
           }
-        }
+        });
+      }
 
-        if (!hasAllergies) {
-          for (final c in children) {
-            if (c is Map && memberHasAllergies(c)) {
-              hasAllergies = true;
-              break;
-            }
-          }
-        }
+      final adultCount = namedCount(family.adults);
+      final kidCount = namedCount(family.children);
 
-        final nextAdults = adultCount > 0 ? adultCount : 1;
-        final nextKids = kidCount;
+      final nextAdults = adultCount > 0 ? adultCount : 1;
+      final nextKids = kidCount;
 
-        if (!mounted) return;
+      final hasAllergies = anyAllergies(family.adults) || anyAllergies(family.children);
 
-        final changedCounts = (nextAdults != _profileAdults) || (nextKids != _profileKids);
-        final changedAllergies = hasAllergies != _profileHasAllergies;
+      if (!mounted) return;
 
-        if (changedCounts || changedAllergies) {
-          setState(() {
-            final prevProfileAdults = _profileAdults;
-            final prevProfileKids = _profileKids;
+      final changedCounts = (nextAdults != _profileAdults) || (nextKids != _profileKids);
+      final changedAllergies = hasAllergies != _profileHasAllergies;
 
-            _profileAdults = nextAdults;
-            _profileKids = nextKids;
-            _profileHasAllergies = hasAllergies;
+      if (changedCounts || changedAllergies) {
+        setState(() {
+          final prevProfileAdults = _profileAdults;
+          final prevProfileKids = _profileKids;
 
-            if (_adults == prevProfileAdults) _adults = _profileAdults;
-            if (_kids == prevProfileKids) _kids = _profileKids;
-          });
-        }
-      });
+          _profileAdults = nextAdults;
+          _profileKids = nextKids;
+          _profileHasAllergies = hasAllergies;
+
+          // keep manual steppers unless they still match the previous profile defaults
+          if (_adults == prevProfileAdults) _adults = _profileAdults;
+          if (_kids == prevProfileKids) _kids = _profileKids;
+        });
+      }
     });
   }
 
@@ -664,6 +640,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       '⅞': 0.875
     };
     if (unicode.containsKey(s)) return unicode[s];
+
     final mixed = RegExp(r'^(\d+)\s+(\d+)\s*/\s*(\d+)$').firstMatch(s);
     if (mixed != null) {
       final whole = double.parse(mixed.group(1)!);
@@ -672,6 +649,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       if (b == 0) return null;
       return whole + (a / b);
     }
+
     final frac = RegExp(r'^(\d+)\s*/\s*(\d+)$').firstMatch(s);
     if (frac != null) {
       final a = double.parse(frac.group(1)!);
@@ -679,6 +657,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       if (b == 0) return null;
       return a / b;
     }
+
     return double.tryParse(s);
   }
 
@@ -708,7 +687,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
     for (final row in ingredientsFlat) {
       if (row is! Map) continue;
-      
+
       // ✅ FILTER OUT GROUPS/HEADERS
       final type = (row['type'] ?? '').toString().toLowerCase();
       if (type == 'group' || type == 'header') continue;
@@ -792,7 +771,11 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     return SizedBox(width: 28, height: 28, child: Center(child: child));
   }
 
-  Widget _unitSystemToggle({required bool show, String leftLabel = 'METRIC', String rightLabel = 'US'}) {
+  Widget _unitSystemToggle({
+    required bool show,
+    String leftLabel = 'METRIC',
+    String rightLabel = 'US',
+  }) {
     if (!show) return const SizedBox.shrink();
     const trackBg = Colors.white;
     const pillBg = Color(0xFFD9E6E5);
@@ -800,6 +783,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     const height = 40.0;
     const pad = 4.0;
     final radius = BorderRadius.circular(999);
+
     Widget segButton({required int value, required String label}) {
       final selected = _unitSystem == value;
       return Expanded(
@@ -837,7 +821,11 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     return Container(
       margin: const EdgeInsets.only(top: 10, bottom: 12),
       padding: const EdgeInsets.all(pad),
-      decoration: BoxDecoration(color: trackBg, borderRadius: radius, border: Border.all(color: border)),
+      decoration: BoxDecoration(
+        color: trackBg,
+        borderRadius: radius,
+        border: Border.all(color: border),
+      ),
       child: SizedBox(
         height: height,
         child: LayoutBuilder(
@@ -854,7 +842,12 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                   width: half,
                   child: Container(decoration: BoxDecoration(color: pillBg, borderRadius: radius)),
                 ),
-                Row(children: [segButton(value: 1, label: leftLabel), segButton(value: 2, label: rightLabel)]),
+                Row(
+                  children: [
+                    segButton(value: 1, label: leftLabel),
+                    segButton(value: 2, label: rightLabel),
+                  ],
+                ),
               ],
             );
           },
@@ -863,56 +856,65 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
+  /// ✅ Allergies only affect whether we show swaps.
+  /// If the profile has no allergies, we hide swaps completely.
   Widget _swapsCard(Map<String, dynamic>? recipe) {
     if (!_profileHasAllergies) return const SizedBox.shrink();
 
     final rawText = _getField(recipe, 'ingredient_swaps');
     final swaps = _parseSwaps(rawText);
     if (swaps.isEmpty) return const SizedBox.shrink();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 28),
-        Row(children: [
-          const Icon(Icons.swap_horiz_rounded, color: AppColors.brandDark, size: 24),
-          const SizedBox(width: 8),
-          Text('ALLERGY SWAPS', style: _RText.section)
-        ]),
+        Row(
+          children: [
+            const Icon(Icons.swap_horiz_rounded, color: AppColors.brandDark, size: 24),
+            const SizedBox(width: 8),
+            Text('ALLERGY SWAPS', style: _RText.section),
+          ],
+        ),
         const SizedBox(height: 12),
         _card(
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-          child: Column(children: [
-            for (int i = 0; i < swaps.length; i++) ...[
-              if (i > 0) Divider(height: 1, color: Colors.black.withOpacity(0.06)),
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Row(children: [
-                  Expanded(
-                    flex: 4,
-                    child: Text(
-                      swaps[i]['from']!,
-                      style: _RText.body.copyWith(
-                        color: const Color.fromARGB(255, 141, 16, 16),
-                        fontWeight: FontWeight.w500,
+          child: Column(
+            children: [
+              for (int i = 0; i < swaps.length; i++) ...[
+                if (i > 0) Divider(height: 1, color: Colors.black.withOpacity(0.06)),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        flex: 4,
+                        child: Text(
+                          swaps[i]['from']!,
+                          style: _RText.body.copyWith(
+                            color: const Color.fromARGB(255, 141, 16, 16),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                       ),
-                    ),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 12),
+                        child: Icon(Icons.arrow_forward_rounded, color: AppColors.brandDark, size: 20),
+                      ),
+                      Expanded(
+                        flex: 5,
+                        child: Text(
+                          swaps[i]['to']!,
+                          style: _RText.body.copyWith(color: AppColors.brandDark, fontWeight: FontWeight.w500),
+                          textAlign: TextAlign.right,
+                        ),
+                      ),
+                    ],
                   ),
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 12),
-                    child: Icon(Icons.arrow_forward_rounded, color: AppColors.brandDark, size: 20),
-                  ),
-                  Expanded(
-                    flex: 5,
-                    child: Text(
-                      swaps[i]['to']!,
-                      style: _RText.body.copyWith(color: AppColors.brandDark, fontWeight: FontWeight.w500),
-                      textAlign: TextAlign.right,
-                    ),
-                  ),
-                ]),
-              ),
+                ),
+              ],
             ],
-          ]),
+          ),
         ),
       ],
     );
@@ -952,7 +954,11 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
-  Widget _peopleStepperCard({required String label, required int value, required ValueChanged<int> onChanged}) {
+  Widget _peopleStepperCard({
+    required String label,
+    required int value,
+    required ValueChanged<int> onChanged,
+  }) {
     const bg = Color(0xFFF0F5F4);
     const text = Color(0xFF044246);
     return Container(
@@ -960,6 +966,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(8)),
       child: Row(
+        mainAxisSize: MainAxisSize.max,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           IconButton(
@@ -984,10 +991,12 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
-  String _multiplierLabel(double v) => (v - 0.5).abs() < 0.0001 ? 'Half batch' : '${_fmtMultiplier(v)} batch';
+  String _multiplierLabel(double v) =>
+      (v - 0.5).abs() < 0.0001 ? 'Half batch' : '${_fmtMultiplier(v)} batch';
 
-  String _ctaLabel(double v) =>
-      (v - 0.5).abs() < 0.0001 ? 'UPDATE TO HALF BATCH' : 'UPDATE INGREDIENTS (${_fmtMultiplier(v).toUpperCase()})';
+  String _ctaLabel(double v) => (v - 0.5).abs() < 0.0001
+      ? 'UPDATE TO HALF BATCH'
+      : 'UPDATE INGREDIENTS (${_fmtMultiplier(v).toUpperCase()})';
 
   String _suggestMultiplierLine(double recommended, {required bool itemsMode}) => '';
 
@@ -995,7 +1004,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final itemsMode = _isItemsMode(recipe);
     final ipp = _itemsPerPerson(recipe);
     final itemSingular = _itemLabelSingular(recipe);
-    final kFactor = _kidsFactor(recipe); 
+    final kFactor = _kidsFactor(recipe);
 
     final servingsRaw = (recipe?['servings'] ?? recipe?['servings_number'] ?? recipe?['servings_amount']);
     final servingsCount = _toInt(servingsRaw);
@@ -1043,7 +1052,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     }
 
     final showRecommended = recommended != null && (needsMore || showHalf);
-    // ✅ NEW: Check if scale is already applied
     final isApplied = recommended != null && (recommended - _scale).abs() < 0.001;
     final showHiddenSection = showRecommended || _scale != 1.0;
 
@@ -1060,7 +1068,9 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       lineText =
           'Your family needs the equivalent of ~$totalItemsNeeded ${_pluralise(itemSingular, totalItemsNeeded)} adult portions';
     } else {
-      lineText = (advice != null && advice.detailLine.trim().isNotEmpty) ? advice.detailLine : 'Your family needs more';
+      lineText = (advice != null && advice.detailLine.trim().isNotEmpty)
+          ? advice.detailLine
+          : 'Your family needs more';
     }
 
     return _card(
@@ -1117,8 +1127,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
             Divider(color: Colors.black.withOpacity(0.08), height: 1),
             const SizedBox(height: 20),
           ],
-          
-          // ✅ LOGIC UPDATE: Show "Update" ONLY if not yet applied. Else show "Reset".
           if (showRecommended && !isApplied) ...[
             Row(
               crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -1142,8 +1150,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               ],
             ),
             const SizedBox(height: 12),
-            
-            // ✅ UPDATE BUTTON: Uses FilledButton
             SizedBox(
               width: double.infinity,
               height: 52,
@@ -1151,7 +1157,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.brandDark,
                   foregroundColor: Colors.white,
-                  // Transparent border to match size of reset button
                   side: const BorderSide(color: Colors.transparent, width: 1.5),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
@@ -1160,7 +1165,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               ),
             ),
           ] else if (_scale != 1.0) ...[
-            // ✅ STATUS LINE
             Row(
               children: [
                 Text('Ingredients updated to:', style: _RText.servingRecLabel),
@@ -1169,17 +1173,15 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
               ],
             ),
             const SizedBox(height: 12),
-            
-            // ✅ RESET BUTTON: Uses FilledButton too (for identical layout)
             SizedBox(
               width: double.infinity,
               height: 52,
               child: FilledButton(
                 style: FilledButton.styleFrom(
                   backgroundColor: Colors.white,
-                  foregroundColor: AppColors.brandDark, // Text color
+                  foregroundColor: AppColors.brandDark,
                   side: BorderSide(
-                    color: AppColors.brandDark.withOpacity(0.6), // Visible border
+                    color: AppColors.brandDark.withOpacity(0.6),
                     width: 1.5,
                   ),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -1228,7 +1230,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final n = _nutritionMap(recipe);
     if (n == null || n.isEmpty) return const SizedBox.shrink();
 
-    final kidMult = _kidsFactor(recipe); 
+    final kidMult = _kidsFactor(recipe);
 
     dynamic pick(List<String> keys) {
       for (final k in keys) {
@@ -1257,147 +1259,142 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         : 'Child values are estimated at 0.5 adult serving';
 
     return Column(
-  crossAxisAlignment: CrossAxisAlignment.start,
-  children: [
-    Text('ESTIMATED NUTRITION', style: _RText.section),
-    const SizedBox(height: 12),
-    _card(
-      padding: const EdgeInsets.all(18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Expanded(child: Text('Per serving', style: _RText.chip)),
-            SizedBox(
-              width: 86,
-              child: Text('Adult',
-                  textAlign: TextAlign.right, style: _RText.chip),
-            ),
-            const SizedBox(width: 12),
-            SizedBox(
-              width: 86,
-              child: Text('Child',
-                  textAlign: TextAlign.right, style: _RText.chip),
-            ),
-          ]),
-          const SizedBox(height: 12),
-          Divider(height: 1, thickness: 1, color: Colors.black.withOpacity(0.06)),
-          const SizedBox(height: 8),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('ESTIMATED NUTRITION', style: _RText.section),
+        const SizedBox(height: 12),
+        _card(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                Expanded(child: Text('Per serving', style: _RText.chip)),
+                SizedBox(
+                  width: 86,
+                  child: Text('Adult', textAlign: TextAlign.right, style: _RText.chip),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 86,
+                  child: Text('Child', textAlign: TextAlign.right, style: _RText.chip),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              Divider(height: 1, thickness: 1, color: Colors.black.withOpacity(0.06)),
+              const SizedBox(height: 8),
+              for (int i = 0, visualIndex = 0; i < rows.length; i++)
+                if (rows[i]['v'] != null)
+                  Builder(builder: (context) {
+                    final r = rows[i];
+                    final isSub = r['sub'] == true;
 
-          // --------------------------------------------------
-          // Rows
-          // --------------------------------------------------
-          for (int i = 0, visualIndex = 0; i < rows.length; i++)
-            if (rows[i]['v'] != null)
-              Builder(builder: (context) {
-                final r = rows[i];
-                final isSub = r['sub'] == true;
+                    bool nextIsSub = false;
+                    for (int j = i + 1; j < rows.length; j++) {
+                      if (rows[j]['v'] == null) continue;
+                      nextIsSub = rows[j]['sub'] == true;
+                      break;
+                    }
 
-                bool nextIsSub = false;
-                for (int j = i + 1; j < rows.length; j++) {
-                  if (rows[j]['v'] == null) continue;
-                  nextIsSub = rows[j]['sub'] == true;
-                  break;
-                }
+                    final showDivider = isSub || !nextIsSub;
 
-                final showDivider = isSub || !nextIsSub;
+                    final isStriped = visualIndex.isOdd;
+                    visualIndex++;
 
-                // Candy stripe: alternate by *visual* row index
-                final isStriped = visualIndex.isOdd;
-                visualIndex++;
+                    final bgColor = isStriped ? Colors.black.withOpacity(0.035) : Colors.transparent;
 
-                final bgColor = isStriped
-                    ? Colors.black.withOpacity(0.035)
-                    : Colors.transparent;
+                    final topPadding = isSub ? 4.0 : 12.0;
+                    final bottomPadding = isSub ? 8.0 : 12.0;
 
-                final topPadding = isSub ? 4.0 : 12.0;
-                final bottomPadding = isSub ? 8.0 : 12.0;
-
-                return Column(
-                  children: [
-                    Container(
-                      color: bgColor,
-                      child: Padding(
-                        padding: EdgeInsets.only(
-                          top: topPadding,
-                          bottom: bottomPadding,
-                          left: isSub ? 16 : 0,
-                          right: 0,
+                    return Column(
+                      children: [
+                        Container(
+                          color: bgColor,
+                          child: Padding(
+                            padding: EdgeInsets.only(
+                              top: topPadding,
+                              bottom: bottomPadding,
+                              left: isSub ? 16 : 0,
+                              right: 0,
+                            ),
+                            child: Row(children: [
+                              Expanded(
+                                child: Text(
+                                  isSub ? ' - ${r['l']}' : r['l'] as String,
+                                  style: isSub
+                                      ? _RText.bodySoft.copyWith(
+                                          fontWeight: FontWeight.w500,
+                                          fontSize: 14,
+                                        )
+                                      : _RText.bodySoft.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                width: 86,
+                                child: Text(
+                                  _scaleNutritionString(r['v'], 1.0),
+                                  textAlign: TextAlign.right,
+                                  style: isSub
+                                      ? _RText.body.copyWith(
+                                          fontWeight: FontWeight.w500,
+                                          fontSize: 14,
+                                        )
+                                      : _RText.body.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              SizedBox(
+                                width: 86,
+                                child: Text(
+                                  _scaleNutritionString(r['v'], kidMult),
+                                  textAlign: TextAlign.right,
+                                  style: isSub
+                                      ? _RText.body.copyWith(
+                                          fontWeight: FontWeight.w500,
+                                          fontSize: 14,
+                                        )
+                                      : _RText.body.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                ),
+                              ),
+                            ]),
+                          ),
                         ),
-                        child: Row(children: [
-                          Expanded(
-                            child: Text(
-                              isSub ? ' - ${r['l']}' : r['l'] as String,
-                              style: isSub
-                                  ? _RText.bodySoft.copyWith(
-                                      fontWeight: FontWeight.w500,
-                                      fontSize: 14,
-                                    )
-                                  : _RText.bodySoft.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                            ),
+                        if (showDivider)
+                          Divider(
+                            height: 1,
+                            thickness: 1,
+                            color: Colors.black.withOpacity(0.06),
                           ),
-                          const SizedBox(width: 8),
-                          SizedBox(
-                            width: 86,
-                            child: Text(
-                              _scaleNutritionString(r['v'], 1.0),
-                              textAlign: TextAlign.right,
-                              style: isSub
-                                  ? _RText.body.copyWith(
-                                      fontWeight: FontWeight.w500,
-                                      fontSize: 14,
-                                    )
-                                  : _RText.body.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          SizedBox(
-                            width: 86,
-                            child: Text(
-                              _scaleNutritionString(r['v'], kidMult),
-                              textAlign: TextAlign.right,
-                              style: isSub
-                                  ? _RText.body.copyWith(
-                                      fontWeight: FontWeight.w500,
-                                      fontSize: 14,
-                                    )
-                                  : _RText.body.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                            ),
-                          ),
-                        ]),
-                      ),
-                    ),
-                    if (showDivider)
-                      Divider(
-                        height: 1,
-                        thickness: 1,
-                        color: Colors.black.withOpacity(0.06),
-                      ),
-                  ],
-                );
-              }),
-
-          const SizedBox(height: 20),
-          Text(footer, style: _RText.chip),
-        ],
-      ),
-    ),
-  ],
-);
-
+                      ],
+                    );
+                  }),
+              const SizedBox(height: 20),
+              Text(footer, style: _RText.chip),
+            ],
+          ),
+        ),
+      ],
+    );
   }
+
+  // ===========================================================================
+  // ✅ SCALING HELPERS (these were missing in your broken file)
+  // ===========================================================================
 
   String _scaledAmount(String rawAmount, double mult) {
     final a = rawAmount.trim();
     if (a.isEmpty || mult == 1.0) return a;
+
     final mX = RegExp(r'^\s*([0-9]+(?:\.\d+)?)(\s*x\s*)$', caseSensitive: false).firstMatch(a);
     if (mX != null) return '${_fmtSmart(double.parse(mX.group(1)!) * mult)} x';
+
     final mPrefix = RegExp(
       r'^\s*([0-9]+(?:\.\d+)?(?:\s+[0-9]+\s*/\s*[0-9]+|(?:\s*/\s*[0-9]+)?)|[½⅓⅔¼¾⅛⅜⅝⅞])',
     ).firstMatch(a);
@@ -1409,9 +1406,12 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         return a.replaceFirst(mPrefix.group(1)!, scaled).trim();
       }
     }
+
     final mNum = RegExp(r'^\s*([0-9]+(?:\.\d+)?)').firstMatch(a);
     if (mNum != null) {
-      return a.replaceFirst(mNum.group(1)!, _fmtSmart(double.parse(mNum.group(1)!) * mult)).trim();
+      return a
+          .replaceFirst(mNum.group(1)!, _fmtSmart(double.parse(mNum.group(1)!) * mult))
+          .trim();
     }
     return a;
   }
@@ -1515,16 +1515,33 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final recipe = (_data?['recipe'] is Map) ? Map<String, dynamic>.from(_data!['recipe'] as Map) : null;
-    final title = (_data?['title']?['rendered'] as String?) ?? (recipe?['name'] as String?) ?? 'Recipe';
-    final imageUrl = (recipe?['image_url_full'] ?? recipe?['image_url'] ?? recipe?['image'] ?? recipe?['thumbnail_url'])
+    final recipe = (_data?['recipe'] is Map)
+        ? Map<String, dynamic>.from(_data!['recipe'] as Map)
+        : null;
+
+    final title =
+        (_data?['title']?['rendered'] as String?) ?? (recipe?['name'] as String?) ?? 'Recipe';
+
+    final imageUrl = (recipe?['image_url_full'] ??
+            recipe?['image_url'] ??
+            recipe?['image'] ??
+            recipe?['thumbnail_url'])
         ?.toString();
+
     final heroUrl = upscaleJetpackImage(imageUrl, w: 1600, h: 900);
 
-    final ingredientsFlat = (recipe?['ingredients_flat'] is List) ? (recipe!['ingredients_flat'] as List) : const [];
+    final ingredientsFlat = (recipe?['ingredients_flat'] is List)
+        ? (recipe!['ingredients_flat'] as List)
+        : const [];
+
     final canConvert = _hasConvertedSystem2(ingredientsFlat);
+
+    // ✅ Avoid mutating state inside build: if conversions disappear, snap back to metric.
     if (!canConvert && _unitSystem != 1) {
-      _unitSystem = 1;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() => _unitSystem = 1);
+      });
     }
 
     final cleanSteps = (recipe?['instructions_flat'] as List? ?? [])
@@ -1630,53 +1647,52 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                               const SizedBox(height: 40),
 
                               Row(
-  children: [
-    Expanded(child: Text('INGREDIENTS', style: _RText.section)),
-    const SizedBox(width: 18),
-    SizedBox(
-      height: 38,
-      child: OutlinedButton(
-        style: OutlinedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          textStyle: const TextStyle(
-            inherit: false, // ✅ stops inheriting theme fontVariations
-            fontFamily: 'Montserrat',
-            fontSize: 14,
-            fontVariations: [FontVariation('wght', 600)], // ✅ force weight
-            letterSpacing: 0,
-          ),
-        ),
-        onPressed: () {
-          final u = FirebaseAuth.instance.currentUser;
-          if (u == null) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Please sign in to use shopping lists')),
-            );
-            return;
-          }
+                                children: [
+                                  Expanded(child: Text('INGREDIENTS', style: _RText.section)),
+                                  const SizedBox(width: 18),
+                                  SizedBox(
+                                    height: 38,
+                                    child: OutlinedButton(
+                                      style: OutlinedButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                                        textStyle: const TextStyle(
+                                          inherit: false,
+                                          fontFamily: 'Montserrat',
+                                          fontSize: 14,
+                                          fontVariations: [FontVariation('wght', 600)],
+                                          letterSpacing: 0,
+                                        ),
+                                      ),
+                                      onPressed: () {
+                                        final u = FirebaseAuth.instance.currentUser;
+                                        if (u == null) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text('Please sign in to use shopping lists')),
+                                          );
+                                          return;
+                                        }
 
-          final ingredients = _ingredientsToShoppingIngredients(ingredientsFlat);
+                                        final ingredients =
+                                            _ingredientsToShoppingIngredients(ingredientsFlat);
 
-          ShoppingListPickerSheet.open(
-            context,
-            recipeId: widget.id,
-            recipeTitle: title,
-            ingredients: ingredients,
-          );
-        },
-        child: const Text('Add to shopping list'),
-      ),
-    ),
-  ],
-),
+                                        ShoppingListPickerSheet.open(
+                                          context,
+                                          recipeId: widget.id,
+                                          recipeTitle: title,
+                                          ingredients: ingredients,
+                                        );
+                                      },
+                                      child: const Text('Add to shopping list'),
+                                    ),
+                                  ),
+                                ],
+                              ),
 
-
-
-                              const SizedBox(height: 16), // 👈 KEY SPACING
-
+                              const SizedBox(height: 16),
 
                               _unitSystemToggle(show: canConvert, leftLabel: 'METRIC', rightLabel: 'US'),
                               const SizedBox(height: 2),
+
                               for (final row in ingredientsFlat)
                                 if (row is Map && row['type'] == 'group')
                                   Padding(
@@ -1690,6 +1706,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                   _ingredientRow(row),
 
                               _swapsCard(recipe),
+
                               const SizedBox(height: 40),
                               Text('INSTRUCTIONS', style: _RText.section),
                               const SizedBox(height: 12),
@@ -1714,8 +1731,10 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                   child: const Text('START COOKING', style: _RText.servingCta),
                                 ),
                               ),
+
                               _servingSuggestionsCard(recipe),
                               _storageCard(recipe),
+
                               const SizedBox(height: 40),
                               _nutritionPanel(context, recipe),
                               const SizedBox(height: 40),
@@ -1759,7 +1778,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                 width: 24,
                                 height: 24,
                                 fit: BoxFit.contain,
-                                  colorFilter: ColorFilter.mode(iconColor, BlendMode.srcIn),
+                                colorFilter: ColorFilter.mode(iconColor, BlendMode.srcIn),
                               ),
                             ),
                           )

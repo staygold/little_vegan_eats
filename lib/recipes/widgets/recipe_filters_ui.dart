@@ -1,29 +1,16 @@
+// lib/recipes/widgets/recipe_filters_ui.dart
 import 'dart:ui';
 import 'package:flutter/material.dart';
+
 import '../../theme/app_theme.dart';
 
+// ✅ pull shared models from your recipes folder (NOT defined in this UI file)
+import '../allergy_engine.dart'; // SuitabilityMode, AllergiesSelection
+import '../profile_person.dart'; // ProfilePerson, PersonType
+
 // -----------------------------------------------------------------------------
-// MODELS (Unchanged)
+// MODELS (UI-only selection model stays here)
 // -----------------------------------------------------------------------------
-
-enum SuitabilityMode { wholeFamily, allChildren, specificPeople }
-enum PersonType { adult, child }
-
-class ProfilePerson {
-  final String id;
-  final PersonType type;
-  final String name;
-  final bool hasAllergies;
-  final List<String> allergies;
-
-  const ProfilePerson({
-    required this.id,
-    required this.type,
-    required this.name,
-    required this.hasAllergies,
-    required this.allergies,
-  });
-}
 
 class RecipeFilterSelection {
   final String course;
@@ -63,41 +50,6 @@ class RecipeFilterSelection {
       suitableFor: suitableFor ?? this.suitableFor,
       nutritionTag: nutritionTag ?? this.nutritionTag,
       collection: collection ?? this.collection,
-    );
-  }
-}
-
-class AllergiesSelection {
-  final bool enabled;
-  final SuitabilityMode mode;
-  final Set<String> personIds;
-  final bool includeSwaps;
-
-  const AllergiesSelection({
-    this.enabled = true,
-    this.mode = SuitabilityMode.wholeFamily,
-    this.personIds = const {},
-    this.includeSwaps = false,
-  });
-
-  int get activeCount {
-    if (!enabled) return 0;
-    int n = 1;
-    if (includeSwaps) n += 1;
-    return n;
-  }
-
-  AllergiesSelection copyWith({
-    bool? enabled,
-    SuitabilityMode? mode,
-    Set<String>? personIds,
-    bool? includeSwaps,
-  }) {
-    return AllergiesSelection(
-      enabled: enabled ?? this.enabled,
-      mode: mode ?? this.mode,
-      personIds: personIds ?? this.personIds,
-      includeSwaps: includeSwaps ?? this.includeSwaps,
     );
   }
 }
@@ -147,7 +99,7 @@ class RecipeFilterBar extends StatelessWidget {
 
   final RecipeFilterSelection filters;
   final AllergiesSelection allergies;
-  
+
   final List<String> courseOptions;
   final List<String> cuisineOptions;
   final List<String> suitableForOptions;
@@ -216,7 +168,10 @@ class RecipeFilterBar extends StatelessWidget {
     if (a.mode == SuitabilityMode.wholeFamily) return 'Whole family';
     if (a.mode == SuitabilityMode.allChildren) return 'All children';
     if (a.personIds.isNotEmpty) {
-      final names = _allPeople.where((p) => a.personIds.contains(p.id)).map((p) => p.name).toList();
+      final names = _allPeople
+          .where((p) => a.personIds.contains(p.id))
+          .map((p) => p.name)
+          .toList();
       if (names.isNotEmpty) {
         if (names.length == 1) return names.first;
         if (names.length == 2) return '${names[0]} & ${names[1]}';
@@ -239,30 +194,53 @@ class RecipeFilterBar extends StatelessWidget {
     }
 
     if (filters.course != 'All') {
-      addChip(_labelFor(filters.course, courseLabelsById), () => onFiltersApplied(filters.copyWith(course: 'All')));
+      addChip(
+        _labelFor(filters.course, courseLabelsById),
+        () => onFiltersApplied(filters.copyWith(course: 'All')),
+      );
     }
     if (filters.cuisine != 'All') {
-      addChip(_labelFor(filters.cuisine, cuisineLabelsById), () => onFiltersApplied(filters.copyWith(cuisine: 'All')));
+      addChip(
+        _labelFor(filters.cuisine, cuisineLabelsById),
+        () => onFiltersApplied(filters.copyWith(cuisine: 'All')),
+      );
     }
     if (filters.suitableFor != 'All') {
-      addChip(_labelFor(filters.suitableFor, ageLabelsById), () => onFiltersApplied(filters.copyWith(suitableFor: 'All')));
+      addChip(
+        _labelFor(filters.suitableFor, ageLabelsById),
+        () => onFiltersApplied(filters.copyWith(suitableFor: 'All')),
+      );
     }
     if (filters.nutritionTag != 'All') {
-      addChip(_labelFor(filters.nutritionTag, nutritionLabelsById), () => onFiltersApplied(filters.copyWith(nutritionTag: 'All')));
+      addChip(
+        _labelFor(filters.nutritionTag, nutritionLabelsById),
+        () => onFiltersApplied(filters.copyWith(nutritionTag: 'All')),
+      );
     }
     if (filters.collection != 'All') {
-      addChip(_labelFor(filters.collection, collectionLabelsById), () => onFiltersApplied(filters.copyWith(collection: 'All')));
+      addChip(
+        _labelFor(filters.collection, collectionLabelsById),
+        () => onFiltersApplied(filters.copyWith(collection: 'All')),
+      );
     }
 
     if (allergies.enabled) {
       addChip(
-        _allergiesChipLabel(allergies), 
-        () => onAllergiesApplied(allergies.copyWith(enabled: false, mode: SuitabilityMode.wholeFamily, personIds: const {}, includeSwaps: false))
+        _allergiesChipLabel(allergies),
+        () => onAllergiesApplied(
+          allergies.copyWith(
+            enabled: false,
+            mode: SuitabilityMode.wholeFamily,
+            personIds: const <String>{},
+            includeSwaps: false,
+          ),
+        ),
       );
+
       if (allergies.includeSwaps) {
         addChip(
-          'Swaps on', 
-          () => onAllergiesApplied(allergies.copyWith(includeSwaps: false))
+          'Swaps on',
+          () => onAllergiesApplied(allergies.copyWith(includeSwaps: false)),
         );
       }
     }
@@ -272,9 +250,21 @@ class RecipeFilterBar extends StatelessWidget {
       children: [
         Row(
           children: [
-            Expanded(child: _PillButton(label: 'Filters', count: filterCount, onTap: () => _openSheet(context, false))),
+            Expanded(
+              child: _PillButton(
+                label: 'Filters',
+                count: filterCount,
+                onTap: () => _openSheet(context, false),
+              ),
+            ),
             const SizedBox(width: 10),
-            Expanded(child: _PillButton(label: 'Allergies', count: allergyCount, onTap: () => _openSheet(context, true))),
+            Expanded(
+              child: _PillButton(
+                label: 'Allergies',
+                count: allergyCount,
+                onTap: () => _openSheet(context, true),
+              ),
+            ),
           ],
         ),
         if (chips.isNotEmpty) ...[
@@ -420,9 +410,9 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
 
   // PageView Control
   final PageController _pageCtrl = PageController();
-  
+
   // 0 = Main Menu (Filters OR Allergies), 1 = Selector
-  int _pageIndex = 0; 
+  int _pageIndex = 0;
   _SubPageType _activeSubPage = _SubPageType.none;
 
   @override
@@ -443,18 +433,23 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
       _activeSubPage = type;
       _pageIndex = 1;
     });
-    _pageCtrl.animateToPage(1, duration: const Duration(milliseconds: 300), curve: Curves.easeInOut);
+    _pageCtrl.animateToPage(
+      1,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+    );
   }
 
   void _goBack() {
     setState(() => _pageIndex = 0);
-    _pageCtrl.animateToPage(0, duration: const Duration(milliseconds: 300), curve: Curves.easeInOut);
+    _pageCtrl.animateToPage(
+      0,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+    );
   }
 
   void _applyAndClose() {
-    // If we are in "Filters" mode (default), save filters
-    // If we are in "Allergies" mode (passed via startOnAllergies), save allergies
-    // Actually, saving both is safest.
     widget.onApplyFilters(_tempFilters);
     widget.onApplyAllergies(_tempAllergies);
     Navigator.pop(context);
@@ -470,8 +465,8 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
   Widget build(BuildContext context) {
     final bottomPad = MediaQuery.of(context).viewInsets.bottom;
     final isAllergiesMode = widget.startOnAllergies;
-    final title = _pageIndex == 1 
-        ? _subPageTitle(_activeSubPage) 
+    final title = _pageIndex == 1
+        ? _subPageTitle(_activeSubPage)
         : (isAllergiesMode ? 'Allergies' : 'Filters');
 
     return Container(
@@ -503,14 +498,13 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                     onPressed: _goBack,
                   )
                 else
-                  // Just a spacer or icon
                   const SizedBox(width: 0),
-                
+
                 const SizedBox(width: 12),
-                
+
                 Expanded(
                   child: Text(
-                    title, 
+                    title,
                     style: TextStyle(
                       fontWeight: FontWeight.w800,
                       fontSize: 18,
@@ -518,10 +512,13 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                     ),
                   ),
                 ),
-                
+
                 // Close
                 IconButton(
-                  icon: Icon(Icons.close_rounded, color: Colors.black.withOpacity(0.65)),
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: Colors.black.withOpacity(0.65),
+                  ),
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
                   onPressed: () => Navigator.of(context).pop(),
@@ -537,10 +534,10 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
               physics: const NeverScrollableScrollPhysics(),
               children: [
                 // Page 0: Root Menu
-                isAllergiesMode 
-                    ? _buildAllergiesRoot(bottomPad) 
+                isAllergiesMode
+                    ? _buildAllergiesRoot(bottomPad)
                     : _buildFiltersRoot(bottomPad),
-                
+
                 // Page 1: Sub Selector
                 _buildSubPage(bottomPad),
               ],
@@ -561,9 +558,15 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              Text('REFINE RESULTS', style: TextStyle(
-                fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 0.8, color: Colors.black.withOpacity(0.5)
-              )),
+              Text(
+                'REFINE RESULTS',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0.8,
+                  color: Colors.black.withOpacity(0.5),
+                ),
+              ),
               const SizedBox(height: 12),
 
               if (!widget.lockCourse) ...[
@@ -596,7 +599,8 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
               if (!widget.lockNutrition) ...[
                 _MenuButton(
                   label: 'Nutrition',
-                  value: _labelFor(_tempFilters.nutritionTag, widget.nutritionLabelsById),
+                  value:
+                      _labelFor(_tempFilters.nutritionTag, widget.nutritionLabelsById),
                   onTap: () => _goToSubPage(_SubPageType.nutrition),
                 ),
                 const SizedBox(height: 10),
@@ -605,7 +609,8 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
               if (!widget.lockCollection) ...[
                 _MenuButton(
                   label: 'Collection',
-                  value: _labelFor(_tempFilters.collection, widget.collectionLabelsById),
+                  value:
+                      _labelFor(_tempFilters.collection, widget.collectionLabelsById),
                   onTap: () => _goToSubPage(_SubPageType.collection),
                 ),
               ],
@@ -626,10 +631,16 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
 
     void togglePerson(String id) {
       final current = Set<String>.from(a.personIds);
-      if (current.contains(id)) current.remove(id);
-      else current.add(id);
+      if (current.contains(id)) {
+        current.remove(id);
+      } else {
+        current.add(id);
+      }
 
-      final nextMode = current.isEmpty ? SuitabilityMode.wholeFamily : SuitabilityMode.specificPeople;
+      final nextMode = current.isEmpty
+          ? SuitabilityMode.wholeFamily
+          : SuitabilityMode.specificPeople;
+
       setState(() {
         _tempAllergies = a.copyWith(mode: nextMode, personIds: current);
       });
@@ -653,7 +664,11 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                     Expanded(
                       child: Text(
                         'FILTER BY ALLERGIES',
-                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: AppColors.brandDark),
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 13,
+                          color: AppColors.brandDark,
+                        ),
                       ),
                     ),
                     Switch(
@@ -662,7 +677,11 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                       onChanged: (v) {
                         setState(() {
                           if (!v) {
-                            _tempAllergies = a.copyWith(enabled: false, mode: SuitabilityMode.wholeFamily, personIds: const {});
+                            _tempAllergies = a.copyWith(
+                              enabled: false,
+                              mode: SuitabilityMode.wholeFamily,
+                              personIds: const <String>{},
+                            );
                           } else {
                             _tempAllergies = a.copyWith(enabled: true);
                           }
@@ -675,38 +694,63 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
 
               if (a.enabled) ...[
                 const SizedBox(height: 24),
-                Text('SUITABLE FOR', style: TextStyle(
-                  fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 0.8, color: Colors.black.withOpacity(0.5)
-                )),
+                Text(
+                  'SUITABLE FOR',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.8,
+                    color: Colors.black.withOpacity(0.5),
+                  ),
+                ),
                 const SizedBox(height: 12),
 
                 // Presets
                 _PersonToggle(
                   label: 'Whole family',
                   selected: a.mode == SuitabilityMode.wholeFamily,
-                  onTap: () => setState(() => _tempAllergies = a.copyWith(mode: SuitabilityMode.wholeFamily, personIds: const {})),
+                  onTap: () => setState(() {
+                    _tempAllergies = a.copyWith(
+                      mode: SuitabilityMode.wholeFamily,
+                      personIds: const <String>{},
+                    );
+                  }),
                 ),
                 const SizedBox(height: 8),
                 _PersonToggle(
                   label: 'All children',
                   selected: a.mode == SuitabilityMode.allChildren,
-                  onTap: () => setState(() => _tempAllergies = a.copyWith(mode: SuitabilityMode.allChildren, personIds: const {})),
+                  onTap: () => setState(() {
+                    _tempAllergies = a.copyWith(
+                      mode: SuitabilityMode.allChildren,
+                      personIds: const <String>{},
+                    );
+                  }),
                 ),
 
                 if (allPeople.isNotEmpty) ...[
                   const SizedBox(height: 20),
-                  Text('INDIVIDUALS', style: TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 0.8, color: Colors.black.withOpacity(0.5)
-                  )),
-                  const SizedBox(height: 12),
-                  ...allPeople.map((p) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: _PersonToggle(
-                      label: p.name,
-                      selected: a.mode == SuitabilityMode.specificPeople && a.personIds.contains(p.id),
-                      onTap: () => togglePerson(p.id),
+                  Text(
+                    'INDIVIDUALS',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.8,
+                      color: Colors.black.withOpacity(0.5),
                     ),
-                  )),
+                  ),
+                  const SizedBox(height: 12),
+                  ...allPeople.map(
+                    (p) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _PersonToggle(
+                        label: p.name,
+                        selected: a.mode == SuitabilityMode.specificPeople &&
+                            a.personIds.contains(p.id),
+                        onTap: () => togglePerson(p.id),
+                      ),
+                    ),
+                  ),
                 ],
 
                 const SizedBox(height: 12),
@@ -720,16 +764,28 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('INCLUDE RECIPES THAT NEED SWAPS', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: AppColors.brandDark)),
+                          Text(
+                            'INCLUDE RECIPES THAT NEED SWAPS',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: AppColors.brandDark,
+                            ),
+                          ),
                           const SizedBox(height: 4),
-                          Text('Shows recipes with safe ingredient replacements', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                          const Text(
+                            'Shows recipes with safe ingredient replacements',
+                            style: TextStyle(fontSize: 12, color: Colors.black54),
+                          ),
                         ],
                       ),
                     ),
                     Switch(
                       value: a.includeSwaps,
                       activeColor: AppColors.brandDark,
-                      onChanged: (v) => setState(() => _tempAllergies = a.copyWith(includeSwaps: v)),
+                      onChanged: (v) => setState(() {
+                        _tempAllergies = a.copyWith(includeSwaps: v);
+                      }),
                     ),
                   ],
                 ),
@@ -748,8 +804,11 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
   Widget _buildSubPage(double bottomPad) {
     final options = _getOptions(_activeSubPage);
     final current = _getValue(_activeSubPage);
-    final safeOptions = options.isEmpty ? const ['All'] : options;
-    final effectiveCurrent = safeOptions.contains(current) ? current : (safeOptions.contains('All') ? 'All' : safeOptions.first);
+
+    final safeOptions = options.isEmpty ? const <String>['All'] : options;
+    final effectiveCurrent = safeOptions.contains(current)
+        ? current
+        : (safeOptions.contains('All') ? 'All' : safeOptions.first);
 
     return Column(
       children: [
@@ -758,18 +817,24 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Align(
             alignment: Alignment.centerLeft,
-            child: Text('SELECT OPTION', style: TextStyle(
-                fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 0.8, color: Colors.black.withOpacity(0.5)
-            )),
+            child: Text(
+              'SELECT OPTION',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0.8,
+                color: Colors.black.withOpacity(0.5),
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 10),
-        
         Expanded(
           child: ListView.separated(
             padding: EdgeInsets.only(bottom: 20 + bottomPad),
             itemCount: safeOptions.length,
-            separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(0.06)),
+            separatorBuilder: (_, __) =>
+                Divider(height: 1, color: Colors.black.withOpacity(0.06)),
             itemBuilder: (ctx, i) {
               final val = safeOptions[i];
               final label = _getLabelFor(val, _activeSubPage);
@@ -778,7 +843,9 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
               return ListTile(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16),
                 title: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
-                trailing: isSelected ? const Icon(Icons.check_circle, color: AppColors.brandDark) : null,
+                trailing: isSelected
+                    ? const Icon(Icons.check_circle, color: AppColors.brandDark)
+                    : null,
                 onTap: () {
                   _setValue(_activeSubPage, val);
                   _goBack(); // Auto-back on select
@@ -807,7 +874,10 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
           onPressed: _applyAndClose,
-          child: Text(label, style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+          child: Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0.5),
+          ),
         ),
       ),
     );
@@ -815,46 +885,75 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
 
   String _subPageTitle(_SubPageType type) {
     switch (type) {
-      case _SubPageType.course: return 'Course';
-      case _SubPageType.cuisine: return 'Cuisine';
-      case _SubPageType.age: return 'Age Range';
-      case _SubPageType.nutrition: return 'Nutrition';
-      case _SubPageType.collection: return 'Collection';
-      default: return '';
+      case _SubPageType.course:
+        return 'Course';
+      case _SubPageType.cuisine:
+        return 'Cuisine';
+      case _SubPageType.age:
+        return 'Age Range';
+      case _SubPageType.nutrition:
+        return 'Nutrition';
+      case _SubPageType.collection:
+        return 'Collection';
+      default:
+        return '';
     }
   }
 
   List<String> _getOptions(_SubPageType type) {
     switch (type) {
-      case _SubPageType.course: return widget.courseOptions;
-      case _SubPageType.cuisine: return widget.cuisineOptions;
-      case _SubPageType.age: return widget.suitableForOptions;
-      case _SubPageType.nutrition: return widget.nutritionOptions;
-      case _SubPageType.collection: return widget.collectionOptions;
-      default: return [];
+      case _SubPageType.course:
+        return widget.courseOptions;
+      case _SubPageType.cuisine:
+        return widget.cuisineOptions;
+      case _SubPageType.age:
+        return widget.suitableForOptions;
+      case _SubPageType.nutrition:
+        return widget.nutritionOptions;
+      case _SubPageType.collection:
+        return widget.collectionOptions;
+      default:
+        return const <String>[];
     }
   }
 
   String _getValue(_SubPageType type) {
     switch (type) {
-      case _SubPageType.course: return _tempFilters.course;
-      case _SubPageType.cuisine: return _tempFilters.cuisine;
-      case _SubPageType.age: return _tempFilters.suitableFor;
-      case _SubPageType.nutrition: return _tempFilters.nutritionTag;
-      case _SubPageType.collection: return _tempFilters.collection;
-      default: return 'All';
+      case _SubPageType.course:
+        return _tempFilters.course;
+      case _SubPageType.cuisine:
+        return _tempFilters.cuisine;
+      case _SubPageType.age:
+        return _tempFilters.suitableFor;
+      case _SubPageType.nutrition:
+        return _tempFilters.nutritionTag;
+      case _SubPageType.collection:
+        return _tempFilters.collection;
+      default:
+        return 'All';
     }
   }
 
   void _setValue(_SubPageType type, String val) {
     setState(() {
       switch (type) {
-        case _SubPageType.course: _tempFilters = _tempFilters.copyWith(course: val); break;
-        case _SubPageType.cuisine: _tempFilters = _tempFilters.copyWith(cuisine: val); break;
-        case _SubPageType.age: _tempFilters = _tempFilters.copyWith(suitableFor: val); break;
-        case _SubPageType.nutrition: _tempFilters = _tempFilters.copyWith(nutritionTag: val); break;
-        case _SubPageType.collection: _tempFilters = _tempFilters.copyWith(collection: val); break;
-        default: break;
+        case _SubPageType.course:
+          _tempFilters = _tempFilters.copyWith(course: val);
+          break;
+        case _SubPageType.cuisine:
+          _tempFilters = _tempFilters.copyWith(cuisine: val);
+          break;
+        case _SubPageType.age:
+          _tempFilters = _tempFilters.copyWith(suitableFor: val);
+          break;
+        case _SubPageType.nutrition:
+          _tempFilters = _tempFilters.copyWith(nutritionTag: val);
+          break;
+        case _SubPageType.collection:
+          _tempFilters = _tempFilters.copyWith(collection: val);
+          break;
+        default:
+          break;
       }
     });
   }
@@ -862,12 +961,18 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
   String _getLabelFor(String val, _SubPageType type) {
     if (val == 'All') return 'Any';
     switch (type) {
-      case _SubPageType.course: return widget.courseLabelsById[val] ?? val;
-      case _SubPageType.cuisine: return widget.cuisineLabelsById[val] ?? val;
-      case _SubPageType.age: return widget.ageLabelsById[val] ?? val;
-      case _SubPageType.nutrition: return widget.nutritionLabelsById[val] ?? val;
-      case _SubPageType.collection: return widget.collectionLabelsById[val] ?? val;
-      default: return val;
+      case _SubPageType.course:
+        return widget.courseLabelsById[val] ?? val;
+      case _SubPageType.cuisine:
+        return widget.cuisineLabelsById[val] ?? val;
+      case _SubPageType.age:
+        return widget.ageLabelsById[val] ?? val;
+      case _SubPageType.nutrition:
+        return widget.nutritionLabelsById[val] ?? val;
+      case _SubPageType.collection:
+        return widget.collectionLabelsById[val] ?? val;
+      default:
+        return val;
     }
   }
 }
@@ -881,7 +986,11 @@ class _MenuButton extends StatelessWidget {
   final String value;
   final VoidCallback onTap;
 
-  const _MenuButton({required this.label, required this.value, required this.onTap});
+  const _MenuButton({
+    required this.label,
+    required this.value,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -903,9 +1012,18 @@ class _MenuButton extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(label, style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.brandDark)),
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.brandDark,
+                      ),
+                    ),
                     const SizedBox(height: 4),
-                    Text(value, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 15)),
+                    Text(
+                      value,
+                      style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 15),
+                    ),
                   ],
                 ),
               ),
@@ -923,7 +1041,11 @@ class _PersonToggle extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
 
-  const _PersonToggle({required this.label, required this.selected, required this.onTap});
+  const _PersonToggle({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -939,16 +1061,19 @@ class _PersonToggle extends StatelessWidget {
             borderRadius: BorderRadius.circular(_FStyle.fieldRadius),
             border: Border.all(
               color: selected ? AppColors.brandDark : Colors.black.withOpacity(0.1),
-              width: selected ? 1.5 : 1
+              width: selected ? 1.5 : 1,
             ),
           ),
           child: Row(
             children: [
               Expanded(
-                child: Text(label, style: TextStyle(
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                  color: selected ? AppColors.brandDark : Colors.black,
-                )),
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    color: selected ? AppColors.brandDark : Colors.black,
+                  ),
+                ),
               ),
               Icon(
                 selected ? Icons.check_circle : Icons.circle_outlined,
@@ -967,7 +1092,11 @@ class _PillButton extends StatelessWidget {
   final int count;
   final VoidCallback onTap;
 
-  const _PillButton({required this.label, required this.count, required this.onTap});
+  const _PillButton({
+    required this.label,
+    required this.count,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -986,13 +1115,32 @@ class _PillButton extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Expanded(child: Text(label, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.brandDark))),
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.brandDark,
+                  ),
+                ),
+              ),
               if (count > 0) ...[
                 Container(
-                  width: 22, height: 22,
+                  width: 22,
+                  height: 22,
                   alignment: Alignment.center,
-                  decoration: const BoxDecoration(color: AppColors.brandDark, shape: BoxShape.circle),
-                  child: Text('$count', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                  decoration: const BoxDecoration(
+                    color: AppColors.brandDark,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text(
+                    '$count',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 8),
               ],
@@ -1009,18 +1157,31 @@ class _FilterChip extends StatelessWidget {
   final String label;
   final VoidCallback onClear;
 
-  const _FilterChip({required this.label, required this.onClear});
+  const _FilterChip({
+    required this.label,
+    required this.onClear,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
       height: 34,
       padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(color: AppColors.brandDark, borderRadius: BorderRadius.circular(999)),
+      decoration: BoxDecoration(
+        color: AppColors.brandDark,
+        borderRadius: BorderRadius.circular(999),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
           const SizedBox(width: 6),
           GestureDetector(
             onTap: onClear,

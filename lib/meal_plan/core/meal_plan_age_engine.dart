@@ -6,30 +6,23 @@ import 'meal_plan_log.dart';
 class MealPlanAgeEngine {
   MealPlanAgeEngine._();
 
-  /// Interpreted as: if youngest child is younger than this, we apply baby rules.
-  ///
-  /// Your stated rule is 6–8 months, so 9 is a sensible default.
-  /// If you want it to remain 12, change this back to 12.
   static const int defaultBabyThresholdMonths = 9;
 
-  // ------------------------------------------------------------
-  // AGE
-  // ------------------------------------------------------------
-
-  /// Returns age in whole months (>=0), or null if DOB cannot be parsed.
-  ///
-  /// Supports:
-  /// - dobMonth + dobYear (preferred)
-  /// - legacy `dob` stored as Timestamp/DateTime/String ("YYYY-MM", "MM/YYYY", "DD/MM/YYYY")
   static int? ageInMonths({
     required Map<String, dynamic> child,
     DateTime? now,
   }) {
     final n = now ?? DateTime.now();
 
-    final m = child['dobMonth'];
-    final y = child['dobYear'];
-    if (m is int && y is int && m >= 1 && m <= 12) {
+    int? parseInt(dynamic v) {
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      return int.tryParse(v?.toString() ?? '');
+    }
+
+    final m = parseInt(child['dobMonth']);
+    final y = parseInt(child['dobYear']);
+    if (m != null && y != null && m >= 1 && m <= 12) {
       return _diffInWholeMonths(fromYear: y, fromMonth: m, to: n);
     }
 
@@ -69,6 +62,12 @@ class MealPlanAgeEngine {
           }
         }
       }
+
+      // try ISO DateTime parse
+      final parsed = DateTime.tryParse(s);
+      if (parsed != null) {
+        return _diffInWholeMonths(fromYear: parsed.year, fromMonth: parsed.month, to: n);
+      }
     }
 
     if (dt != null) {
@@ -89,38 +88,24 @@ class MealPlanAgeEngine {
     return diff < 0 ? 0 : diff;
   }
 
-  /// Finds the youngest child age in months from a `children` list.
-  /// Returns null if no valid DOB data is found.
   static int? youngestAgeMonths({
     required List<dynamic>? children,
     required DateTime onDate,
   }) {
     if (children == null || children.isEmpty) return null;
 
-    int? best; // smallest = youngest
+    int? best;
     for (final c in children) {
       if (c is! Map) continue;
       final child = Map<String, dynamic>.from(c);
 
-      final m = child['dobMonth'];
-      final y = child['dobYear'];
-      int? age;
-
-      if (m is int && y is int && m >= 1 && m <= 12) {
-        age = _diffInWholeMonths(fromYear: y, fromMonth: m, to: onDate);
-      } else {
-        age = ageInMonths(child: child, now: onDate);
-      }
-
+      final age = ageInMonths(child: child, now: onDate);
       if (age == null) continue;
+
       if (best == null || age < best) best = age;
     }
     return best;
   }
-
-  // ------------------------------------------------------------
-  // FIRST FOODS GATE
-  // ------------------------------------------------------------
 
   static bool _isSnackSlot(String slotKey) {
     final k = slotKey.trim().toLowerCase();
@@ -139,25 +124,11 @@ class MealPlanAgeEngine {
         v.contains('first_foods');
   }
 
-  /// Robustly detects "First Foods" in WPRM payloads.
-  ///
-  /// Your WP example stores it in:
-  /// recipe.recipe.tags.collections[].slug == "first-foods"
-  /// recipe.recipe.tags.collections[].name == "First Foods"
-  ///
-  /// But your app can pass flattened variants too, so we also check:
-  /// - recipe.tags.collections
-  /// - recipe.taxonomies.collections / recipe.taxonomies.collections[]
-  /// - recipe.collections / recipe.collection
-  /// - recipe.wprm_collections (if it ever becomes a list of term maps)
   static bool _isFirstFoodsRecipe(Map<String, dynamic> recipe) {
     bool hasFirstFoods(dynamic v) {
       if (v == null) return false;
-
       if (v is bool) return v;
-
       if (v is String) return _tokenIsFirstFoods(v);
-
       if (v is num) return false;
 
       if (v is List) {
@@ -169,17 +140,13 @@ class MealPlanAgeEngine {
 
       if (v is Map) {
         final m = Map<String, dynamic>.from(v);
-
-        // Common term-map shapes: {slug,name,taxonomy,...}
         final slug = (m['slug'] ?? '').toString();
         final name = (m['name'] ?? '').toString();
         if (_tokenIsFirstFoods(slug) || _tokenIsFirstFoods(name)) return true;
 
-        // Some shapes use {term, label}
         final term = (m['term'] ?? m['label'] ?? '').toString();
         if (_tokenIsFirstFoods(term)) return true;
 
-        // Otherwise traverse values
         for (final entry in m.entries) {
           if (hasFirstFoods(entry.value)) return true;
         }
@@ -189,17 +156,14 @@ class MealPlanAgeEngine {
       return false;
     }
 
-    // 1) direct flags
     if (recipe['first_foods'] == true) return true;
 
-    // 2) flattened keys that might exist in your ingest
     if (hasFirstFoods(recipe['collections'])) return true;
     if (hasFirstFoods(recipe['collection'])) return true;
     if (hasFirstFoods(recipe['category'])) return true;
     if (hasFirstFoods(recipe['categories'])) return true;
     if (hasFirstFoods(recipe['tags'])) return true;
 
-    // 3) taxonomies bucket
     final tax = recipe['taxonomies'];
     if (tax is Map) {
       final t = Map<String, dynamic>.from(tax);
@@ -208,24 +172,20 @@ class MealPlanAgeEngine {
       if (hasFirstFoods(t['wprm_collections'])) return true;
     }
 
-    // 4) WPRM top-level arrays
     if (hasFirstFoods(recipe['wprm_collections'])) return true;
 
-    // 5) nested WP "recipe" object
     final inner = recipe['recipe'];
     if (inner is Map) {
       final m = Map<String, dynamic>.from(inner);
 
       if (m['first_foods'] == true) return true;
 
-      // nested tags.collections (canonical path)
       final tags = m['tags'];
       if (tags is Map) {
         final tm = Map<String, dynamic>.from(tags);
         if (hasFirstFoods(tm['collections'])) return true;
       }
 
-      // other defensive checks
       if (hasFirstFoods(m['collections'])) return true;
       if (hasFirstFoods(m['collection'])) return true;
       if (hasFirstFoods(m['tags'])) return true;
@@ -236,11 +196,6 @@ class MealPlanAgeEngine {
     return false;
   }
 
-  /// Enforces your baby rule for kids-audience slots:
-  /// - youngest < threshold:
-  ///     - snacks => first foods only
-  ///     - meals => none allowed
-  /// - otherwise => allow
   static bool allowRecipeForSlotUsingFirstFoodsGate({
     required Map<String, dynamic> recipe,
     required String slotKey,
@@ -249,33 +204,26 @@ class MealPlanAgeEngine {
     DateTime? servingDate,
   }) {
     final dt = servingDate ?? DateTime.now();
-
     final youngest = youngestAgeMonths(children: children, onDate: dt);
 
     MealPlanLog.d(
       'AGE_GATE slot=$slotKey youngest=$youngest threshold=$babyThresholdMonths children=${children?.length ?? 0} date=${dt.toIso8601String()}',
     );
 
-    // If we can’t compute a youngest age, don’t block recipes (avoid bricking plans).
     if (youngest == null) return true;
-
     if (youngest >= babyThresholdMonths) return true;
 
-    // Baby rules:
     if (_isSnackSlot(slotKey)) {
       final isFF = _isFirstFoodsRecipe(recipe);
-
       final id = (recipe['id'] ??
           (recipe['recipe'] is Map ? (recipe['recipe'] as Map)['id'] : null));
       final title = (recipe['title'] ??
           (recipe['recipe'] is Map ? (recipe['recipe'] as Map)['name'] : null));
 
       MealPlanLog.d('AGE_GATE snack recipe id=$id title=$title firstFoods=$isFF');
-
       return isFF;
     }
 
-    // meals not allowed for baby in kids-audience slots
     return false;
   }
 }

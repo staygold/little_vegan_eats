@@ -1,3 +1,5 @@
+// lib/recipes/allergy_keys.dart
+
 class AllergyKeys {
   static const soy = 'soy';
   static const peanut = 'peanut';
@@ -7,7 +9,7 @@ class AllergyKeys {
   static const coconut = 'coconut';
   static const seed = 'seed';
 
-  // If you want to support these later in your engine:
+  // optional / future
   static const mustard = 'mustard';
   static const celery = 'celery';
   static const lupin = 'lupin';
@@ -22,6 +24,9 @@ class AllergyKeys {
     soy, peanut, treeNut, sesame, gluten, coconut, seed,
     mustard, celery, lupin, sulphites, legumes,
   ];
+
+  // Useful for scanning swap text.
+  static const allKeys = all;
 
   static String label(String key) {
     switch (key) {
@@ -45,10 +50,10 @@ class AllergyKeys {
   static String? normalize(String raw) {
     final s = raw.trim().toLowerCase();
 
-    // ✅ already canonical
+    // already canonical
     if (all.contains(s)) return s;
 
-    // ✅ onboarding / UI labels
+    // labels/synonyms
     if (s == 'soy') return soy;
     if (s == 'peanut' || s == 'peanuts') return peanut;
 
@@ -69,7 +74,7 @@ class AllergyKeys {
 
     if (s == 'seed' || s == 'seeds') return seed;
 
-    // Optional (not yet used by AllergyEngine keywords unless you add them)
+    // optional
     if (s == 'mustard') return mustard;
     if (s == 'celery') return celery;
     if (s == 'lupin') return lupin;

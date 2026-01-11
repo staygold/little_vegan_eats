@@ -21,6 +21,10 @@ import '../recipes/popular_recipes_page.dart';
 import '../recipes/recipes_bootstrap_gate.dart';
 import '../recipes/course_page.dart';
 
+// ✅ family repo source of truth
+import '../recipes/family_profile_repository.dart';
+import '../recipes/family_profile.dart';
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -35,8 +39,10 @@ class _HomeScreenState extends State<HomeScreen> {
   // Favourites
   StreamSubscription<User?>? _authFavSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
-  bool _loadingFavs = true;
   final Set<int> _favoriteIds = <int>{};
+
+  // ✅ family repo
+  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
 
   @override
   void initState() {
@@ -94,7 +100,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _favSub?.cancel();
 
     setState(() {
-      _loadingFavs = true;
       _favoriteIds.clear();
     });
 
@@ -104,7 +109,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (user == null) {
         if (!mounted) return;
         setState(() {
-          _loadingFavs = false;
           _favoriteIds.clear();
         });
         return;
@@ -130,13 +134,11 @@ class _HomeScreenState extends State<HomeScreen> {
             _favoriteIds
               ..clear()
               ..addAll(next);
-            _loadingFavs = false;
           });
         },
         onError: (_) {
           if (!mounted) return;
           setState(() {
-            _loadingFavs = false;
             _favoriteIds.clear();
           });
         },
@@ -145,12 +147,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ---------- FIRESTORE STREAMS (Programs + Days) ----------
-
-  DocumentReference<Map<String, dynamic>>? _userDoc() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return null;
-    return FirebaseFirestore.instance.collection('users').doc(user.uid);
-  }
 
   /// users/{uid}/mealPlan/settings
   DocumentReference<Map<String, dynamic>>? _programSettingsDoc() {
@@ -204,14 +200,10 @@ class _HomeScreenState extends State<HomeScreen> {
         : <String, dynamic>{};
   }
 
-  String? _extractFirstName(Map<String, dynamic> data) {
-    final adults = data['adults'];
-    if (adults is! List || adults.isEmpty) return null;
-
-    final firstAdult = adults.first;
-    if (firstAdult is! Map) return null;
-
-    final name = (firstAdult['name'] ?? '').toString().trim();
+  // ✅ first name from FamilyProfile
+  String? _firstNameFromFamily(FamilyProfile fam) {
+    if (fam.adults.isEmpty) return null;
+    final name = fam.adults.first.name.trim();
     if (name.isEmpty) return null;
 
     final parts = name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
@@ -304,14 +296,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final userDoc = _userDoc();
-    final settingsDoc = _programSettingsDoc();
-
     if (_recipesLoading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    if (userDoc == null || settingsDoc == null) {
+    // ✅ auth guard (keeps your previous behaviour)
+    if (FirebaseAuth.instance.currentUser == null) {
+      return const Scaffold(
+        body: Center(child: Text('Log in to see your home feed')),
+      );
+    }
+
+    final settingsDoc = _programSettingsDoc();
+    if (settingsDoc == null) {
       return const Scaffold(
         body: Center(child: Text('Log in to see your home feed')),
       );
@@ -326,11 +323,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final effectiveDayKey = _effectiveHomeDayKey();
 
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: userDoc.snapshots(),
-      builder: (context, userSnap) {
-        final userData = userSnap.data?.data() ?? <String, dynamic>{};
-        final firstName = _extractFirstName(userData);
+    return StreamBuilder<FamilyProfile>(
+      stream: _familyRepo.watchFamilyProfile(),
+      builder: (context, famSnap) {
+        final firstName =
+            (famSnap.hasData) ? _firstNameFromFamily(famSnap.data!) : null;
 
         return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
           stream: settingsDoc.snapshots(),
@@ -455,30 +452,34 @@ class _HomeScreenState extends State<HomeScreen> {
               stream: adhocStream,
               builder: (context, adhocSnap) {
                 final adhocData = adhocSnap.data?.data();
-                final adhocSlots =
-                    adhocData == null ? <String, dynamic>{} : _slotsFromDayDoc(adhocData);
+                final adhocSlots = adhocData == null
+                    ? <String, dynamic>{}
+                    : _slotsFromDayDoc(adhocData);
 
                 return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
                   stream: programStream,
                   builder: (context, progSnap) {
                     final progData = progSnap.data?.data();
-                    final progSlots =
-                        progData == null ? <String, dynamic>{} : _slotsFromDayDoc(progData);
+                    final progSlots = progData == null
+                        ? <String, dynamic>{}
+                        : _slotsFromDayDoc(progData);
 
                     final bool adhocExists = adhocSnap.data?.exists == true;
-final bool programDayExists = progSnap.data?.exists == true;
+                    final bool programDayExists = progSnap.data?.exists == true;
 
-final Map<String, dynamic> effectiveSlots =
-    adhocExists ? adhocSlots : (programDayExists ? progSlots : <String, dynamic>{});
+                    final Map<String, dynamic> effectiveSlots = adhocExists
+                        ? adhocSlots
+                        : (programDayExists ? progSlots : <String, dynamic>{});
 
-final bool dayInProgramme = adhocExists || programDayExists;
+                    final bool dayInProgramme = adhocExists || programDayExists;
 
                     final VoidCallback onOpenFullPlan = () {
                       Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) => MealPlanScreen(
                             weekId: MealPlanKeys.weekIdForDate(
-                              MealPlanKeys.parseDayKey(effectiveDayKey) ?? DateTime.now(),
+                              MealPlanKeys.parseDayKey(effectiveDayKey) ??
+                                  DateTime.now(),
                             ),
                             focusDayKey: effectiveDayKey,
                           ),
@@ -544,25 +545,24 @@ final bool dayInProgramme = adhocExists || programDayExists;
                                 heroTopText: "HERE'S SOME IDEAS",
                                 heroBottomText: "FOR TODAY",
                                 homeAccordion: true,
-
                                 onOpenWeek: onOpenFullPlan,
                                 onOpenMealPlan: null,
                                 onOpenToday: null,
 
-                                // ✅ keep build-plan CTA available, but section will NOT use it
+                                // keep build-plan CTA available, but section will NOT use it
                                 // when programmeActive=true and onAddAdhocDay is provided.
                                 onBuildMealPlan: () => _openBuilder(context),
 
-                                // ✅ this is the key fix
+                                // ✅ key fix
                                 programmeActive: true,
 
-                                // ✅ Home doesn’t yet know programme weekdays; treat as “in programme”
+                                // Home doesn’t yet know programme weekdays; treat as “in programme”
                                 // so the empty state becomes “add one-off day” when empty.
                                 dayInProgramme: dayInProgramme,
 
-
-                                // ✅ this is what makes the section show “ADD ONE-OFF DAY” when empty
-                                onAddAdhocDay: () => _openAdhocBuilder(context, effectiveDayKey),
+                                // ✅ shows “ADD ONE-OFF DAY” when empty
+                                onAddAdhocDay: () =>
+                                    _openAdhocBuilder(context, effectiveDayKey),
                               ),
                             ),
                           ),
