@@ -17,16 +17,51 @@ class MealPlanReviewService {
     return FirebaseFirestore.instance.collection('users').doc(user.uid);
   }
 
+  static Map<String, dynamic> _asStringDynamicMap(dynamic v) {
+    if (v is Map) {
+      return Map<String, dynamic>.from(v);
+    }
+    return <String, dynamic>{};
+  }
+
+  /// ✅ Decide if a plan is actually active/existing.
+  /// Keep this conservative: return true if *any* known plan signal exists.
+  /// You can tighten this later to just `activeProgramId != null` if you want.
+  static bool _hasActivePlanFromUserDoc(Map<String, dynamic> data) {
+    // Common patterns
+    final activeProgramId = data['activeProgramId'];
+    if (activeProgramId != null && activeProgramId.toString().trim().isNotEmpty) {
+      return true;
+    }
+
+    // Sometimes weekId is used as "current plan week"
+    final weekId = data['weekId'];
+    if (weekId != null && weekId.toString().trim().isNotEmpty) {
+      return true;
+    }
+
+    // Some apps store a top-level mealPlan object when any plan exists
+    final mealPlan = data['mealPlan'];
+    if (mealPlan is Map && mealPlan.isNotEmpty) {
+      return true;
+    }
+
+    // Some apps store programs list/map
+    final programs = data['programs'];
+    if (programs is List && programs.isNotEmpty) return true;
+    if (programs is Map && programs.isNotEmpty) return true;
+
+    // Fallback: if legacy week data exists (optional)
+    final weeks = data['weeks'];
+    if (weeks is Map && weeks.isNotEmpty) return true;
+
+    return false;
+  }
+
   // ------------------------------------------------------------
   // Core logic
   // ------------------------------------------------------------
 
-  /// Checks whether the currently viewed week contains
-  /// any recipes that are no longer allowed under
-  /// the current allergy rules.
-  ///
-  /// Uses controller's effective day sources (adhoc > program),
-  /// not legacy weekData.
   static bool mealPlanHasConflicts({
     required MealPlanController ctrl,
     required Map<String, dynamic>? Function(int id) recipeById,
@@ -43,7 +78,7 @@ class MealPlanReviewService {
         if (recipe == null) continue;
 
         if (!ctrl.recipeAllowed(recipe)) {
-          return true; // 🔴 conflict found
+          return true;
         }
       }
     }
@@ -56,85 +91,127 @@ class MealPlanReviewService {
   // ------------------------------------------------------------
 
   /// Marks the meal plan as needing review.
-  /// This is cheap, idempotent, and safe to call.
+  /// ✅ Only triggers if a plan is active.
+  /// ✅ Must never be allowed to crash profile saving.
   static Future<void> markNeedsReview({
     required String changedForLabel,
   }) async {
     final doc = _userDoc();
     if (doc == null) return;
 
-    await doc.set({
-      'mealPlanReview': {
-        'needed': true,
-        'reason': 'Allergies updated for $changedForLabel',
+    try {
+      // ✅ Gate: only set review flag if there's an active/existing plan
+      final snap = await doc.get();
+      final data = snap.data() ?? <String, dynamic>{};
+
+      final hasPlan = _hasActivePlanFromUserDoc(data);
+      if (!hasPlan) return;
+
+      await doc.set({
+        'mealPlanReview': {
+          'needed': true,
+          'reason': 'Allergies updated for $changedForLabel',
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
         'updatedAt': FieldValue.serverTimestamp(),
-      },
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+      }, SetOptions(merge: true));
+    } catch (e) {
+      // Never crash caller (profile save).
+      debugPrint('MealPlanReviewService.markNeedsReview ignored error: $e');
+    }
   }
 
   // ------------------------------------------------------------
   // UI prompt
   // ------------------------------------------------------------
 
+  /// Safe: will never throw, never prompts during route transitions,
+  /// and clears the review flag without crashing.
   static Future<void> checkAndPromptIfNeeded(BuildContext context) async {
     final doc = _userDoc();
     if (doc == null) return;
 
-    final snap = await doc.get();
-    final data = snap.data() ?? {};
+    try {
+      // If we're not on an active route, bail early.
+      final route = ModalRoute.of(context);
+      if (route == null || !route.isCurrent) return;
 
-    final rawReview = data['mealPlanReview'];
-    final review =
-        (rawReview is Map<String, dynamic>) ? rawReview : <String, dynamic>{};
+      final snap = await doc.get();
+      final data = snap.data() ?? <String, dynamic>{};
 
-    final needed = review['needed'] == true;
-    if (!needed) return;
+      // ✅ Gate: if no plan, we shouldn't prompt (and we should clear any stale flag)
+      final hasPlan = _hasActivePlanFromUserDoc(data);
 
-    final reason = (review['reason'] is String)
-        ? review['reason'] as String
-        : 'Allergies have changed. Your meal plan may need reviewing.';
+      final review = _asStringDynamicMap(data['mealPlanReview']);
+      final needed = review['needed'] == true;
 
-    if (!context.mounted) return;
+      if (!hasPlan) {
+        if (needed) {
+          // Clear stale flag quietly
+          await doc.set({
+            'mealPlanReview': {'needed': false},
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+        }
+        return;
+      }
 
-    final action = await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Text('Meal plan needs review'),
-        content: Text(
-          '$reason\n\n'
-          'You can keep your plan as-is (affected meals will be flagged), '
-          'or review and update your meals.',
+      if (!needed) return;
+
+      final reason =
+          (review['reason'] is String && (review['reason'] as String).trim().isNotEmpty)
+              ? review['reason'] as String
+              : 'Allergies have changed. Your meal plan may need reviewing.';
+
+      if (!context.mounted) return;
+
+      // Re-check route status right before showing UI
+      final r2 = ModalRoute.of(context);
+      if (r2 == null || !r2.isCurrent) return;
+
+      final action = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => AlertDialog(
+          title: const Text('Meal plan needs review'),
+          content: Text(
+            '$reason\n\n'
+            'You can keep your plan as-is (affected meals will be flagged), '
+            'or review and update your meals.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'keep'),
+              child: const Text('Keep existing'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, 'review'),
+              child: const Text('Review now'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, 'keep'),
-            child: const Text('Keep existing'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, 'review'),
-            child: const Text('Review now'),
-          ),
-        ],
-      ),
-    );
-
-    if (!context.mounted) return;
-
-    if (action == 'review') {
-      Navigator.of(context).pushNamed(
-        '/meal-plan',
-        arguments: {'review': true},
       );
-    }
 
-    // Clear the flag so it doesn't nag
-    await doc.set({
-      'mealPlanReview': {
-        'needed': false,
-      },
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+      if (!context.mounted) return;
+
+      if (action == 'review') {
+        // Only navigate if we’re still on the active route.
+        final r3 = ModalRoute.of(context);
+        if (r3 != null && r3.isCurrent) {
+          Navigator.of(context).pushNamed(
+            '/meal-plan',
+            arguments: {'review': true},
+          );
+        }
+      }
+
+      // Clear flag (do not overwrite reason/updatedAt)
+      await doc.set({
+        'mealPlanReview': {'needed': false},
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('MealPlanReviewService.checkAndPromptIfNeeded ignored error: $e');
+    }
   }
 }

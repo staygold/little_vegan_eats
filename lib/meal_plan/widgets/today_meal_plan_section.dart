@@ -70,7 +70,6 @@ class TodayMealPlanSection extends StatelessWidget {
   final VoidCallback? onOpenToday;
   final VoidCallback? onOpenWeek;
 
-  /// When there is no programme yet, show CTA that calls this
   final VoidCallback? onBuildMealPlan;
 
   final String heroTopText;
@@ -87,7 +86,6 @@ class TodayMealPlanSection extends StatelessWidget {
   final Future<void> Function(String slot)? onNoteSlot;
   final Future<void> Function(String slot)? onClearSlot;
 
-  /// ✅ Called when user taps "ADD ANOTHER SNACK".
   final Future<void> Function()? onAddAnotherSnack;
 
   final bool canSave;
@@ -100,7 +98,6 @@ class TodayMealPlanSection extends StatelessWidget {
   final String emptyBody;
   final String emptyButtonText;
 
-  // ✅ Programme awareness
   final bool programmeActive;
   final bool dayInProgramme;
   final VoidCallback? onAddAdhocDay;
@@ -196,6 +193,33 @@ class TodayMealPlanSection extends StatelessWidget {
     return favoriteIds.contains(recipeId);
   }
 
+  // ✅ Leftover detection (supports both styles)
+  bool _isLeftoverEntry(Map<String, dynamic>? entry) {
+    if (entry == null) return false;
+    if (entry['leftover'] == true) return true;
+    final src = (entry['source'] ?? '').toString().toLowerCase().trim();
+    return src == 'leftover';
+  }
+
+  Widget _leftoverBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppColors.brandDark.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        'LEFTOVER',
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 0.4,
+          color: AppColors.brandDark.withOpacity(0.85),
+        ),
+      ),
+    );
+  }
+
   /// Accepts older/alt keys, normalizes to snack1/snack2 (and leaves others alone).
   String _normaliseSlotKey(String key) {
     final k = key.trim().toLowerCase();
@@ -229,7 +253,17 @@ class TodayMealPlanSection extends StatelessWidget {
     if (parsedBySlot.isEmpty) return false;
     for (final e in parsedBySlot.values) {
       final type = (e['type'] ?? '').toString();
-      if (type == 'recipe' || type == 'note' || type == 'reuse') return true;
+      if (type == 'recipe' ||
+          type == 'note' ||
+          type == 'reuse' ||
+          type == 'first_foods') {
+        return true;
+      }
+      // "clear" is not planned, but if it's a specific baby reason we still treat as planned (it is intentional output)
+      if (type == 'clear') {
+        final reason = MealPlanEntryParser.clearReason(e);
+        if (reason == 'no_suitable_meals_baby') return true;
+      }
     }
     return false;
   }
@@ -237,13 +271,28 @@ class TodayMealPlanSection extends StatelessWidget {
   bool _isPlannedEntry(Map<String, dynamic>? entry) {
     if (entry == null) return false;
     final type = (entry['type'] ?? '').toString();
-    return type == 'recipe' || type == 'note' || type == 'reuse';
+    if (type == 'recipe' ||
+        type == 'note' ||
+        type == 'reuse' ||
+        type == 'first_foods') {
+      return true;
+    }
+    if (type == 'clear') {
+      final reason = MealPlanEntryParser.clearReason(entry);
+      return reason == 'no_suitable_meals_baby';
+    }
+    return false;
   }
 
   bool _isEmptyOrClear(Map<String, dynamic>? entry) {
     if (entry == null) return true;
     final type = (entry['type'] ?? '').toString().trim();
-    return type.isEmpty || type == 'clear';
+    if (type.isEmpty) return true;
+    if (type != 'clear') return false;
+
+    // ✅ If it's the baby "no suitable meals" marker, we do NOT treat it as generic empty.
+    final reason = MealPlanEntryParser.clearReason(entry);
+    return reason != 'no_suitable_meals_baby';
   }
 
   // -----------------------------
@@ -406,6 +455,112 @@ class TodayMealPlanSection extends StatelessWidget {
     return 'Reused from $prettyDay • $prettySlot';
   }
 
+  Widget _firstFoodsCard({
+    required BuildContext context,
+    required String slotKey,
+    required Map<String, dynamic> entry,
+    String? displaySlotLabel,
+  }) {
+    final theme = Theme.of(context);
+    final childName = MealPlanEntryParser.childName(entry);
+    final nameText =
+        (childName != null && childName.isNotEmpty) ? childName : 'your baby';
+
+    return Container(
+      height: 86,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+      child: Row(
+        children: [
+          Icon(Icons.child_friendly_rounded, color: _primaryText),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  displaySlotLabel ?? _slotLabel(slotKey),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: (theme.textTheme.titleMedium ?? const TextStyle())
+                      .copyWith(
+                    color: AppColors.brandDark,
+                    fontWeight: FontWeight.w800,
+                    fontVariations: const [FontVariation('wght', 800)],
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'First foods for $nameText',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: (theme.textTheme.bodyMedium ?? const TextStyle())
+                      .copyWith(
+                    color: _primaryText.withOpacity(0.85),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _slotActions(
+            context: context,
+            slotKey: slotKey,
+            hasEntry: true,
+            iconColor: _primaryText,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _noSuitableMealsCard({
+    required BuildContext context,
+    required String slotKey,
+    required Map<String, dynamic> entry,
+  }) {
+    final theme = Theme.of(context);
+    final childName = MealPlanEntryParser.childName(entry);
+    final nameText =
+        (childName != null && childName.isNotEmpty) ? childName : 'your baby';
+
+    return Container(
+      height: 86,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline, color: _primaryText),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'No suitable meals for $nameText yet',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+                color: _primaryText,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          _slotActions(
+            context: context,
+            slotKey: slotKey,
+            hasEntry: true, // treat as intentional entry
+            iconColor: _primaryText,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _mealCard({
     required BuildContext context,
     required String slotKey,
@@ -413,6 +568,26 @@ class TodayMealPlanSection extends StatelessWidget {
     String? displaySlotLabel,
   }) {
     final theme = Theme.of(context);
+
+    // 0. FIRST FOODS
+    if (MealPlanEntryParser.isFirstFoods(entry)) {
+      return _firstFoodsCard(
+        context: context,
+        slotKey: slotKey,
+        entry: entry!,
+        displaySlotLabel: displaySlotLabel,
+      );
+    }
+
+    // 0.5 NO SUITABLE MEALS (baby)
+    if ((entry?['type'] ?? '').toString() == 'clear' &&
+        MealPlanEntryParser.clearReason(entry) == 'no_suitable_meals_baby') {
+      return _noSuitableMealsCard(
+        context: context,
+        slotKey: slotKey,
+        entry: entry!,
+      );
+    }
 
     // 1. NOTES
     final note = MealPlanEntryParser.entryNoteText(entry);
@@ -468,8 +643,8 @@ class TodayMealPlanSection extends StatelessWidget {
             Expanded(
               child: Text(
                 'Not planned yet',
-                style:
-                    (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+                style: (theme.textTheme.bodyMedium ?? const TextStyle())
+                    .copyWith(
                   color: _primaryText,
                   fontWeight: FontWeight.w600,
                 ),
@@ -495,6 +670,8 @@ class TodayMealPlanSection extends StatelessWidget {
         final thumb = _thumbOf(r);
         final fav = _isFavorited(rid);
 
+        final isLeftover = _isLeftoverEntry(entry);
+
         final reuseMeta = MealPlanEntryParser.entryReuseFrom(entry);
 
         String labelText = displaySlotLabel ?? _slotLabel(slotKey);
@@ -510,7 +687,7 @@ class TodayMealPlanSection extends StatelessWidget {
           child: Container(
             height: 86,
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: isLeftover ? const Color(0xFFF7FAF9) : Colors.white,
               borderRadius: BorderRadius.circular(12),
             ),
             clipBehavior: Clip.antiAlias,
@@ -562,28 +739,39 @@ class TodayMealPlanSection extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          displayTitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style:
-                              (theme.textTheme.titleMedium ?? const TextStyle())
-                                  .copyWith(
-                            color: AppColors.brandDark,
-                            fontWeight: FontWeight.w700,
-                            fontVariations: const [FontVariation('wght', 700)],
-                            fontSize: 18,
-                            height: 1.1,
-                          ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                displayTitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: (theme.textTheme.titleMedium ??
+                                        const TextStyle())
+                                    .copyWith(
+                                  color: AppColors.brandDark,
+                                  fontWeight: FontWeight.w700,
+                                  fontVariations: const [
+                                    FontVariation('wght', 700)
+                                  ],
+                                  fontSize: 18,
+                                  height: 1.1,
+                                ),
+                              ),
+                            ),
+                            if (isLeftover) ...[
+                              const SizedBox(width: 8),
+                              _leftoverBadge(),
+                            ],
+                          ],
                         ),
                         const SizedBox(height: 6),
                         Text(
                           labelText,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style:
-                              (theme.textTheme.bodyMedium ?? const TextStyle())
-                                  .copyWith(
+                          style: (theme.textTheme.bodyMedium ?? const TextStyle())
+                              .copyWith(
                             color: _primaryText.withOpacity(0.85),
                             fontWeight: FontWeight.w600,
                           ),
@@ -678,8 +866,7 @@ class TodayMealPlanSection extends StatelessWidget {
           Expanded(
             child: Text(
               'Unknown item',
-              style:
-                  (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+              style: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
                 color: _primaryText,
                 fontWeight: FontWeight.w600,
               ),
@@ -728,7 +915,7 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   Widget _homeButtons(BuildContext context) {
-    if (onOpenWeek == null) return const SizedBox.shrink();
+    if (_mainAction == null) return const SizedBox.shrink();
 
     final theme = Theme.of(context);
     final labelStyle =
@@ -758,7 +945,7 @@ class TodayMealPlanSection extends StatelessWidget {
         height: 52,
         width: double.infinity,
         child: OutlinedButton(
-          onPressed: onOpenWeek,
+          onPressed: _mainAction,
           style: btnStyle,
           child: Text('VIEW FULL MEAL PLAN', style: labelStyle),
         ),
@@ -781,7 +968,6 @@ class TodayMealPlanSection extends StatelessWidget {
   // -----------------------------
   // EMPTY STATES
   // -----------------------------
-
   Widget _emptyProgrammeNotScheduled(BuildContext context) {
     return Container(
       color: _homePanelBgConst,
@@ -833,12 +1019,15 @@ class TodayMealPlanSection extends StatelessWidget {
     final parsed = _parsedBySlot();
     final hasPlanned = _hasAnyPlannedEntry(parsed);
 
-    // ✅ programme exists but today not in programme and nothing adhoc
-    if (!hasPlanned && programmeActive && !dayInProgramme && onAddAdhocDay != null) {
+    // programme exists but today not in programme and nothing adhoc
+    if (!hasPlanned &&
+        programmeActive &&
+        !dayInProgramme &&
+        onAddAdhocDay != null) {
       return _emptyProgrammeNotScheduled(context);
     }
 
-    // ✅ no programme yet
+    // no programme yet
     if (!hasPlanned && onBuildMealPlan != null && !programmeActive) {
       return _emptyNoProgrammeYet(context);
     }
@@ -864,10 +1053,12 @@ class TodayMealPlanSection extends StatelessWidget {
         children: [
           _heroHeader(context),
           Padding(
-            padding: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 12),
+            padding:
+                const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 12),
             child: Column(
               children: [
-                _mealCard(context: context, slotKey: 'breakfast', entry: breakfast),
+                _mealCard(
+                    context: context, slotKey: 'breakfast', entry: breakfast),
                 const SizedBox(height: 10),
                 _mealCard(context: context, slotKey: 'lunch', entry: lunch),
                 const SizedBox(height: 10),
@@ -907,12 +1098,15 @@ class TodayMealPlanSection extends StatelessWidget {
     final parsed = _parsedBySlot();
     final hasPlanned = _hasAnyPlannedEntry(parsed);
 
-    // ✅ programme exists but today not in programme and nothing adhoc
-    if (!hasPlanned && programmeActive && !dayInProgramme && onAddAdhocDay != null) {
+    // programme exists but today not in programme and nothing adhoc
+    if (!hasPlanned &&
+        programmeActive &&
+        !dayInProgramme &&
+        onAddAdhocDay != null) {
       return _emptyProgrammeNotScheduled(context);
     }
 
-    // ✅ no programme yet
+    // no programme yet
     if (!hasPlanned && onBuildMealPlan != null && !programmeActive) {
       return _emptyNoProgrammeYet(context);
     }

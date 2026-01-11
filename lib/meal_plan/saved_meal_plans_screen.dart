@@ -1,15 +1,4 @@
 // lib/meal_plan/saved_meal_plans_screen.dart
-//
-// Fixes “blink/flash” by:
-// - removing `_hydrateFromProgram(program)` from inside build (was mutating state during build)
-// - caching the latest program doc and only hydrating when it actually changes
-// - using ValueNotifiers for name/weekdays so taps don’t trigger big rebuild churn
-// - keeping the stream builders stable (no setState loops on every snapshot)
-//
-// Drop-in replacement.
-
-import 'dart:async';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -36,148 +25,31 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
 
   bool _saving = false;
 
-  // Local UI state (kept stable via notifiers to avoid whole-screen rebuilds)
   final TextEditingController _nameCtrl = TextEditingController();
-  final ValueNotifier<Set<int>> _weekdaysN = ValueNotifier<Set<int>>(<int>{});
-
   bool _nameDirty = false;
+
+  // local weekday selection (Mon=1..Sun=7)
+  Set<int> _weekdays = <int>{};
 
   // ✅ prevents “flash” by stopping hydration from overwriting local taps
   bool _weekdaysDirty = false;
-
-  // Stream subscriptions (avoid nested StreamBuilder churn)
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _settingsSub;
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _programSub;
-
-  String? _activeProgramId;
-  Map<String, dynamic>? _program;
-  bool _loading = true;
-
-  // Track last hydrated values so we don’t “re-apply” on every snapshot.
-  String _lastHydratedName = '';
-  String _lastHydratedWeekdaysSig = '';
 
   @override
   void initState() {
     super.initState();
     _repo = MealPlanRepository(FirebaseFirestore.instance);
-    _listenSettings();
   }
 
   @override
   void dispose() {
-    _settingsSub?.cancel();
-    _programSub?.cancel();
-    _weekdaysN.dispose();
     _nameCtrl.dispose();
     super.dispose();
   }
 
   // ----------------------------
-  // Firestore refs (MATCH MealPlanScreen)
-  // ----------------------------
-  DocumentReference<Map<String, dynamic>> _settingsDoc(String uid) {
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('mealPlan')
-        .doc('settings');
-  }
-
-  DocumentReference<Map<String, dynamic>> _programDoc(String uid, String programId) {
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('mealPrograms')
-        .doc(programId);
-  }
-
-  void _listenSettings() {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
-      setState(() => _loading = false);
-      return;
-    }
-
-    _settingsSub?.cancel();
-    _settingsSub = _settingsDoc(uid).snapshots().listen((snap) {
-      final data = snap.data() ?? <String, dynamic>{};
-      final nextId = (data['activeProgramId'] ?? '').toString().trim();
-
-      if (!mounted) return;
-
-      if (nextId.isEmpty) {
-        _programSub?.cancel();
-        setState(() {
-          _activeProgramId = null;
-          _program = null;
-          _loading = false;
-        });
-        return;
-      }
-
-      if (nextId != (_activeProgramId ?? '')) {
-        setState(() {
-          _activeProgramId = nextId;
-          _program = null;
-          _loading = true;
-        });
-        _listenProgram(uid, nextId);
-      }
-    }, onError: (_) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-    });
-  }
-
-  void _listenProgram(String uid, String programId) {
-    _programSub?.cancel();
-    _programSub = _programDoc(uid, programId).snapshots().listen((snap) {
-      if (!mounted) return;
-
-      final program = snap.data();
-      if (program == null) {
-        setState(() {
-          _program = null;
-          _loading = false;
-        });
-        return;
-      }
-
-      // Only setState if the object meaningfully changed (cheap signature).
-      final sig = _programSignature(program);
-      final prevSig = _program == null ? '' : _programSignature(_program!);
-
-      if (sig != prevSig) {
-        setState(() {
-          _program = program;
-          _loading = false;
-        });
-        _hydrateFromProgram(program);
-      } else {
-        // still ensure loading ends
-        if (_loading) setState(() => _loading = false);
-      }
-    }, onError: (_) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-    });
-  }
-
-  String _programSignature(Map<String, dynamic> p) {
-    // Signature based on fields we render + hydrate (cheap, deterministic).
-    final name = (p['name'] ?? '').toString().trim();
-    final w = p['weekdays'];
-    final wSig = (w is List) ? (w.map((e) => e.toString()).toList()..sort()).join(',') : '';
-    final weeks = (p['weeks'] ?? '').toString();
-    final start = (p['startDate'] ?? '').toString();
-    final end = (p['endDate'] ?? '').toString();
-    return '$name|$wSig|$weeks|$start|$end';
-  }
-
-  // ----------------------------
   // Helpers
   // ----------------------------
+
   String _weekdayShort(int w) {
     switch (w) {
       case 1:
@@ -225,17 +97,13 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
     return out;
   }
 
-  // hydrate UI from program doc safely (NO setState; uses notifiers/ctrl)
+  // hydrate UI from program doc safely
   void _hydrateFromProgram(Map<String, dynamic> program) {
-    // Name hydration
     final name = (program['name'] ?? '').toString().trim();
-    final nextName = name.isEmpty ? 'My Meal Plan' : name;
-    if (!_nameDirty && nextName != _lastHydratedName) {
-      _nameCtrl.text = nextName;
-      _lastHydratedName = nextName;
+    if (!_nameDirty) {
+      _nameCtrl.text = name.isEmpty ? 'My Meal Plan' : name;
     }
 
-    // Weekdays hydration
     final rawWds = program['weekdays'];
     final nextSet = <int>{};
     if (rawWds is List) {
@@ -244,10 +112,10 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
         if (n >= 1 && n <= 7) nextSet.add(n);
       }
     }
-    final sig = (nextSet.toList()..sort()).join(',');
-    if (!_saving && !_weekdaysDirty && sig != _lastHydratedWeekdaysSig) {
-      _weekdaysN.value = nextSet;
-      _lastHydratedWeekdaysSig = sig;
+
+    // ✅ Only hydrate weekdays when user isn't actively editing
+    if (!_saving && !_weekdaysDirty) {
+      _weekdays = nextSet;
     }
   }
 
@@ -327,6 +195,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
     final recipes = await RecipeRepository.ensureRecipesLoaded(backgroundRefresh: false);
     if (recipes.isEmpty) return 0;
 
+    // Controller is only used for candidate selection + allergy filtering helpers.
     final controller = MealPlanController(
       auth: FirebaseAuth.instance,
       repo: MealPlanRepository(FirebaseFirestore.instance),
@@ -348,6 +217,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
     );
   }
 
+  /// ✅ Delete program-day docs for removed future dates (and legacy mirror if you still keep it).
   Future<int> _pruneRemovedProgramDays({
     required String uid,
     required String programId,
@@ -357,9 +227,12 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
     final removed = _removedFutureDates(oldScheduled: oldScheduled, newScheduled: newScheduled);
     if (removed.isEmpty) return 0;
 
+    // We do sequential deletes for simplicity (counts are small: weekdays changes usually removes a few days).
     for (final dk in removed) {
       await _repo.deleteProgramDayInProgram(uid: uid, programId: programId, dateKey: dk);
-      await _repo.deleteProgramDay(uid: uid, dateKey: dk); // legacy mirror safe-delete
+
+      // Optional legacy mirror delete (safe even if doc doesn't exist)
+      await _repo.deleteProgramDay(uid: uid, dateKey: dk);
     }
 
     return removed.length;
@@ -375,6 +248,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
   // ----------------------------
   // Actions
   // ----------------------------
+
   Future<void> _saveName({
     required String uid,
     required String programId,
@@ -389,11 +263,8 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
         programId: programId,
         patch: {'name': safeName},
       );
-
       if (!mounted) return;
       setState(() => _nameDirty = false);
-      _lastHydratedName = safeName;
-
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Plan name updated')));
     } catch (e) {
       if (!mounted) return;
@@ -408,8 +279,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
     required String programId,
     required Map<String, dynamic> program,
   }) async {
-    final currentWds = _weekdaysN.value;
-    final list = currentWds.toList()..sort();
+    final list = _weekdays.toList()..sort();
 
     final startKey = (program['startDate'] ?? '').toString().trim();
     final weeksRaw = program['weeks'];
@@ -417,18 +287,20 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
 
     final startDt = _parseKey(startKey);
 
+    // ✅ capture old schedule
     final oldScheduled = (program['scheduledDates'] is List)
         ? (program['scheduledDates'] as List).map((e) => e.toString()).where((s) => s.isNotEmpty).toList()
         : <String>[];
 
     final scheduled = (startDt != null && weeks > 0)
-        ? _computeScheduledDates(start: startDt, weeks: weeks, weekdays: currentWds)
+        ? _computeScheduledDates(start: startDt, weeks: weeks, weekdays: _weekdays)
         : <String>[];
 
     final endKey = scheduled.isNotEmpty ? scheduled.last : (startDt != null ? _fmtKey(startDt) : '');
 
     setState(() => _saving = true);
     try {
+      // ✅ update program doc first (source of truth)
       await _repo.updateProgram(
         uid: uid,
         programId: programId,
@@ -439,6 +311,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
         },
       );
 
+      // ✅ prune removed future days
       final removed = await _pruneRemovedProgramDays(
         uid: uid,
         programId: programId,
@@ -446,6 +319,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
         newScheduled: scheduled,
       );
 
+      // ✅ backfill newly added future days
       final added = await _backfillProgramDays(
         uid: uid,
         programId: programId,
@@ -455,9 +329,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
       );
 
       if (!mounted) return;
-      setState(() => _weekdaysDirty = false);
-
-      _lastHydratedWeekdaysSig = (list).join(',');
+      setState(() => _weekdaysDirty = false); // ✅ we’re now in sync with Firestore
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(_scheduleSnackText(added: added, removed: removed, base: 'Schedule updated'))),
@@ -485,6 +357,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
     final weeksRaw = program['weeks'];
     final currentWeeks = (weeksRaw is int) ? weeksRaw : int.tryParse(weeksRaw?.toString() ?? '') ?? 0;
 
+    // ✅ capture old schedule
     final oldScheduled = (program['scheduledDates'] is List)
         ? (program['scheduledDates'] as List).map((e) => e.toString()).where((s) => s.isNotEmpty).toList()
         : <String>[];
@@ -523,7 +396,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
     if (extra == null) return;
 
     final nextWeeks = currentWeeks + extra;
-    final scheduled = _computeScheduledDates(start: startDt, weeks: nextWeeks, weekdays: _weekdaysN.value);
+    final scheduled = _computeScheduledDates(start: startDt, weeks: nextWeeks, weekdays: _weekdays);
     final endKey = scheduled.isNotEmpty ? scheduled.last : _fmtKey(startDt);
 
     setState(() => _saving = true);
@@ -538,6 +411,8 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
         },
       );
 
+      // Extend should typically only add, but if weekdays were edited earlier and not saved,
+      // this keeps behaviour consistent.
       final removed = await _pruneRemovedProgramDays(
         uid: uid,
         programId: programId,
@@ -601,6 +476,7 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
         },
       );
 
+      // ✅ clear pointer in settings (the one hub + MealPlanScreen use)
       await _repo.setActiveProgramId(uid: uid, programId: null);
 
       if (!mounted) return;
@@ -617,15 +493,13 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
   // ----------------------------
   // Build
   // ----------------------------
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       return const Scaffold(body: Center(child: Text('Log in')));
     }
-
-    final programId = (_activeProgramId ?? '').trim();
-    final program = _program;
 
     return Scaffold(
       backgroundColor: _bg,
@@ -635,244 +509,259 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
         elevation: 0,
         foregroundColor: _brandDark,
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : (programId.isEmpty)
-              ? Padding(
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .collection('mealPlan')
+            .doc('settings')
+            .snapshots(),
+        builder: (context, stateSnap) {
+          if (stateSnap.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final state = stateSnap.data?.data() ?? <String, dynamic>{};
+          final programId = (state['activeProgramId'] ?? '').toString().trim();
+
+          if (programId.isEmpty) {
+            return Padding(
+              padding: const EdgeInsets.all(16),
+              child: _EmptySettingsCard(
+                brandDark: _brandDark,
+                brandTeal: _brandTeal,
+                onBack: () => Navigator.of(context).pop(),
+              ),
+            );
+          }
+
+          return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: _repo.programDoc(uid: user.uid, programId: programId).snapshots(),
+            builder: (context, progSnap) {
+              if (progSnap.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              final exists = progSnap.data?.exists ?? false;
+              final program = exists ? progSnap.data?.data() : null;
+
+              if (program == null) {
+                return Padding(
                   padding: const EdgeInsets.all(16),
-                  child: _EmptySettingsCard(
-                    brandDark: _brandDark,
-                    brandTeal: _brandTeal,
-                    onBack: () => Navigator.of(context).pop(),
-                  ),
-                )
-              : (program == null)
-                  ? Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: _SectionCard(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Loading plan…',
-                              style: TextStyle(
-                                color: _brandDark,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Your plan pointer exists but the plan document is missing.',
-                              style: TextStyle(
-                                color: Colors.black.withOpacity(0.6),
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 14),
-                            SizedBox(
-                              height: 48,
-                              width: double.infinity,
-                              child: OutlinedButton(
-                                onPressed: () => Navigator.of(context).pop(),
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: _brandTeal,
-                                  side: BorderSide(color: _brandTeal, width: 2),
-                                  shape: const StadiumBorder(),
-                                ),
-                                child: const Text(
-                                  'BACK',
-                                  style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
-                                ),
-                              ),
-                            ),
-                          ],
+                  child: _SectionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Loading plan…',
+                          style: TextStyle(color: _brandDark, fontSize: 18, fontWeight: FontWeight.w900),
                         ),
-                      ),
-                    )
-                  : _buildSettingsList(user.uid, programId, program),
-    );
-  }
-
-  Widget _buildSettingsList(String uid, String programId, Map<String, dynamic> program) {
-    final weeksRaw = program['weeks'];
-    final weeks = (weeksRaw is int) ? weeksRaw : int.tryParse(weeksRaw?.toString() ?? '') ?? 0;
-    final startKey = (program['startDate'] ?? '').toString().trim();
-    final endKey = (program['endDate'] ?? '').toString().trim();
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 30),
-      children: [
-        _SectionCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('PLAN NAME', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3)),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _nameCtrl,
-                onChanged: (_) => setState(() => _nameDirty = true),
-                decoration: const InputDecoration(
-                  hintText: 'My Meal Plan',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 48,
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _saving ? null : () => _saveName(uid: uid, programId: programId),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _brandTeal,
-                    shape: const StadiumBorder(),
-                  ),
-                  child: const Text(
-                    'SAVE NAME',
-                    style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        _SectionCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('WEEKLY SCHEDULE', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3)),
-              const SizedBox(height: 10),
-              ValueListenableBuilder<Set<int>>(
-                valueListenable: _weekdaysN,
-                builder: (context, weekdays, _) {
-                  return Row(
-                    children: [
-                      for (int w = 1; w <= 7; w++) ...[
-                        Expanded(
-                          child: _WeekdayToggle(
-                            label: _weekdayShort(w),
-                            selected: weekdays.contains(w),
-                            brandDark: _brandDark,
-                            brandTeal: _brandTeal,
-                            onTap: _saving
-                                ? null
-                                : () {
-                                    final next = Set<int>.from(weekdays);
-                                    if (next.contains(w)) {
-                                      next.remove(w);
-                                    } else {
-                                      next.add(w);
-                                    }
-                                    _weekdaysDirty = true;
-                                    _weekdaysN.value = next;
-                                  },
+                        const SizedBox(height: 8),
+                        Text(
+                          'Your plan pointer exists but the plan document is missing.',
+                          style: TextStyle(color: Colors.black.withOpacity(0.6), fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 14),
+                        SizedBox(
+                          height: 48,
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: _brandTeal,
+                              side: BorderSide(color: _brandTeal, width: 2),
+                              shape: const StadiumBorder(),
+                            ),
+                            child: const Text(
+                              'BACK',
+                              style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                            ),
                           ),
                         ),
-                        if (w != 7) const SizedBox(width: 8),
                       ],
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 48,
-                width: double.infinity,
-                child: OutlinedButton(
-                  onPressed: _saving ? null : () => _saveWeekdays(uid: uid, programId: programId, program: program),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: _brandTeal,
-                    side: BorderSide(color: _brandTeal, width: 2),
-                    shape: const StadiumBorder(),
+                    ),
                   ),
-                  child: const Text(
-                    'SAVE SCHEDULE',
-                    style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                );
+              }
+
+              _hydrateFromProgram(program);
+
+              final weeksRaw = program['weeks'];
+              final weeks = (weeksRaw is int) ? weeksRaw : int.tryParse(weeksRaw?.toString() ?? '') ?? 0;
+              final startKey = (program['startDate'] ?? '').toString().trim();
+              final endKey = (program['endDate'] ?? '').toString().trim();
+
+              return ListView(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 30),
+                children: [
+                  _SectionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('PLAN NAME', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3)),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: _nameCtrl,
+                          onChanged: (_) => setState(() => _nameDirty = true),
+                          decoration: const InputDecoration(
+                            hintText: 'My Meal Plan',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 48,
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: _saving ? null : () => _saveName(uid: user.uid, programId: programId),
+                            style: ElevatedButton.styleFrom(backgroundColor: _brandTeal, shape: const StadiumBorder()),
+                            child: const Text(
+                              'SAVE NAME',
+                              style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        _SectionCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('DURATION', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3)),
-              const SizedBox(height: 10),
-              Text(
-                weeks > 0 ? '$weeks week${weeks == 1 ? '' : 's'}' : 'Not set',
-                style: TextStyle(color: Colors.black.withOpacity(0.65), fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 6),
-              if (startKey.isNotEmpty || endKey.isNotEmpty)
-                Text(
-                  [
-                    if (startKey.isNotEmpty) 'Starts: ${MealPlanKeys.formatPretty(startKey)}',
-                    if (endKey.isNotEmpty) 'Ends: ${MealPlanKeys.formatPretty(endKey)}',
-                  ].join('   •   '),
-                  style: TextStyle(color: Colors.black.withOpacity(0.55), fontWeight: FontWeight.w600),
-                ),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 48,
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _saving ? null : () => _extendWeeks(uid: uid, programId: programId, program: program),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _brandTeal,
-                    shape: const StadiumBorder(),
+                  const SizedBox(height: 12),
+                  _SectionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'WEEKLY SCHEDULE',
+                          style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            for (int w = 1; w <= 7; w++) ...[
+                              Expanded(
+                                child: _WeekdayToggle(
+                                  label: _weekdayShort(w),
+                                  selected: _weekdays.contains(w),
+                                  brandDark: _brandDark,
+                                  brandTeal: _brandTeal,
+                                  onTap: _saving
+                                      ? null
+                                      : () {
+                                          setState(() {
+                                            _weekdaysDirty = true;
+                                            if (_weekdays.contains(w)) {
+                                              _weekdays.remove(w);
+                                            } else {
+                                              _weekdays.add(w);
+                                            }
+                                          });
+                                        },
+                                ),
+                              ),
+                              if (w != 7) const SizedBox(width: 8),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 48,
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: _saving
+                                ? null
+                                : () => _saveWeekdays(uid: user.uid, programId: programId, program: program),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: _brandTeal,
+                              side: BorderSide(color: _brandTeal, width: 2),
+                              shape: const StadiumBorder(),
+                            ),
+                            child: const Text(
+                              'SAVE SCHEDULE',
+                              style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  child: const Text(
-                    'EXTEND PLAN',
-                    style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                  const SizedBox(height: 12),
+                  _SectionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('DURATION', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3)),
+                        const SizedBox(height: 10),
+                        Text(
+                          weeks > 0 ? '$weeks week${weeks == 1 ? '' : 's'}' : 'Not set',
+                          style: TextStyle(color: Colors.black.withOpacity(0.65), fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 6),
+                        if (startKey.isNotEmpty || endKey.isNotEmpty)
+                          Text(
+                            [
+                              if (startKey.isNotEmpty) 'Starts: ${MealPlanKeys.formatPretty(startKey)}',
+                              if (endKey.isNotEmpty) 'Ends: ${MealPlanKeys.formatPretty(endKey)}',
+                            ].join('   •   '),
+                            style: TextStyle(color: Colors.black.withOpacity(0.55), fontWeight: FontWeight.w600),
+                          ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 48,
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: _saving
+                                ? null
+                                : () => _extendWeeks(uid: user.uid, programId: programId, program: program),
+                            style: ElevatedButton.styleFrom(backgroundColor: _brandTeal, shape: const StadiumBorder()),
+                            child: const Text(
+                              'EXTEND PLAN',
+                              style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        _SectionCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('STOP PLAN', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3)),
-              const SizedBox(height: 10),
-              Text(
-                'This will stop your current plan and remove it from the hub.',
-                style: TextStyle(color: Colors.black.withOpacity(0.60), fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 48,
-                width: double.infinity,
-                child: OutlinedButton(
-                  onPressed: _saving ? null : () => _stopProgram(uid: uid, programId: programId),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    side: const BorderSide(color: Colors.red, width: 2),
-                    shape: const StadiumBorder(),
+                  const SizedBox(height: 12),
+                  _SectionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('STOP PLAN', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3)),
+                        const SizedBox(height: 10),
+                        Text(
+                          'This will stop your current plan and remove it from the hub.',
+                          style: TextStyle(color: Colors.black.withOpacity(0.60), fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 48,
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: _saving ? null : () => _stopProgram(uid: user.uid, programId: programId),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.red,
+                              side: const BorderSide(color: Colors.red, width: 2),
+                              shape: const StadiumBorder(),
+                            ),
+                            child: const Text(
+                              'STOP MY PLAN',
+                              style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  child: const Text(
-                    'STOP MY PLAN',
-                    style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
+                ],
+              );
+            },
+          );
+        },
+      ),
     );
   }
 }
 
-// -------------------------------------------------------
-// UI bits
-// -------------------------------------------------------
 class _SectionCard extends StatelessWidget {
   final Widget child;
   const _SectionCard({required this.child});
@@ -921,9 +810,7 @@ class _WeekdayToggle extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 140),
-        curve: Curves.easeOut,
+      child: Container(
         height: 44,
         alignment: Alignment.center,
         decoration: BoxDecoration(
@@ -964,20 +851,13 @@ class _EmptySettingsCard extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
         boxShadow: const [
-          BoxShadow(
-            offset: Offset(0, 10),
-            blurRadius: 22,
-            color: Color.fromRGBO(0, 0, 0, 0.08),
-          )
+          BoxShadow(offset: Offset(0, 10), blurRadius: 22, color: Color.fromRGBO(0, 0, 0, 0.08))
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'No active plan',
-            style: TextStyle(color: brandDark, fontSize: 20, fontWeight: FontWeight.w900),
-          ),
+          Text('No active plan', style: TextStyle(color: brandDark, fontSize: 20, fontWeight: FontWeight.w900)),
           const SizedBox(height: 8),
           Text(
             'Create a plan first, then you can edit your schedule and extend it here.',
@@ -990,10 +870,7 @@ class _EmptySettingsCard extends StatelessWidget {
             child: ElevatedButton(
               onPressed: onBack,
               style: ElevatedButton.styleFrom(backgroundColor: brandTeal, shape: const StadiumBorder()),
-              child: const Text(
-                'BACK',
-                style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3),
-              ),
+              child: const Text('BACK', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3)),
             ),
           ),
         ],

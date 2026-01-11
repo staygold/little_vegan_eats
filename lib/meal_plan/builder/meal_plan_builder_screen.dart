@@ -13,6 +13,10 @@ import 'meal_plan_builder_service.dart';
 /// Controls how this builder is launched
 enum MealPlanBuilderEntry { dayOnly, weekOnly, choose, adhocDay }
 
+// ✅ simple audience values (kept as strings to avoid ripple refactors)
+const String kAudienceFamily = 'family';
+const String kAudienceKids = 'kids';
+
 class MealPlanBuilderScreen extends StatefulWidget {
   final String weekId;
   final MealPlanBuilderEntry entry;
@@ -42,6 +46,12 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
   bool _lunch = true;
   bool _dinner = true;
   int _snacksPerDay = 1;
+
+  // ✅ Audience targeting (new)
+  String _breakfastAudience = kAudienceFamily;
+  String _lunchAudience = kAudienceFamily;
+  String _dinnerAudience = kAudienceFamily;
+  String _snackAudience = kAudienceKids; // snacks default to kids
 
   bool _busy = false;
 
@@ -133,6 +143,16 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
   // CREATE ACTIONS
   // -----------------------------------------------------------------
 
+  Map<String, String> _audiencesPayload() {
+    // Keys are intentionally simple; adjust to match your builder/service contract.
+    return <String, String>{
+      'breakfast': _breakfastAudience,
+      'lunch': _lunchAudience,
+      'dinner': _dinnerAudience,
+      'snack': _snackAudience,
+    };
+  }
+
   Future<void> _createAdhocOneOffDay({
     required String dayKey,
   }) async {
@@ -154,6 +174,9 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
       final builder = MealPlanBuilderService(controller);
 
       // ✅ Generates JUST one day, writes to mealAdhocDays/{dayKey}
+      //
+      // NOTE: You’ll need to thread audiences into buildAdhocDay in
+      // MealPlanBuilderService. For now, we pass it as a TODO parameter.
       await builder.buildAdhocDay(
         dateKey: dayKey,
         availableRecipes: recipes,
@@ -161,6 +184,9 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
         includeLunch: _lunch,
         includeDinner: _dinner,
         snackCount: _snacksPerDay,
+
+        // ✅ NEW (requires service update)
+        mealAudiences: _audiencesPayload(),
       );
 
       if (!mounted) return;
@@ -251,6 +277,9 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
         includeDinner: _dinner,
         includeSnacks: _snacksPerDay > 0,
         snackCount: _snacksPerDay,
+
+        // ✅ NEW (requires service update)
+        mealAudiences: _audiencesPayload(),
       );
 
       if (!mounted) return;
@@ -482,18 +511,42 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
                     value: _breakfast,
                     onChanged: (v) => setState(() => _breakfast = v),
                   ),
+                  if (_breakfast) ...[
+                    const SizedBox(height: 8),
+                    _AudienceRow(
+                      title: 'For',
+                      value: _breakfastAudience,
+                      onChanged: (v) => setState(() => _breakfastAudience = v),
+                    ),
+                  ],
                   const Divider(height: 18),
                   _ToggleRow(
                     title: 'Lunch',
                     value: _lunch,
                     onChanged: (v) => setState(() => _lunch = v),
                   ),
+                  if (_lunch) ...[
+                    const SizedBox(height: 8),
+                    _AudienceRow(
+                      title: 'For',
+                      value: _lunchAudience,
+                      onChanged: (v) => setState(() => _lunchAudience = v),
+                    ),
+                  ],
                   const Divider(height: 18),
                   _ToggleRow(
                     title: 'Family dinner',
                     value: _dinner,
                     onChanged: (v) => setState(() => _dinner = v),
                   ),
+                  if (_dinner) ...[
+                    const SizedBox(height: 8),
+                    _AudienceRow(
+                      title: 'For',
+                      value: _dinnerAudience,
+                      onChanged: (v) => setState(() => _dinnerAudience = v),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -515,6 +568,17 @@ class _MealPlanBuilderScreenState extends State<MealPlanBuilderScreen> {
                 }).toList(),
               ),
             ),
+
+            if (_snacksPerDay > 0) ...[
+              _sectionTitle('SNACKS ARE FOR'),
+              _card(
+                child: _AudienceRow(
+                  title: 'Snacks',
+                  value: _snackAudience,
+                  onChanged: (v) => setState(() => _snackAudience = v),
+                ),
+              ),
+            ],
 
             if (widget.entry == MealPlanBuilderEntry.dayOnly && !isAdhoc) ...[
               _sectionTitle('NOTE'),
@@ -707,6 +771,83 @@ class _ChipToggle extends StatelessWidget {
             fontSize: 12,
             letterSpacing: 0.35,
             color: selected ? Colors.white : Colors.black.withOpacity(0.65),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ✅ NEW: audience controls
+class _AudienceRow extends StatelessWidget {
+  final String title;
+  final String value; // 'family' | 'kids'
+  final ValueChanged<String> onChanged;
+
+  const _AudienceRow({
+    required this.title,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              color: Colors.black.withOpacity(0.7),
+            ),
+          ),
+        ),
+        _AudienceChip(
+          label: 'Family',
+          selected: value == kAudienceFamily,
+          onTap: () => onChanged(kAudienceFamily),
+        ),
+        const SizedBox(width: 8),
+        _AudienceChip(
+          label: 'Kids',
+          selected: value == kAudienceKids,
+          onTap: () => onChanged(kAudienceKids),
+        ),
+      ],
+    );
+  }
+}
+
+class _AudienceChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _AudienceChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF044246) : const Color(0xFFF1F5F6),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          label.toUpperCase(),
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            fontSize: 11,
+            letterSpacing: 0.3,
+            color: selected ? Colors.white : Colors.black.withOpacity(0.6),
           ),
         ),
       ),

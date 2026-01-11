@@ -1,3 +1,4 @@
+// lib/profile/child_profile_screen.dart
 import 'dart:ui' show FontVariation;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -20,23 +21,20 @@ class ChildProfileScreen extends StatefulWidget {
 
 class _ChildProfileScreenState extends State<ChildProfileScreen> {
   // ============================================================
-  // ✅ STYLE KEYS (matches ProfileScreen language)
+  // STYLE
   // ============================================================
   static const Color _pageBg = Color(0xFFECF3F4);
   static const Color _cardBg = Colors.white;
+
   static const double _radius = 12;
 
-  static const EdgeInsets _pagePad = EdgeInsets.fromLTRB(16, 12, 16, 16);
+  // Allergy selector panel + rows (match AdultProfileScreen)
+  static const double _allergyPanelRadius = 18;
+  static const double _allergyRowRadius = 14;
+  static const double _allergyRowHeight = 62;
+  static const double _allergyRowBorderWidth = 2;
 
-  static const TextStyle _hTitle = TextStyle(
-    fontFamily: 'Montserrat',
-    fontSize: 22,
-    fontWeight: FontWeight.w900,
-    fontVariations: [FontVariation('wght', 900)],
-    letterSpacing: 0.8,
-    height: 1.0,
-    color: AppColors.brandDark,
-  );
+  static const EdgeInsets _pagePad = EdgeInsets.fromLTRB(16, 12, 16, 16);
 
   static TextStyle _labelStyle(BuildContext context) {
     final theme = Theme.of(context);
@@ -59,15 +57,6 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     color: AppColors.brandDark,
   );
 
-  static TextStyle _subText(BuildContext context) {
-    final theme = Theme.of(context);
-    return (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-      color: AppColors.brandDark.withOpacity(0.75),
-      fontWeight: FontWeight.w600,
-      height: 1.2,
-    );
-  }
-
   static const TextStyle _btnText = TextStyle(
     fontFamily: 'Montserrat',
     fontSize: 14,
@@ -76,9 +65,6 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     letterSpacing: 0.9,
     height: 1.0,
   );
-
-  static const double _chipRadius = 10;
-  static const EdgeInsets _chipPad = EdgeInsets.symmetric(horizontal: 14, vertical: 10);
 
   static const List<String> _allergyOptions = [
     'soy',
@@ -97,7 +83,6 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
 
   final _nameCtrl = TextEditingController();
 
-  // ✅ month/year only
   int? _dobMonth; // 1-12
   int? _dobYear; // yyyy
 
@@ -108,6 +93,9 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
   String? _lastHydratedFingerprint;
 
   bool get _isCreate => widget.childIndex == null;
+
+  // Prevent any post-pop hydration + controller writes
+  bool _closing = false;
 
   @override
   void dispose() {
@@ -208,7 +196,8 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     final maxY = now.year;
     final minY = now.year - 18;
     return [
-      for (int y = maxY; y >= minY; y--) DropdownMenuItem<int>(value: y, child: Text('$y'))
+      for (int y = maxY; y >= minY; y--)
+        DropdownMenuItem<int>(value: y, child: Text('$y'))
     ];
   }
 
@@ -241,7 +230,10 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
 
   void _applyToForm(Map<String, dynamic> child) {
     _loadedSnapshot = Map<String, dynamic>.from(child);
-    _nameCtrl.text = (child['name'] ?? '').toString();
+
+    if (!_closing) {
+      _nameCtrl.text = (child['name'] ?? '').toString();
+    }
 
     _hydrateDobFields(child);
 
@@ -309,17 +301,20 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
         ? FirebaseFirestore.instance.collection('_').doc().id
         : _ensureChildKeyFromExisting(currentChild);
 
+    // ✅ CRITICAL: NO FieldValue.delete() inside children[] items.
+    // We simply stop writing legacy 'dob'. Old values can remain.
     final updated = <String, dynamic>{
       'childKey': childKey,
       'name': name,
       'dobMonth': m,
       'dobYear': y,
-      'dob': FieldValue.delete(), // remove legacy
       'hasAllergies': _hasAllergies,
       'allergies': newAllergies,
     };
 
+    if (!mounted) return;
     setState(() => _saving = true);
+
     try {
       if (_isCreate) {
         final next = List.from(children)..add(updated);
@@ -330,14 +325,17 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       } else {
         final idx = widget.childIndex!;
         if (idx < 0 || idx >= children.length) {
+          if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Child not found')),
           );
           return;
         }
-        children[idx] = updated;
+        final next = List.from(children);
+        next[idx] = updated;
+
         await doc.set({
-          'children': children,
+          'children': next,
           'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
       }
@@ -345,6 +343,8 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       if (didChangeAllergies) {
         await MealPlanReviewService.markNeedsReview(changedForLabel: name);
       }
+
+      _closing = true;
 
       if (!mounted) return;
       Navigator.of(context).pop({
@@ -380,32 +380,38 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
         title: const Text('Delete child?'),
         content: const Text('This cannot be undone.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
 
     if (confirm != true) return;
 
-    // delete firstFoods doc by childKey
     final childKey = (currentChild['childKey'] ?? '').toString().trim();
     if (childKey.isNotEmpty) {
       try {
         await doc.collection('firstFoods').doc(childKey).delete();
-      } catch (_) {
-        // ignore
-      }
+      } catch (_) {}
     }
 
-    children.removeAt(idx);
+    final next = List.from(children);
+    next.removeAt(idx);
 
     setState(() => _saving = true);
     try {
       await doc.set({
-        'children': children,
+        'children': next,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+
+      _closing = true;
 
       if (!mounted) return;
       Navigator.of(context).pop({'deleted': true});
@@ -422,7 +428,10 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
   // ------------------------------------------------------------
   // UI bits
   // ------------------------------------------------------------
-  Widget _card({required Widget child, EdgeInsets padding = const EdgeInsets.all(16)}) {
+  Widget _card({
+    required Widget child,
+    EdgeInsets padding = const EdgeInsets.all(16),
+  }) {
     return Container(
       width: double.infinity,
       padding: padding,
@@ -431,24 +440,6 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
         borderRadius: BorderRadius.circular(_radius),
       ),
       child: child,
-    );
-  }
-
-  Widget _fieldCard({
-    required BuildContext context,
-    required String label,
-    required Widget field,
-  }) {
-    return _card(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label.toUpperCase(), style: _labelStyle(context)),
-          const SizedBox(height: 10),
-          field,
-        ],
-      ),
     );
   }
 
@@ -483,9 +474,9 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
   }
 
   Widget _dobField(BuildContext context) {
-    // “DD/MM/YYYY” look but actually month/year selectors.
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(_radius),
@@ -520,87 +511,103 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (_) {
-        return SafeArea(
-          top: false,
-          child: Container(
-            decoration: BoxDecoration(
-              color: _cardBg,
-              borderRadius: BorderRadius.circular(18),
-            ),
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('BIRTH MONTH & YEAR', style: _hTitle.copyWith(fontSize: 18)),
-                const SizedBox(height: 14),
-                Row(
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              top: false,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: _cardBg,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Expanded(
-                      child: InputDecorator(
-                        decoration: const InputDecoration(labelText: 'Month'),
-                        child: DropdownButtonHideUnderline(
-                          child: DropdownButton<int>(
-                            value: tempMonth,
-                            isExpanded: true,
-                            hint: const Text('Select month'),
-                            items: _monthItems(),
-                            onChanged: (v) => setState(() => tempMonth = v),
-                          ),
-                        ),
+                    Text(
+                      'BIRTH MONTH & YEAR',
+                      style: _btnText.copyWith(
+                        fontSize: 18,
+                        letterSpacing: 0.8,
+                        color: AppColors.brandDark,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: InputDecorator(
-                        decoration: const InputDecoration(labelText: 'Year'),
-                        child: DropdownButtonHideUnderline(
-                          child: DropdownButton<int>(
-                            value: tempYear,
-                            isExpanded: true,
-                            hint: const Text('Select year'),
-                            items: _yearItems(),
-                            onChanged: (v) => setState(() => tempYear = v),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: InputDecorator(
+                            decoration: const InputDecoration(labelText: 'Month'),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<int>(
+                                value: tempMonth,
+                                isExpanded: true,
+                                hint: const Text('Select month'),
+                                items: _monthItems(),
+                                onChanged: (v) => setSheetState(() => tempMonth = v),
+                              ),
+                            ),
                           ),
                         ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: InputDecorator(
+                            decoration: const InputDecoration(labelText: 'Year'),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<int>(
+                                value: tempYear,
+                                isExpanded: true,
+                                hint: const Text('Select year'),
+                                items: _yearItems(),
+                                onChanged: (v) => setSheetState(() => tempYear = v),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    SizedBox(
+                      height: 52,
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          if (!mounted) return;
+                          setState(() {
+                            _dobMonth = tempMonth;
+                            _dobYear = tempYear;
+                          });
+                          Navigator.of(context).pop();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.brandDark,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(_radius),
+                          ),
+                        ),
+                        child: Text('DONE', style: _btnText.copyWith(color: Colors.white)),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 14),
-                SizedBox(
-                  height: 52,
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () {
-                      setState(() {
-                        _dobMonth = tempMonth;
-                        _dobYear = tempYear;
-                      });
-                      Navigator.of(context).pop();
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.brandDark,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_radius)),
-                    ),
-                    child: Text('DONE', style: _btnText.copyWith(color: Colors.white)),
-                  ),
-                ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
   }
 
+  // HAS ALLERGIES row outside the panel
   Widget _hasAllergiesRow(BuildContext context) {
     return Row(
       children: [
         Expanded(child: Text('HAS ALLERGIES', style: _labelStyle(context))),
         Switch(
           value: _hasAllergies,
+          activeColor: AppColors.brandDark,
           onChanged: _saving
               ? null
               : (v) {
@@ -614,25 +621,80 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     );
   }
 
-  Widget _chipSelected(String key) {
+  // Allergy selector panel only when toggled on
+  Widget _allergyPanel(BuildContext context) {
+    if (!_hasAllergies) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(_allergyPanelRadius),
+      ),
+      child: Column(
+        children: [
+          for (int i = 0; i < _allergyOptions.length; i++) ...[
+            _allergyRow(context, _allergyOptions[i]),
+            if (i != _allergyOptions.length - 1) const SizedBox(height: 12),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _allergyRow(BuildContext context, String key) {
+    final selected = _selectedAllergies.contains(key);
     final label = AllergyKeys.label(key).toUpperCase();
+
+    final borderColor = AppColors.brandDark.withOpacity(0.18);
+    final radius = BorderRadius.circular(_allergyRowRadius);
+
     return Material(
-      color: AppColors.brandDark,
-      borderRadius: BorderRadius.circular(_chipRadius),
+      color: selected ? AppColors.brandDark : Colors.white,
+      borderRadius: radius,
       child: InkWell(
-        borderRadius: BorderRadius.circular(_chipRadius),
-        onTap: _saving ? null : () => setState(() => _selectedAllergies.remove(key)),
-        child: Padding(
-          padding: _chipPad,
+        borderRadius: radius,
+        onTap: _saving
+            ? null
+            : () {
+                setState(() {
+                  if (selected) {
+                    _selectedAllergies.remove(key);
+                  } else {
+                    _selectedAllergies.add(key);
+                    _selectedAllergies.sort();
+                  }
+                });
+              },
+        child: Container(
+          height: _allergyRowHeight,
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          decoration: BoxDecoration(
+            borderRadius: radius,
+            border: selected
+                ? null
+                : Border.all(
+                    color: borderColor,
+                    width: _allergyRowBorderWidth,
+                  ),
+          ),
           child: Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                label,
-                style: _btnText.copyWith(color: Colors.white, fontSize: 13, letterSpacing: 0.7),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _btnText.copyWith(
+                    fontSize: 18,
+                    letterSpacing: 1.2,
+                    color: selected ? Colors.white : AppColors.brandDark,
+                  ),
+                ),
               ),
-              const SizedBox(width: 10),
-              const Icon(Icons.close, size: 16, color: Colors.white),
+              if (selected) const Icon(Icons.close, size: 22, color: Colors.white),
             ],
           ),
         ),
@@ -640,49 +702,23 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
     );
   }
 
-  Widget _chipOption(String key) {
-    final label = AllergyKeys.label(key).toUpperCase();
-    final selected = _selectedAllergies.contains(key);
-
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(_chipRadius),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(_chipRadius),
-        onTap: (_saving || selected)
-            ? null
-            : () => setState(() {
-                  _selectedAllergies.add(key);
-                  _selectedAllergies.sort();
-                }),
-        child: Container(
-          padding: _chipPad,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(_chipRadius),
-            border: Border.all(color: AppColors.brandDark.withOpacity(0.18)),
-          ),
-          child: Text(
-            label,
-            style: _btnText.copyWith(color: AppColors.brandDark, fontSize: 13, letterSpacing: 0.7),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _bigSaveButton({required VoidCallback onTap}) {
+  Widget _bigSaveButton({required VoidCallback onTap, required bool enabled}) {
     return SizedBox(
       height: 56,
       width: double.infinity,
       child: ElevatedButton(
-        onPressed: _saving ? null : onTap,
+        onPressed: (_saving || !enabled) ? null : onTap,
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.brandDark,
           foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_radius)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(_radius),
+          ),
         ),
-        child: Text(_saving ? 'SAVING…' : 'SAVE', style: _btnText.copyWith(color: Colors.white)),
+        child: Text(
+          _saving ? 'SAVING…' : 'SAVE',
+          style: _btnText.copyWith(color: Colors.white),
+        ),
       ),
     );
   }
@@ -695,12 +731,26 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
         onPressed: _saving ? null : onTap,
         style: OutlinedButton.styleFrom(
           foregroundColor: AppColors.brandDark,
-          side: BorderSide(color: AppColors.brandDark.withOpacity(0.25), width: 2),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_radius)),
+          side: BorderSide(
+            color: AppColors.brandDark.withOpacity(0.25),
+            width: 2,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(_radius),
+          ),
         ),
-        child: Text('DELETE CHILD', style: _btnText.copyWith(color: AppColors.brandDark)),
+        child: Text(
+          'DELETE CHILD',
+          style: _btnText.copyWith(color: AppColors.brandDark),
+        ),
       ),
     );
+  }
+
+  String _headerTitleFromName(String name) {
+    final n = name.trim();
+    if (n.isEmpty) return 'CHILD';
+    return n.split(RegExp(r'\s+')).first.toUpperCase();
   }
 
   // ============================================================
@@ -721,7 +771,7 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
       backgroundColor: _pageBg,
       body: Column(
         children: [
-          const SubHeaderBar(title: 'Child Profile'),
+          SubHeaderBar(title: _headerTitleFromName(_nameCtrl.text)),
           Expanded(
             child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
               stream: doc.snapshots(),
@@ -741,12 +791,13 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
 
                 Map<String, dynamic> child;
                 if (_isCreate) {
+                  // Create mode: do not hydrate from Firestore
                   child = {
-                    'name': '',
-                    'dobMonth': null,
-                    'dobYear': null,
-                    'hasAllergies': false,
-                    'allergies': <String>[],
+                    'name': _nameCtrl.text,
+                    'dobMonth': _dobMonth,
+                    'dobYear': _dobYear,
+                    'hasAllergies': _hasAllergies,
+                    'allergies': List<String>.from(_selectedAllergies),
                   };
                 } else {
                   final idx = widget.childIndex!;
@@ -758,13 +809,17 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                   child = Map<String, dynamic>.from(raw);
                 }
 
-                final fp = _fingerprintOf(child);
-                if (fp != _lastHydratedFingerprint) {
-                  _lastHydratedFingerprint = fp;
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (!mounted) return;
-                    setState(() => _applyToForm(child));
-                  });
+                // Hydrate only in edit mode
+                if (!_isCreate && !_saving && !_closing) {
+                  final fp = _fingerprintOf(child);
+                  if (fp != _lastHydratedFingerprint) {
+                    _lastHydratedFingerprint = fp;
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!mounted || _closing) return;
+                      _applyToForm(child);
+                      setState(() {});
+                    });
+                  }
                 }
 
                 final childKey = (child['childKey'] ?? '').toString().trim();
@@ -772,71 +827,49 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                     ? (child['name'] ?? 'Child').toString()
                     : _nameCtrl.text.trim();
 
-                final canSave = !_saving &&
-                    _nameCtrl.text.trim().isNotEmpty &&
-                    _dobMonth != null &&
-                    _dobYear != null;
+                final canSave =
+                    _nameCtrl.text.trim().isNotEmpty && _dobMonth != null && _dobYear != null;
 
                 return ListView(
                   padding: _pagePad,
                   children: [
-                    Text('CHILD PROFILE', style: _hTitle),
-                    const SizedBox(height: 12),
-
-                    _fieldCard(
-                      context: context,
-                      label: 'First name',
-                      field: _nameField(context),
-                    ),
-                    const SizedBox(height: 12),
-
-                    GestureDetector(
-                      onTap: () => _openDobPicker(context),
-                      child: _fieldCard(
-                        context: context,
-                        label: 'Date of birth',
-                        field: _dobField(context),
-                      ),
-                    ),
-
-                    const SizedBox(height: 16),
-
                     _card(
-                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _hasAllergiesRow(context),
-
-                          if (_hasAllergies) ...[
-                            const SizedBox(height: 10),
-
-                            if (_selectedAllergies.isNotEmpty) ...[
-                              Wrap(
-                                spacing: 10,
-                                runSpacing: 10,
-                                children: _selectedAllergies.map(_chipSelected).toList(),
-                              ),
-                              const SizedBox(height: 12),
-                            ],
-
-                            Wrap(
-                              spacing: 10,
-                              runSpacing: 10,
-                              children: _allergyOptions.map(_chipOption).toList(),
-                            ),
-
-                            const SizedBox(height: 8),
-                            Text('Tap to add/remove allergies.', style: _subText(context)),
-                          ],
+                          Text('FIRST NAME', style: _labelStyle(context)),
+                          const SizedBox(height: 10),
+                          _nameField(context),
                         ],
                       ),
                     ),
-
+                    const SizedBox(height: 12),
+                    GestureDetector(
+                      onTap: () => _openDobPicker(context),
+                      child: _card(
+                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('BIRTH MONTH & YEAR', style: _labelStyle(context)),
+                            const SizedBox(height: 10),
+                            _dobField(context),
+                          ],
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 18),
-
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: _hasAllergiesRow(context),
+                    ),
+                    const SizedBox(height: 12),
+                    _allergyPanel(context),
+                    const SizedBox(height: 22),
                     _bigSaveButton(
-                      onTap: canSave ? () => _save(children, child) : () {},
+                      enabled: canSave,
+                      onTap: () => _save(children, child),
                     ),
 
                     // First Foods tile under Save (only when editing)
@@ -850,11 +883,12 @@ class _ChildProfileScreenState extends State<ChildProfileScreen> {
                       else
                         Text(
                           'Save once to set up First Foods tracking.',
-                          style: _subText(context),
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: AppColors.brandDark.withOpacity(0.75),
+                                fontWeight: FontWeight.w600,
+                                height: 1.2,
+                              ),
                         ),
-                    ],
-
-                    if (!_isCreate) ...[
                       const SizedBox(height: 12),
                       _bigDeleteButton(onTap: () => _delete(children, child)),
                     ],

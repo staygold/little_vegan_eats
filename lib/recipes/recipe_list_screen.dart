@@ -371,7 +371,7 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
       return;
     }
     final name = _collectionSlugToName[slug];
-    if (name == null || name.trim().isNotEmpty != true) return;
+    if (name == null || name.trim().isEmpty) return;
     if (_collectionOptionsCached.contains(name)) {
       _filters = _filters.copyWith(collection: name);
       _didApplyInitialCollection = true;
