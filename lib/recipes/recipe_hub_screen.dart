@@ -17,7 +17,6 @@ import 'recipe_search_screen.dart';
 import 'recipes_bootstrap_gate.dart';
 import 'recipe_list_page.dart';
 import 'favorites_screen.dart';
-import 'course_page.dart';
 
 import 'recipe_detail_screen.dart';
 
@@ -302,10 +301,10 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => RecipesBootstrapGate(
-          child: CoursePage(
-            courseSlug: slug,
-            title: title,
-            subtitle: subtitle,
+          child: RecipeListPage(
+            initialCourseSlug: slug,
+            lockCourse: true, // Lock it down
+            titleOverride: title.toUpperCase(), // Use "BREAKFASTS" style
           ),
         ),
       ),

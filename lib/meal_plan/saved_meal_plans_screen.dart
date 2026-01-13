@@ -4,13 +4,14 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../recipes/recipe_repository.dart';
+import '../recipes/recipe_index.dart'; // ✅ ADD
 import 'builder/meal_plan_builder_service.dart';
 import 'core/meal_plan_controller.dart';
 import 'core/meal_plan_keys.dart';
 import 'core/meal_plan_repository.dart';
 
 import '../recipes/family_profile_repository.dart';
-
+import '../recipes/recipe_index_builder.dart'; 
 
 class SavedMealPlansScreen extends StatefulWidget {
   const SavedMealPlansScreen({super.key});
@@ -200,12 +201,13 @@ class _SavedMealPlansScreenState extends State<SavedMealPlansScreen> {
 
     // Controller is only used for candidate selection + allergy filtering helpers.
     final controller = MealPlanController(
-  auth: FirebaseAuth.instance,
-  repo: MealPlanRepository(FirebaseFirestore.instance),
-  profileRepo: FamilyProfileRepository(),
-);
+      auth: FirebaseAuth.instance,
+      repo: MealPlanRepository(FirebaseFirestore.instance),
+      profileRepo: FamilyProfileRepository(),
+      recipeIndexById: _buildRecipeIndexById(recipes), // ✅ FIXED TYPE
+    );
 
-controller.start(); // ✅ REQUIRED
+    controller.start(); // ✅ REQUIRED
 
     final service = MealPlanBuilderService(controller);
     final prefs = _mealPrefsFromProgram(program);
@@ -250,6 +252,11 @@ controller.start(); // ✅ REQUIRED
     if (added > 0) return '$base (+$added added)';
     return '$base (-$removed removed)';
   }
+
+  // ✅ FIXED: Build RecipeIndex objects (Map<int, RecipeIndex>)
+ Map<int, RecipeIndex> _buildRecipeIndexById(List<Map<String, dynamic>> recipes) {
+  return RecipeIndexBuilder.buildById(recipes);
+}
 
   // ----------------------------
   // Actions
@@ -382,9 +389,7 @@ controller.start(); // ✅ REQUIRED
                 builder: (context, setLocal) {
                   return DropdownButton<int>(
                     value: v,
-                    items: const [1, 2, 3, 4, 6, 8, 12]
-                        .map((n) => DropdownMenuItem(value: n, child: Text('$n')))
-                        .toList(),
+                    items: const [1, 2, 3, 4, 6, 8, 12].map((n) => DropdownMenuItem(value: n, child: Text('$n'))).toList(),
                     onChanged: (n) => setLocal(() => v = n ?? 1),
                   );
                 },
@@ -516,12 +521,7 @@ controller.start(); // ✅ REQUIRED
         foregroundColor: _brandDark,
       ),
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .collection('mealPlan')
-            .doc('settings')
-            .snapshots(),
+        stream: FirebaseFirestore.instance.collection('users').doc(user.uid).collection('mealPlan').doc('settings').snapshots(),
         builder: (context, stateSnap) {
           if (stateSnap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -672,9 +672,7 @@ controller.start(); // ✅ REQUIRED
                           height: 48,
                           width: double.infinity,
                           child: OutlinedButton(
-                            onPressed: _saving
-                                ? null
-                                : () => _saveWeekdays(uid: user.uid, programId: programId, program: program),
+                            onPressed: _saving ? null : () => _saveWeekdays(uid: user.uid, programId: programId, program: program),
                             style: OutlinedButton.styleFrom(
                               foregroundColor: _brandTeal,
                               side: BorderSide(color: _brandTeal, width: 2),
@@ -714,9 +712,7 @@ controller.start(); // ✅ REQUIRED
                           height: 48,
                           width: double.infinity,
                           child: ElevatedButton(
-                            onPressed: _saving
-                                ? null
-                                : () => _extendWeeks(uid: user.uid, programId: programId, program: program),
+                            onPressed: _saving ? null : () => _extendWeeks(uid: user.uid, programId: programId, program: program),
                             style: ElevatedButton.styleFrom(backgroundColor: _brandTeal, shape: const StadiumBorder()),
                             child: const Text(
                               'EXTEND PLAN',

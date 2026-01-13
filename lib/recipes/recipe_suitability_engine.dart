@@ -82,6 +82,13 @@ class RecipeSuitabilityEngine {
           suitability: RecipeSuitability.blocked,
           reason: 'Contains allergen',
         );
+
+      // ✅ ADD THIS CASE
+      case AllergyStatus.unknown:
+        return const RecipeSuitabilityResult(
+          suitability: RecipeSuitability.blocked,
+          reason: 'Safety could not be determined',
+        );
     }
   }
 }

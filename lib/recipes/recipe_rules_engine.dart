@@ -27,48 +27,83 @@ class RecipeRulesEngine {
     required RecipeIndex ix,
     required List<ProfilePerson> activeProfiles,
     required AllergiesSelection selection,
+
+    // ✅ add these
+    required int? youngestChildMonths,
+    required String? youngestChildName,
   }) {
+    final parts = <String>[];
+
+    // -------------------------
+    // 1) AGE TAG (youngest child)
+    // -------------------------
+    final minAge = ix.minAgeMonths;
+    if (youngestChildMonths != null && youngestChildMonths > 0) {
+      final name = (youngestChildName?.trim().isNotEmpty == true)
+          ? youngestChildName!.trim()
+          : 'your youngest';
+
+      if (minAge != null && minAge > youngestChildMonths) {
+        parts.add('Not suitable for $name (${youngestChildMonths}m)');
+      } else if (minAge != null) {
+        // If it passes age gate, we don't need to scream it — but for now, show it.
+        parts.add('✅ Suitable for $name');
+      } else {
+        // No min age info in tags
+        parts.add('⚠️ Check for $name');
+      }
+    }
+
+    // -------------------------
+    // 2) ALLERGY TAG (existing)
+    // -------------------------
     final anyActive =
         activeProfiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
-    if (!anyActive) return (tag: null, swapHint: null);
 
-    bool anySwap = false;
-    bool anyNotSuitable = false;
+    if (anyActive) {
+      bool anySwap = false;
+      bool anyNotSuitable = false;
 
-    for (final p in activeProfiles) {
-      if (!p.hasAllergies || p.allergies.isEmpty) continue;
+      for (final p in activeProfiles) {
+        if (!p.hasAllergies || p.allergies.isEmpty) continue;
 
-      final res = AllergyEngine.evaluate(
-        recipeAllergyTags: ix.allergyTags,
-        swapFieldText: ix.swapText,
-        userAllergies: p.allergies,
-      );
+        final res = AllergyEngine.evaluate(
+          recipeAllergyTags: ix.allergyTags,
+          swapFieldText: ix.swapText,
+          userAllergies: p.allergies,
+        );
 
-      if (res.status == AllergyStatus.notSuitable) anyNotSuitable = true;
-      if (res.status == AllergyStatus.swapRequired) anySwap = true;
-    }
-
-    if (anyNotSuitable) return (tag: '⛔ Not suitable', swapHint: null);
-
-    if (anySwap) {
-      final label = activeProfiles.length > 1
-          ? '⚠️ Swap required (one or more)'
-          : '⚠️ Swap required';
-      return (tag: label, swapHint: null);
-    }
-
-    if (selection.mode == SuitabilityMode.specificPeople) {
-      if (activeProfiles.length == 1) {
-        return (tag: '✅ Safe for ${activeProfiles.first.name}', swapHint: null);
+        if (res.status == AllergyStatus.notSuitable) anyNotSuitable = true;
+        if (res.status == AllergyStatus.swapRequired) anySwap = true;
       }
-      return (tag: '✅ Safe for ${activeProfiles.length} selected', swapHint: null);
+
+      if (anyNotSuitable) {
+        parts.add('Allergy: Not suitable');
+      } else if (anySwap) {
+        final label = activeProfiles.length > 1
+            ? '⚠️ Allergy: Swap required'
+            : '⚠️ Allergy: Swap required';
+        parts.add(label);
+      } else {
+        // Only show "safe" if you're currently showing "safe" labels everywhere
+        if (selection.mode == SuitabilityMode.specificPeople) {
+          if (activeProfiles.length == 1) {
+            parts.add('✅ Allergy: Safe for ${activeProfiles.first.name}');
+          } else {
+            parts.add('✅ Allergy: Safe for ${activeProfiles.length} selected');
+          }
+        } else if (selection.mode == SuitabilityMode.allChildren) {
+          parts.add('✅ Allergy: Safe for all children');
+        } else {
+          parts.add('✅ Allergy: Safe for whole family');
+        }
+      }
     }
 
-    if (selection.mode == SuitabilityMode.allChildren) {
-      return (tag: '✅ Safe for all children', swapHint: null);
-    }
+    if (parts.isEmpty) return (tag: null, swapHint: null);
 
-    return (tag: '✅ Safe for whole family', swapHint: null);
+    // For now return one string; later we can return two pills cleanly.
+    return (tag: parts.join(' • '), swapHint: null);
   }
 
   static String activeAllergiesLabelFor(List<ProfilePerson> people) {

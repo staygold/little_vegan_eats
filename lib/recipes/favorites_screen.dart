@@ -1,14 +1,23 @@
 // lib/recipes/favorites_screen.dart
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../recipes/recipe_repository.dart';
 import 'recipe_detail_screen.dart';
-
-// ✅ reuse shared UI (same as CoursePage)
 import '../app/sub_header_bar.dart';
 import '../shared/search_pill.dart';
+import 'widgets/smart_recipe_card.dart'; 
+
+import 'family_profile_repository.dart';
+import 'family_profile.dart';
+import 'household_food_policy.dart';
+import 'food_policy_core.dart';
+import 'recipe_index.dart';
+import 'recipe_index_builder.dart';
+import 'allergy_engine.dart';
+import '../utils/text.dart'; 
 
 class FavoritesScreen extends StatefulWidget {
   const FavoritesScreen({super.key});
@@ -21,21 +30,36 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   List<Map<String, dynamic>> _allRecipes = const [];
   bool _loadingRecipes = true;
 
-  // 🔍 search (same as CoursePage)
   final _searchCtrl = TextEditingController();
   final _searchFocus = FocusNode();
+
+  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
+  late final HouseholdFoodPolicy _policy = HouseholdFoodPolicy(familyRepo: _familyRepo);
+  StreamSubscription<FamilyProfile>? _familySub;
+  FamilyProfile _family = const FamilyProfile(adults: [], children: []);
+
+  final Map<int, RecipeIndex> _indexById = {};
 
   @override
   void initState() {
     super.initState();
     _warmRecipeCache();
+    _listenToHousehold();
   }
 
   @override
   void dispose() {
+    _familySub?.cancel();
     _searchCtrl.dispose();
     _searchFocus.dispose();
     super.dispose();
+  }
+
+  void _listenToHousehold() {
+    _familySub = _familyRepo.watchFamilyProfile().listen((fam) {
+      if (!mounted) return;
+      setState(() => _family = fam);
+    });
   }
 
   Future<void> _warmRecipeCache() async {
@@ -45,6 +69,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         backgroundRefresh: true,
         forceRefresh: false,
       );
+      
+      _buildIndex(list);
+
       if (!mounted) return;
       setState(() {
         _allRecipes = list;
@@ -54,6 +81,140 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       if (!mounted) return;
       setState(() => _loadingRecipes = false);
     }
+  }
+
+  void _buildIndex(List<Map<String, dynamic>> list) {
+    final normalised = <Map<String, dynamic>>[];
+    for (final r in list) {
+      final m = _normaliseForIndex(r);
+      if (m.isNotEmpty) normalised.add(m);
+    }
+    _indexById.addAll(RecipeIndexBuilder.buildById(normalised));
+  }
+
+  // ✅ CLEAN TEXT LOGIC
+  String? _calculateAllergyStatus(Map<String, dynamic> recipe, List<String> recipeTags, String swapText) {
+    final blockedNames = <String>[];
+    final swapNames = <String>[];
+
+    for (final person in _family.allPeople) {
+      if (person.allergies.isEmpty) continue;
+
+      final result = AllergyEngine.evaluate(
+        recipeAllergyTags: recipeTags,
+        swapFieldText: swapText,
+        userAllergies: person.allergies,
+      );
+
+      if (result.status == AllergyStatus.notSuitable) {
+        blockedNames.add(person.name);
+      } else if (result.status == AllergyStatus.swapRequired) {
+        swapNames.add(person.name);
+      }
+    }
+
+    if (blockedNames.isNotEmpty) {
+      final unique = blockedNames.toSet().toList();
+      if (unique.length == 1) return "Not suitable for ${unique.first}";
+      return "Not suitable for ${unique.length} people";
+    }
+
+    if (swapNames.isNotEmpty) {
+      final unique = swapNames.toSet().toList();
+      if (unique.length == 1) return "Needs swap for ${unique.first}";
+      return "Needs swap for ${unique.length} people";
+    }
+    
+    final hasAnyAllergies = _family.allPeople.any((p) => p.allergies.isNotEmpty);
+    if (hasAnyAllergies) return "Safe for whole family";
+
+    return null;
+  }
+
+  Map<String, dynamic> _normaliseForIndex(Map<String, dynamic> r) {
+    final id = _toInt(r['id']);
+    if (id == null) return const {};
+
+    return <String, dynamic>{
+      'id': id,
+      'title': _titleOfCached(r),
+      'ingredients': '', 
+      'wprm_course': _termsFromField(r, 'wprm_course'),
+      'wprm_collections': _termsFromField(r, 'wprm_collections'),
+      'wprm_cuisine': _termsFromField(r, 'wprm_cuisine'),
+      'wprm_suitable_for': _termsFromField(r, 'wprm_suitable_for'),
+      'wprm_nutrition_tag': _termsFromField(r, 'wprm_nutrition_tag'),
+      'recipe': r['recipe'],
+      'meta': r['meta'],
+      'ingredient_swaps': _swapTextOf(r),
+      'wprm_allergies': _allergyTagsOf(r),
+    };
+  }
+
+  // ✅ IMPROVED SWAP FINDER
+  String _swapTextOf(Map<String, dynamic> r) {
+    String? tryGet(dynamic val) {
+      if (val != null && val.toString().trim().isNotEmpty) {
+        return val.toString();
+      }
+      return null;
+    }
+
+    // 1. Top Level
+    var found = tryGet(r['ingredient_swaps']) ?? tryGet(r['swap_text']);
+    if (found != null) return stripHtml(found).trim();
+
+    // 2. Meta
+    if (r['meta'] is Map) {
+      final m = r['meta'];
+      found = tryGet(m['ingredient_swaps']) ?? tryGet(m['wprm_ingredient_swaps']);
+      if (found != null) return stripHtml(found).trim();
+    }
+
+    // 3. Inner Recipe
+    final recipe = r['recipe'];
+    if (recipe is Map) {
+      found = tryGet(recipe['ingredient_swaps']) ?? tryGet(recipe['swap_text']);
+      if (found != null) return stripHtml(found).trim();
+
+      // 4. Custom Fields
+      if (recipe['custom_fields'] is Map) {
+        final cf = recipe['custom_fields'];
+        found = tryGet(cf['ingredient_swaps']);
+        if (found != null) return stripHtml(found).trim();
+      }
+    }
+
+    return '';
+  }
+
+  List<String> _allergyTagsOf(Map<String, dynamic> r) {
+    try {
+      final recipe = r['recipe'];
+      if (recipe is Map && recipe['tags'] is Map) {
+        final tags = recipe['tags'] as Map;
+        final a = tags['allergies'];
+        if (a is List) {
+          return a.map((e) => (e is Map ? e['name'] : e).toString()).toList();
+        }
+      }
+    } catch (_) {}
+    return _termsFromField(r, 'wprm_allergies');
+  }
+
+  List<String> _termsFromField(Map<String, dynamic> r, String field) {
+    final v = r[field];
+    if (v is List) return v.map((e) => e.toString().trim()).toList();
+    if (v is String && v.isNotEmpty) return [v];
+    return const [];
+  }
+
+  int? _toInt(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v.trim());
+    return int.tryParse(v.toString().trim());
   }
 
   Map<String, dynamic>? _findRecipeById(int id) {
@@ -80,7 +241,6 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     return 'Recipe';
   }
 
-  // ✅ New fav schema: doc.id is recipeId; fall back to field for legacy docs.
   int _favRecipeIdFromDoc(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
     final fromId = int.tryParse(doc.id);
     if (fromId != null && fromId > 0) return fromId;
@@ -113,19 +273,17 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         .collection('users')
         .doc(user.uid)
         .collection('favorites')
-        // ✅ matches FavoritesService which writes updatedAt
         .orderBy('updatedAt', descending: true);
 
-    final theme = Theme.of(context);
+    final youngestChild = _policy.youngestChild(_family);
+    final youngestMonths = _policy.youngestChildAgeMonths(_family);
+    final childNames = _family.children.map((c) => c.name).toList();
 
     return Scaffold(
       backgroundColor: const Color(0xFFECF3F4),
       body: Column(
         children: [
-          // ✅ Sub header (same as courses)
           const SubHeaderBar(title: 'Favourites'),
-
-          // ✅ Search pill (same as courses)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: SearchPill(
@@ -137,8 +295,6 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               onClear: () => setState(() {}),
             ),
           ),
-
-          // ✅ Content
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: favQuery.snapshots(),
@@ -146,13 +302,6 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                 if (snap.connectionState == ConnectionState.waiting &&
                     !snap.hasData) {
                   return const Center(child: CircularProgressIndicator());
-                }
-
-                if (snap.hasError) {
-                  return Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text('Error: ${snap.error}'),
-                  );
                 }
 
                 final docs = snap.data?.docs ?? const [];
@@ -165,7 +314,6 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                // Build + filter list based on search
                 final items = <_FavItem>[];
                 for (final doc in docs) {
                   final d = doc.data();
@@ -185,7 +333,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                           (cached?['recipe']?['image_url'] as String?) ??
                           (d['imageUrl']?.toString());
 
-                  items.add(_FavItem(id: id, title: title, imageUrl: imageUrl));
+                  items.add(_FavItem(id: id, title: title, imageUrl: imageUrl, cachedData: cached));
                 }
 
                 if (items.isEmpty) {
@@ -195,7 +343,6 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                       child: Text(
                         'No favourites match "${_searchCtrl.text.trim()}".',
                         textAlign: TextAlign.center,
-                        style: theme.textTheme.bodyMedium,
                       ),
                     ),
                   );
@@ -208,75 +355,39 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   itemBuilder: (context, i) {
                     final item = items[i];
 
-                    return Material(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => RecipeDetailScreen(id: item.id),
-                            ),
-                          );
-                        },
-                        child: SizedBox(
-                          height: 92,
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: 120,
-                                height: double.infinity,
-                                child: (item.imageUrl == null ||
-                                        item.imageUrl!.trim().isEmpty)
-                                    ? const Center(
-                                        child: Icon(Icons.restaurant_menu),
-                                      )
-                                    : Image.network(
-                                        item.imageUrl!,
-                                        fit: BoxFit.cover,
-                                        errorBuilder: (_, __, ___) =>
-                                            const Center(
-                                          child: Icon(Icons.restaurant_menu),
-                                        ),
-                                      ),
-                              ),
-                              Expanded(
-                                child: Padding(
-                                  padding:
-                                      const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                                  child: Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          item.title,
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: theme.textTheme.titleSmall
-                                              ?.copyWith(
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                      const Padding(
-                                        padding:
-                                            EdgeInsets.only(left: 8, top: 2),
-                                        child: Icon(
-                                          Icons.star_rounded,
-                                          size: 18,
-                                          color: Colors.amber,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
+                    final ix = (item.cachedData != null) ? _indexById[item.id] : null;
+                    
+                    final babyTag = (ix != null)
+                        ? FoodPolicyCore.babySuitabilityLabel(
+                            ix: ix,
+                            youngestChild: youngestChild,
+                            youngestMonths: youngestMonths,
+                            
+                          )
+                        : null;
+
+                    String? allergyStatus;
+                    if (ix != null && item.cachedData != null) {
+                      allergyStatus = _calculateAllergyStatus(
+                        item.cachedData!, 
+                        ix.allergies, 
+                        _swapTextOf(item.cachedData!)
+                      );
+                    }
+
+                    return SmartRecipeCard(
+                      title: item.title,
+                      imageUrl: item.imageUrl,
+                      isFavorite: true, 
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => RecipeDetailScreen(id: item.id),
                         ),
                       ),
+                      tags: ix?.suitable ?? [],
+                      ageWarning: babyTag,
+                      childNames: childNames,
+                      allergyStatus: allergyStatus,
                     );
                   },
                 );
@@ -294,9 +405,11 @@ class _FavItem {
     required this.id,
     required this.title,
     this.imageUrl,
+    this.cachedData,
   });
 
   final int id;
   final String title;
   final String? imageUrl;
+  final Map<String, dynamic>? cachedData;
 }

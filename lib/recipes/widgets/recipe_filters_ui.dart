@@ -4,12 +4,12 @@ import 'package:flutter/material.dart';
 
 import '../../theme/app_theme.dart';
 
-// ✅ pull shared models from your recipes folder (NOT defined in this UI file)
-import '../allergy_engine.dart'; // SuitabilityMode, AllergiesSelection
-import '../profile_person.dart'; // ProfilePerson, PersonType
+// ✅ Ensure these imports point to your actual file locations
+import '../allergy_engine.dart'; 
+import '../profile_person.dart'; 
 
 // -----------------------------------------------------------------------------
-// MODELS (UI-only selection model stays here)
+// MODELS
 // -----------------------------------------------------------------------------
 
 class RecipeFilterSelection {
@@ -55,7 +55,7 @@ class RecipeFilterSelection {
 }
 
 // -----------------------------------------------------------------------------
-// STYLING CONSTANTS (Matched to Shopping Sheet)
+// STYLING
 // -----------------------------------------------------------------------------
 
 class _FStyle {
@@ -65,7 +65,7 @@ class _FStyle {
 }
 
 // -----------------------------------------------------------------------------
-// MAIN BAR WIDGET (Entry Point)
+// MAIN BAR WIDGET
 // -----------------------------------------------------------------------------
 
 class RecipeFilterBar extends StatelessWidget {
@@ -164,26 +164,33 @@ class RecipeFilterBar extends StatelessWidget {
   }
 
   String _allergiesChipLabel(AllergiesSelection a) {
-    if (!a.enabled) return 'Allergies off';
-    if (a.mode == SuitabilityMode.wholeFamily) return 'Whole family';
-    if (a.mode == SuitabilityMode.allChildren) return 'All children';
+    if (!a.enabled) return 'Suitability off';
+    if (a.mode == SuitabilityMode.wholeFamily) return 'Suitable for whole family';
+    if (a.mode == SuitabilityMode.allChildren) return 'Suitable for all children';
+    
     if (a.personIds.isNotEmpty) {
       final names = _allPeople
           .where((p) => a.personIds.contains(p.id))
           .map((p) => p.name)
           .toList();
       if (names.isNotEmpty) {
-        if (names.length == 1) return names.first;
-        if (names.length == 2) return '${names[0]} & ${names[1]}';
-        return '${names.length} people';
+        if (names.length == 1) return 'Suitable for ${names.first}';
+        if (names.length == 2) return 'Suitable for ${names[0]} & ${names[1]}';
+        return 'Suitable for ${names.length} people';
       }
     }
-    return 'Whole family';
+    return 'Suitable for whole family';
   }
 
   @override
   Widget build(BuildContext context) {
-    final filterCount = filters.activeCount;
+    int activeCount = 0;
+    if (!lockCourse && filters.course != 'All') activeCount++;
+    if (!lockCuisine && filters.cuisine != 'All') activeCount++;
+    if (!lockSuitableFor && filters.suitableFor != 'All') activeCount++;
+    if (!lockNutrition && filters.nutritionTag != 'All') activeCount++;
+    if (!lockCollection && filters.collection != 'All') activeCount++;
+
     final allergyCount = allergies.activeCount;
 
     final chips = <Widget>[];
@@ -193,31 +200,31 @@ class RecipeFilterBar extends StatelessWidget {
       chips.add(const SizedBox(width: 8));
     }
 
-    if (filters.course != 'All') {
+    if (!lockCourse && filters.course != 'All') {
       addChip(
         _labelFor(filters.course, courseLabelsById),
         () => onFiltersApplied(filters.copyWith(course: 'All')),
       );
     }
-    if (filters.cuisine != 'All') {
+    if (!lockCuisine && filters.cuisine != 'All') {
       addChip(
         _labelFor(filters.cuisine, cuisineLabelsById),
         () => onFiltersApplied(filters.copyWith(cuisine: 'All')),
       );
     }
-    if (filters.suitableFor != 'All') {
+    if (!lockSuitableFor && filters.suitableFor != 'All') {
       addChip(
         _labelFor(filters.suitableFor, ageLabelsById),
         () => onFiltersApplied(filters.copyWith(suitableFor: 'All')),
       );
     }
-    if (filters.nutritionTag != 'All') {
+    if (!lockNutrition && filters.nutritionTag != 'All') {
       addChip(
         _labelFor(filters.nutritionTag, nutritionLabelsById),
         () => onFiltersApplied(filters.copyWith(nutritionTag: 'All')),
       );
     }
-    if (filters.collection != 'All') {
+    if (!lockCollection && filters.collection != 'All') {
       addChip(
         _labelFor(filters.collection, collectionLabelsById),
         () => onFiltersApplied(filters.copyWith(collection: 'All')),
@@ -236,13 +243,6 @@ class RecipeFilterBar extends StatelessWidget {
           ),
         ),
       );
-
-      if (allergies.includeSwaps) {
-        addChip(
-          'Swaps on',
-          () => onAllergiesApplied(allergies.copyWith(includeSwaps: false)),
-        );
-      }
     }
 
     return Column(
@@ -253,14 +253,14 @@ class RecipeFilterBar extends StatelessWidget {
             Expanded(
               child: _PillButton(
                 label: 'Filters',
-                count: filterCount,
+                count: activeCount,
                 onTap: () => _openSheet(context, false),
               ),
             ),
             const SizedBox(width: 10),
             Expanded(
               child: _PillButton(
-                label: 'Allergies',
+                label: 'Suitability',
                 count: allergyCount,
                 onTap: () => _openSheet(context, true),
               ),
@@ -280,7 +280,7 @@ class RecipeFilterBar extends StatelessWidget {
 }
 
 // -----------------------------------------------------------------------------
-// FILTER SHEET (The new generic sheet)
+// FILTER SHEET
 // -----------------------------------------------------------------------------
 
 class RecipeFiltersSheet extends StatefulWidget {
@@ -401,17 +401,14 @@ class RecipeFiltersSheet extends StatefulWidget {
   State<RecipeFiltersSheet> createState() => _RecipeFiltersSheetState();
 }
 
-// Identify which sub-selector we are currently viewing
 enum _SubPageType { none, course, cuisine, age, nutrition, collection }
 
 class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
   late RecipeFilterSelection _tempFilters;
   late AllergiesSelection _tempAllergies;
 
-  // PageView Control
   final PageController _pageCtrl = PageController();
 
-  // 0 = Main Menu (Filters OR Allergies), 1 = Selector
   int _pageIndex = 0;
   _SubPageType _activeSubPage = _SubPageType.none;
 
@@ -455,7 +452,6 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
     Navigator.pop(context);
   }
 
-  // Helper for ID->Label lookup
   String _labelFor(String raw, Map<String, String> map) {
     if (raw == 'All') return 'Any';
     return map[raw] ?? raw;
@@ -467,14 +463,13 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
     final isAllergiesMode = widget.startOnAllergies;
     final title = _pageIndex == 1
         ? _subPageTitle(_activeSubPage)
-        : (isAllergiesMode ? 'Allergies' : 'Filters');
+        : (isAllergiesMode ? 'Suitability' : 'Filters');
 
     return Container(
       padding: const EdgeInsets.fromLTRB(0, 12, 0, 0),
       height: MediaQuery.of(context).size.height * 0.85,
       child: Column(
         children: [
-          // Grab handle
           Container(
             width: 44,
             height: 5,
@@ -484,8 +479,6 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
               borderRadius: BorderRadius.circular(999),
             ),
           ),
-
-          // Header
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
@@ -513,7 +506,6 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                   ),
                 ),
 
-                // Close
                 IconButton(
                   icon: Icon(
                     Icons.close_rounded,
@@ -533,12 +525,9 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
               controller: _pageCtrl,
               physics: const NeverScrollableScrollPhysics(),
               children: [
-                // Page 0: Root Menu
                 isAllergiesMode
                     ? _buildAllergiesRoot(bottomPad)
                     : _buildFiltersRoot(bottomPad),
-
-                // Page 1: Sub Selector
                 _buildSubPage(bottomPad),
               ],
             ),
@@ -627,7 +616,22 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
   // ---------------------------------------------------------------------------
   Widget _buildAllergiesRoot(double bottomPad) {
     final a = _tempAllergies;
-    final allPeople = [...widget.adults, ...widget.children];
+    
+    // Logic helpers
+    final children = widget.children;
+    final adults = widget.adults;
+    final singleChild = children.length == 1 ? children.first : null;
+    final hasMultipleChildren = children.length > 1;
+
+    // Safety Scale Logic helpers for the Radio Buttons
+    // 1. Strict: Hide Unsafe AND Hide Swaps
+    final isStrictSafety = a.hideUnsafe && !a.includeSwaps;
+    
+    // 2. Swap Friendly: Hide Unsafe BUT Show Swaps
+    final isSwapSafety = a.hideUnsafe && a.includeSwaps;
+    
+    // 3. Show All: Hide Unsafe is FALSE
+    final isShowAllSafety = !a.hideUnsafe;
 
     void togglePerson(String id) {
       final current = Set<String>.from(a.personIds);
@@ -636,14 +640,15 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
       } else {
         current.add(id);
       }
-
-      final nextMode = current.isEmpty
-          ? SuitabilityMode.wholeFamily
-          : SuitabilityMode.specificPeople;
-
       setState(() {
-        _tempAllergies = a.copyWith(mode: nextMode, personIds: current);
+        _tempAllergies = a.copyWith(personIds: current);
       });
+    }
+
+    String getNamesList(List<ProfilePerson> people) {
+      if (people.isEmpty) return "";
+      final names = people.map((e) => e.name).join(", ");
+      return "Includes $names";
     }
 
     return Column(
@@ -652,7 +657,9 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              // Master Toggle
+              // -------------------------------------------------------
+              // MASTER TOGGLE
+              // -------------------------------------------------------
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -663,7 +670,7 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                   children: [
                     Expanded(
                       child: Text(
-                        'FILTER BY ALLERGIES',
+                        'FILTER BY SUITABILITY',
                         style: TextStyle(
                           fontWeight: FontWeight.w900,
                           fontSize: 13,
@@ -677,13 +684,20 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                       onChanged: (v) {
                         setState(() {
                           if (!v) {
+                            // Turn Off
                             _tempAllergies = a.copyWith(
                               enabled: false,
                               mode: SuitabilityMode.wholeFamily,
                               personIds: const <String>{},
                             );
                           } else {
-                            _tempAllergies = a.copyWith(enabled: true);
+                            // Turn On -> Default to Strict Safety
+                            _tempAllergies = a.copyWith(
+                              enabled: true,
+                              hideUnsafe: true,     
+                              includeSwaps: false,  
+                              strictAge: false,     
+                            );
                           }
                         });
                       },
@@ -694,8 +708,12 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
 
               if (a.enabled) ...[
                 const SizedBox(height: 24),
+                
+                // ---------------------------------------------------------
+                // 1. WHO ARE YOU FEEDING?
+                // ---------------------------------------------------------
                 Text(
-                  'SUITABLE FOR',
+                  'WHO ARE YOU FEEDING?',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w900,
@@ -705,89 +723,163 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                 ),
                 const SizedBox(height: 12),
 
-                // Presets
-                _PersonToggle(
+                // OPTION 1: WHOLE FAMILY
+                _RadioTile(
                   label: 'Whole family',
+                  subtitle: a.mode == SuitabilityMode.wholeFamily 
+                    ? getNamesList([...children, ...adults]) 
+                    : null,
                   selected: a.mode == SuitabilityMode.wholeFamily,
-                  onTap: () => setState(() {
-                    _tempAllergies = a.copyWith(
-                      mode: SuitabilityMode.wholeFamily,
-                      personIds: const <String>{},
-                    );
-                  }),
+                  onTap: () => setState(() => _tempAllergies = a.copyWith(
+                    mode: SuitabilityMode.wholeFamily,
+                    personIds: const <String>{}, 
+                  )),
                 ),
                 const SizedBox(height: 8),
-                _PersonToggle(
-                  label: 'All children',
-                  selected: a.mode == SuitabilityMode.allChildren,
-                  onTap: () => setState(() {
-                    _tempAllergies = a.copyWith(
-                      mode: SuitabilityMode.allChildren,
-                      personIds: const <String>{},
-                    );
-                  }),
-                ),
 
-                if (allPeople.isNotEmpty) ...[
-                  const SizedBox(height: 20),
-                  Text(
-                    'INDIVIDUALS',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 0.8,
-                      color: Colors.black.withOpacity(0.5),
-                    ),
+                // --- SCENARIO A: SINGLE CHILD ---
+                if (singleChild != null) ...[
+                  _RadioTile(
+                    label: singleChild.name,
+                    selected: a.mode == SuitabilityMode.specificPeople && 
+                              a.personIds.contains(singleChild.id),
+                    onTap: () => setState(() => _tempAllergies = a.copyWith(
+                      mode: SuitabilityMode.specificPeople,
+                      personIds: {singleChild.id},
+                    )),
                   ),
-                  const SizedBox(height: 12),
-                  ...allPeople.map(
-                    (p) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: _PersonToggle(
-                        label: p.name,
-                        selected: a.mode == SuitabilityMode.specificPeople &&
-                            a.personIds.contains(p.id),
-                        onTap: () => togglePerson(p.id),
+                ]
+
+                // --- SCENARIO B: MULTIPLE CHILDREN ---
+                else if (hasMultipleChildren) ...[
+                  _RadioTile(
+                    label: 'All children',
+                    subtitle: a.mode == SuitabilityMode.allChildren 
+                      ? getNamesList(children) 
+                      : null,
+                    selected: a.mode == SuitabilityMode.allChildren,
+                    onTap: () => setState(() => _tempAllergies = a.copyWith(
+                      mode: SuitabilityMode.allChildren,
+                      // Forces all IDs to be sent to engine
+                      personIds: children.map((c) => c.id).toSet(),
+                    )),
+                  ),
+                  const SizedBox(height: 8),
+
+                  _RadioTile(
+                    label: 'Select individuals',
+                    selected: a.mode == SuitabilityMode.specificPeople,
+                    onTap: () => setState(() => _tempAllergies = a.copyWith(
+                      mode: SuitabilityMode.specificPeople,
+                      // Keep existing IDs
+                    )),
+                  ),
+
+                  if (a.mode == SuitabilityMode.specificPeople) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      margin: const EdgeInsets.only(left: 12),
+                      padding: const EdgeInsets.only(left: 12, top: 4, bottom: 4),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          left: BorderSide(
+                            color: Colors.black.withOpacity(0.1),
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                           ...children.map((p) => _CheckboxRow(
+                             label: p.name,
+                             checked: a.personIds.contains(p.id),
+                             onTap: () => togglePerson(p.id),
+                           )),
+                           
+                           if (adults.isNotEmpty) ...[
+                             const SizedBox(height: 8),
+                             Padding(
+                               padding: const EdgeInsets.only(left: 4, bottom: 4),
+                               child: Text(
+                                 "Adults", 
+                                 style: TextStyle(
+                                   fontSize: 11, 
+                                   fontWeight: FontWeight.bold,
+                                   color: Colors.grey[500]
+                                 )
+                               ),
+                             ),
+                             ...adults.map((p) => _CheckboxRow(
+                               label: p.name,
+                               checked: a.personIds.contains(p.id),
+                               onTap: () => togglePerson(p.id),
+                             )),
+                           ]
+                        ],
                       ),
                     ),
-                  ),
+                  ],
                 ],
 
                 const SizedBox(height: 12),
                 Divider(height: 1, color: Colors.black.withOpacity(0.1)),
+                const SizedBox(height: 24),
+
+                // ---------------------------------------------------------
+                // 2. ALLERGY SAFETY
+                // ---------------------------------------------------------
+                Text(
+                  'ALLERGY SAFETY',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.8,
+                    color: Colors.black.withOpacity(0.5),
+                  ),
+                ),
                 const SizedBox(height: 12),
 
-                // Swaps
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'INCLUDE RECIPES THAT NEED SWAPS',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                              fontSize: 13,
-                              color: AppColors.brandDark,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            'Shows recipes with safe ingredient replacements',
-                            style: TextStyle(fontSize: 12, color: Colors.black54),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Switch(
-                      value: a.includeSwaps,
-                      activeColor: AppColors.brandDark,
-                      onChanged: (v) => setState(() {
-                        _tempAllergies = a.copyWith(includeSwaps: v);
-                      }),
-                    ),
-                  ],
+                // Option 1: STRICT
+                _RadioTile(
+                  label: 'Block all unsafe recipes',
+                  subtitle: 'Hide anything that matches an allergen.',
+                  selected: isStrictSafety,
+                  onTap: () => setState(() {
+                    _tempAllergies = a.copyWith(
+                      hideUnsafe: true,
+                      includeSwaps: false,
+                      strictAge: false, 
+                    );
+                  }),
+                ),
+                const SizedBox(height: 8),
+
+                // Option 2: ALLOW SWAPS (Logic Fix Target)
+                _RadioTile(
+                  label: 'Allow recipes that require swaps',
+                  subtitle: 'Shows recipes with a swap available (Amber).',
+                  selected: isSwapSafety,
+                  onTap: () => setState(() {
+                    _tempAllergies = a.copyWith(
+                      hideUnsafe: true, // Keep UNSAFE hidden...
+                      includeSwaps: true, // ...Unless it has a SWAP
+                      strictAge: false, 
+                    );
+                  }),
+                ),
+                const SizedBox(height: 8),
+
+                // Option 3: SHOW ALL
+                _RadioTile(
+                  label: 'Show all recipes even if not suitable',
+                  selected: isShowAllSafety,
+                  onTap: () => setState(() {
+                    _tempAllergies = a.copyWith(
+                      hideUnsafe: false,
+                      strictAge: false, 
+                    );
+                  }),
                 ),
               ],
             ],
@@ -848,7 +940,7 @@ class _RecipeFiltersSheetState extends State<RecipeFiltersSheet> {
                     : null,
                 onTap: () {
                   _setValue(_activeSubPage, val);
-                  _goBack(); // Auto-back on select
+                  _goBack();
                 },
               );
             },
@@ -1036,13 +1128,15 @@ class _MenuButton extends StatelessWidget {
   }
 }
 
-class _PersonToggle extends StatelessWidget {
+class _RadioTile extends StatelessWidget {
   final String label;
+  final String? subtitle;
   final bool selected;
   final VoidCallback onTap;
 
-  const _PersonToggle({
+  const _RadioTile({
     required this.label,
+    this.subtitle,
     required this.selected,
     required this.onTap,
   });
@@ -1066,21 +1160,83 @@ class _PersonToggle extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Expanded(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    color: selected ? AppColors.brandDark : Colors.black,
-                  ),
-                ),
-              ),
               Icon(
-                selected ? Icons.check_circle : Icons.circle_outlined,
+                selected ? Icons.radio_button_checked : Icons.radio_button_off,
                 color: selected ? AppColors.brandDark : Colors.black26,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                        color: selected ? AppColors.brandDark : Colors.black,
+                      ),
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle!,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          color: selected ? AppColors.brandDark.withOpacity(0.8) : Colors.black54,
+                        ),
+                      ),
+                    ]
+                  ],
+                ),
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CheckboxRow extends StatelessWidget {
+  final String label;
+  final bool checked;
+  final VoidCallback onTap;
+
+  const _CheckboxRow({
+    required this.label,
+    required this.checked,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Row(
+          children: [
+            Icon(
+              checked
+                  ? Icons.check_box_rounded
+                  : Icons.check_box_outline_blank_rounded,
+              color: checked
+                  ? AppColors.brandDark
+                  : Colors.black38,
+            ),
+            const SizedBox(width: 10),
+            Text(
+              label,
+              style: TextStyle(
+                fontWeight: checked
+                    ? FontWeight.w700
+                    : FontWeight.w500,
+                fontSize: 15,
+              ),
+            ),
+          ],
         ),
       ),
     );

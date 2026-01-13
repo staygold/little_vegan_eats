@@ -19,7 +19,9 @@ import '../meal_plan/meal_plan_screen.dart';
 import '../recipes/latest_recipes_page.dart';
 import '../recipes/popular_recipes_page.dart';
 import '../recipes/recipes_bootstrap_gate.dart';
-import '../recipes/course_page.dart';
+
+// ✅ CHANGED: Import RecipeListPage instead of CoursePage
+import '../recipes/recipe_list_page.dart';
 
 // ✅ family repo source of truth
 import '../recipes/family_profile_repository.dart';
@@ -273,6 +275,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ✅ UPDATED: Use RecipeListPage here
   void _openCourse(
     BuildContext context,
     String slug,
@@ -282,10 +285,11 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => RecipesBootstrapGate(
-          child: CoursePage(
-            courseSlug: slug,
-            title: title,
-            subtitle: subtitle,
+          // ✅ Use the generic wrapper with locks
+          child: RecipeListPage(
+            initialCourseSlug: slug,
+            lockCourse: true,
+            titleOverride: title.toUpperCase(),
           ),
         ),
       ),
@@ -300,7 +304,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // ✅ auth guard (keeps your previous behaviour)
+    // ✅ auth guard
     if (FirebaseAuth.instance.currentUser == null) {
       return const Scaffold(
         body: Center(child: Text('Log in to see your home feed')),
@@ -326,8 +330,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return StreamBuilder<FamilyProfile>(
       stream: _familyRepo.watchFamilyProfile(),
       builder: (context, famSnap) {
-        final firstName =
-            (famSnap.hasData) ? _firstNameFromFamily(famSnap.data!) : null;
+        final family = famSnap.data;
+        final firstName = (family != null) ? _firstNameFromFamily(family) : null;
+        
+        // ✅ Extract names for the Smart Card
+        final childNames = family?.children.map((c) => c.name).toList() ?? [];
 
         return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
           stream: settingsDoc.snapshots(),
@@ -337,7 +344,7 @@ class _HomeScreenState extends State<HomeScreen> {
             final activeProgramId =
                 (settings['activeProgramId'] ?? '').toString().trim();
 
-            // ✅ If no program at all: keep the existing "build plan" behaviour.
+            // ✅ If no program at all
             if (activeProgramId.isEmpty) {
               return Scaffold(
                 backgroundColor: railBg,
@@ -394,6 +401,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           todayRaw: const <String, dynamic>{},
                           recipes: _recipes,
                           favoriteIds: _favoriteIds,
+                          childNames: childNames, // ✅ Pass names
                           heroTopText: "HERE'S SOME IDEAS",
                           heroBottomText: "FOR TODAY",
                           homeAccordion: true,
@@ -433,9 +441,7 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             }
 
-            // ✅ Program exists. We must resolve “effective slots”:
-            // 1) If adhoc day exists -> use it.
-            // 2) Else use program day.
+            // ✅ Program exists.
             final adhocStream = _adhocDayStream(dayKey: effectiveDayKey);
             final programStream = _programDayStream(
               programId: activeProgramId,
@@ -542,25 +548,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                 todayRaw: effectiveSlots,
                                 recipes: _recipes,
                                 favoriteIds: _favoriteIds,
+                                childNames: childNames, // ✅ Pass names
                                 heroTopText: "HERE'S SOME IDEAS",
                                 heroBottomText: "FOR TODAY",
                                 homeAccordion: true,
                                 onOpenWeek: onOpenFullPlan,
                                 onOpenMealPlan: null,
                                 onOpenToday: null,
-
-                                // keep build-plan CTA available, but section will NOT use it
-                                // when programmeActive=true and onAddAdhocDay is provided.
                                 onBuildMealPlan: () => _openBuilder(context),
-
-                                // ✅ key fix
                                 programmeActive: true,
-
-                                // Home doesn’t yet know programme weekdays; treat as “in programme”
-                                // so the empty state becomes “add one-off day” when empty.
                                 dayInProgramme: dayInProgramme,
-
-                                // ✅ shows “ADD ONE-OFF DAY” when empty
                                 onAddAdhocDay: () =>
                                     _openAdhocBuilder(context, effectiveDayKey),
                               ),

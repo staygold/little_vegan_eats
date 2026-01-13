@@ -1,229 +1,198 @@
 // lib/meal_plan/core/meal_plan_age_engine.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
 
-import 'meal_plan_log.dart';
+import '../../recipes/recipe_index.dart';
 
 class MealPlanAgeEngine {
-  MealPlanAgeEngine._();
-
   static const int defaultBabyThresholdMonths = 9;
 
-  static int? ageInMonths({
-    required Map<String, dynamic> child,
-    DateTime? now,
-  }) {
-    final n = now ?? DateTime.now();
+  // -------------------------------------------------------
+  // Age helpers
+  // -------------------------------------------------------
+  static int? childAgeMonths(Map<String, dynamic> child, DateTime onDate) {
+    // Supports:
+    // - dob as DateTime
+    // - dob as ISO string
+    // - dob as millis
+    // - dobMonth/dobYear
+    final dob = child['dob'];
 
-    int? parseInt(dynamic v) {
-      if (v is int) return v;
-      if (v is num) return v.toInt();
-      return int.tryParse(v?.toString() ?? '');
+    DateTime? birth;
+    if (dob is DateTime) {
+      birth = dob;
+    } else if (dob is String) {
+      birth = DateTime.tryParse(dob);
+    } else if (dob is num) {
+      birth = DateTime.fromMillisecondsSinceEpoch(dob.toInt());
     }
 
-    final m = parseInt(child['dobMonth']);
-    final y = parseInt(child['dobYear']);
-    if (m != null && y != null && m >= 1 && m <= 12) {
-      return _diffInWholeMonths(fromYear: y, fromMonth: m, to: n);
-    }
-
-    final raw = child['dob'];
-    DateTime? dt;
-    if (raw is Timestamp) dt = raw.toDate();
-    if (raw is DateTime) dt = raw;
-
-    if (dt == null && raw is String && raw.trim().isNotEmpty) {
-      final s = raw.trim();
-
-      // "YYYY-MM"
-      if (s.contains('-')) {
-        final parts = s.split('-');
-        final yy = parts.isNotEmpty ? int.tryParse(parts[0]) : null;
-        final mm = parts.length > 1 ? int.tryParse(parts[1]) : null;
-        if (yy != null && mm != null && mm >= 1 && mm <= 12) {
-          return _diffInWholeMonths(fromYear: yy, fromMonth: mm, to: n);
-        }
-      }
-
-      // "MM/YYYY" or "DD/MM/YYYY"
-      if (s.contains('/')) {
-        final parts = s.split('/');
-        if (parts.length == 2) {
-          final mm = int.tryParse(parts[0]);
-          final yy = int.tryParse(parts[1]);
-          if (yy != null && mm != null && mm >= 1 && mm <= 12) {
-            return _diffInWholeMonths(fromYear: yy, fromMonth: mm, to: n);
-          }
-        }
-        if (parts.length == 3) {
-          final mm = int.tryParse(parts[1]);
-          final yy = int.tryParse(parts[2]);
-          if (yy != null && mm != null && mm >= 1 && mm <= 12) {
-            return _diffInWholeMonths(fromYear: yy, fromMonth: mm, to: n);
-          }
-        }
-      }
-
-      // try ISO DateTime parse
-      final parsed = DateTime.tryParse(s);
-      if (parsed != null) {
-        return _diffInWholeMonths(fromYear: parsed.year, fromMonth: parsed.month, to: n);
+    if (birth == null) {
+      final m = child['dobMonth'];
+      final y = child['dobYear'];
+      final mm = (m is int) ? m : int.tryParse(m?.toString() ?? '');
+      final yy = (y is int) ? y : int.tryParse(y?.toString() ?? '');
+      if (mm != null && yy != null && mm >= 1 && mm <= 12) {
+        birth = DateTime(yy, mm, 1);
       }
     }
 
-    if (dt != null) {
-      return _diffInWholeMonths(fromYear: dt.year, fromMonth: dt.month, to: n);
-    }
+    if (birth == null) return null;
 
-    return null;
+    int months = (onDate.year - birth.year) * 12 + (onDate.month - birth.month);
+    if (onDate.day < birth.day) months -= 1;
+    if (months < 0) months = 0;
+    return months;
   }
 
-  static int _diffInWholeMonths({
-    required int fromYear,
-    required int fromMonth,
-    required DateTime to,
-  }) {
-    final ym1 = fromYear * 12 + (fromMonth - 1);
-    final ym2 = to.year * 12 + (to.month - 1);
-    final diff = ym2 - ym1;
-    return diff < 0 ? 0 : diff;
-  }
+  static Map<String, dynamic>? youngestChild(
+    List<Map<String, dynamic>> children,
+    DateTime onDate,
+  ) {
+    if (children.isEmpty) return null;
 
-  static int? youngestAgeMonths({
-    required List<dynamic>? children,
-    required DateTime onDate,
-  }) {
-    if (children == null || children.isEmpty) return null;
+    Map<String, dynamic>? best;
+    int? bestAge;
 
-    int? best;
     for (final c in children) {
-      if (c is! Map) continue;
-      final child = Map<String, dynamic>.from(c);
-
-      final age = ageInMonths(child: child, now: onDate);
+      final age = childAgeMonths(c, onDate);
       if (age == null) continue;
-
-      if (best == null || age < best) best = age;
+      if (best == null || age < (bestAge ?? 999999)) {
+        best = c;
+        bestAge = age;
+      }
     }
     return best;
   }
 
-  static bool _isSnackSlot(String slotKey) {
-    final k = slotKey.trim().toLowerCase();
-    return k == 'snack' ||
-        k == 'snack1' ||
-        k == 'snack2' ||
-        k == 'snack_1' ||
-        k == 'snack_2';
+  static int? youngestAgeMonths({
+    required List<Map<String, dynamic>> children,
+    required DateTime onDate,
+  }) {
+    final y = youngestChild(children, onDate);
+    if (y == null) return null;
+    return childAgeMonths(y, onDate);
   }
 
-  static bool _tokenIsFirstFoods(String s) {
-    final v = s.trim().toLowerCase();
-    if (v.isEmpty) return false;
-    return v.contains('first-foods') ||
-        v.contains('first foods') ||
-        v.contains('first_foods');
+  // Eldest child = max age (your “target child” rule when 2+ kids)
+  static Map<String, dynamic>? targetChildForKidsAudience(
+    List<Map<String, dynamic>> children,
+    DateTime onDate,
+  ) {
+    if (children.isEmpty) return null;
+
+    Map<String, dynamic>? best;
+    int? bestAge;
+
+    for (final c in children) {
+      final age = childAgeMonths(c, onDate);
+      if (age == null) continue;
+      if (best == null || age > (bestAge ?? -1)) {
+        best = c;
+        bestAge = age;
+      }
+    }
+    return best;
   }
 
-  static bool _isFirstFoodsRecipe(Map<String, dynamic> recipe) {
-    bool hasFirstFoods(dynamic v) {
+  // -------------------------------------------------------
+  // ✅ first_foods detection (recipe map only)
+  // -------------------------------------------------------
+  static bool _isFirstFoodsFromRecipe(Map<String, dynamic> recipe) {
+    Map<String, dynamic> r = recipe;
+    if (recipe['recipe'] is Map) {
+      r = Map<String, dynamic>.from(recipe['recipe'] as Map);
+    }
+
+    bool containsToken(dynamic v) {
       if (v == null) return false;
-      if (v is bool) return v;
-      if (v is String) return _tokenIsFirstFoods(v);
-      if (v is num) return false;
+
+      if (v is String) {
+        final s = v.toLowerCase();
+        return s.contains('first_foods') || s.contains('first foods') || s.contains('first-foods');
+      }
 
       if (v is List) {
         for (final item in v) {
-          if (hasFirstFoods(item)) return true;
+          if (containsToken(item)) return true;
         }
         return false;
       }
 
       if (v is Map) {
-        final m = Map<String, dynamic>.from(v);
-        final slug = (m['slug'] ?? '').toString();
-        final name = (m['name'] ?? '').toString();
-        if (_tokenIsFirstFoods(slug) || _tokenIsFirstFoods(name)) return true;
-
-        final term = (m['term'] ?? m['label'] ?? '').toString();
-        if (_tokenIsFirstFoods(term)) return true;
-
-        for (final entry in m.entries) {
-          if (hasFirstFoods(entry.value)) return true;
+        for (final entry in v.entries) {
+          if (containsToken(entry.key)) return true;
+          if (containsToken(entry.value)) return true;
         }
         return false;
       }
 
+      // numbers/bools etc -> no
       return false;
     }
 
-    if (recipe['first_foods'] == true) return true;
+    // Most likely places
+    if (containsToken(r['first_foods']) || containsToken(r['firstFoods'])) return true;
 
-    if (hasFirstFoods(recipe['collections'])) return true;
-    if (hasFirstFoods(recipe['collection'])) return true;
-    if (hasFirstFoods(recipe['category'])) return true;
-    if (hasFirstFoods(recipe['categories'])) return true;
-    if (hasFirstFoods(recipe['tags'])) return true;
+    final tags = r['tags'];
+    if (tags is Map && containsToken(tags)) return true;
 
-    final tax = recipe['taxonomies'];
-    if (tax is Map) {
-      final t = Map<String, dynamic>.from(tax);
-      if (hasFirstFoods(t['collections'])) return true;
-      if (hasFirstFoods(t['collection'])) return true;
-      if (hasFirstFoods(t['wprm_collections'])) return true;
-    }
+    final tax = r['taxonomies'];
+    if (tax is Map && containsToken(tax)) return true;
 
-    if (hasFirstFoods(recipe['wprm_collections'])) return true;
-
-    final inner = recipe['recipe'];
-    if (inner is Map) {
-      final m = Map<String, dynamic>.from(inner);
-
-      if (m['first_foods'] == true) return true;
-
-      final tags = m['tags'];
-      if (tags is Map) {
-        final tm = Map<String, dynamic>.from(tags);
-        if (hasFirstFoods(tm['collections'])) return true;
-      }
-
-      if (hasFirstFoods(m['collections'])) return true;
-      if (hasFirstFoods(m['collection'])) return true;
-      if (hasFirstFoods(m['tags'])) return true;
-      if (hasFirstFoods(m['taxonomies'])) return true;
-      if (hasFirstFoods(m['wprm_collections'])) return true;
-    }
+    // fallback: search entire map
+    if (containsToken(r)) return true;
 
     return false;
   }
 
-  static bool allowRecipeForSlotUsingFirstFoodsGate({
-    required Map<String, dynamic> recipe,
+  // -------------------------------------------------------
+  // ✅ SSOT age gating for kids audience
+  // -------------------------------------------------------
+  static bool allowForKidsAudience({
     required String slotKey,
-    required List<dynamic>? children,
+    required List<Map<String, dynamic>> children,
+    required DateTime servingDate,
+    required RecipeIndex ix,
+    required Map<String, dynamic> recipe,
     int babyThresholdMonths = defaultBabyThresholdMonths,
-    DateTime? servingDate,
   }) {
-    final dt = servingDate ?? DateTime.now();
-    final youngest = youngestAgeMonths(children: children, onDate: dt);
+    if (children.isEmpty) return true;
 
-    MealPlanLog.d(
-      'AGE_GATE slot=$slotKey youngest=$youngest threshold=$babyThresholdMonths children=${children?.length ?? 0} date=${dt.toIso8601String()}',
-    );
+    final isFirstFoods = _isFirstFoodsFromRecipe(recipe);
 
-    if (youngest == null) return true;
-    if (youngest >= babyThresholdMonths) return true;
+    final youngest = youngestChild(children, servingDate);
+    final youngestAge =
+        youngest == null ? null : childAgeMonths(youngest, servingDate);
 
-    if (_isSnackSlot(slotKey)) {
-      final isFF = _isFirstFoodsRecipe(recipe);
-      final id = (recipe['id'] ??
-          (recipe['recipe'] is Map ? (recipe['recipe'] as Map)['id'] : null));
-      final title = (recipe['title'] ??
-          (recipe['recipe'] is Map ? (recipe['recipe'] as Map)['name'] : null));
+    // If we can't compute age, be strict: only first_foods.
+    if (youngestAge == null) return isFirstFoods;
 
-      MealPlanLog.d('AGE_GATE snack recipe id=$id title=$title firstFoods=$isFF');
-      return isFF;
+    final isBaby = youngestAge <= babyThresholdMonths;
+    final isBabyOnlyFamily = isBaby && children.length == 1;
+
+    // ✅ STRICT RULE: baby-only + kids audience => (6m+ OR first_foods) ONLY
+    if (isBabyOnlyFamily) {
+      if (isFirstFoods) return true;
+
+      final minAge = ix.minAgeMonths;
+
+      // Unknown minAge? REJECT. This is what was letting “safe for kids” leak.
+      if (minAge == null) return false;
+
+      return minAge <= youngestAge;
     }
 
-    return false;
+    // Multi-child family: target child = eldest
+    final target = targetChildForKidsAudience(children, servingDate);
+    final targetAge = target == null ? null : childAgeMonths(target, servingDate);
+
+    if (targetAge == null) return isFirstFoods;
+
+    final minAge = ix.minAgeMonths;
+
+    // If minAge missing in multi-child families:
+    // allow (and your warning system should handle messaging).
+    if (minAge == null) return true;
+
+    return minAge <= targetAge;
   }
 }

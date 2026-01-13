@@ -19,26 +19,12 @@ class MealPlanRepository {
   // -------------------------------------------------------
   // ✅ Legacy write switches (turn off dual-write)
   // -------------------------------------------------------
-  //
-  // You’ve “locked in” programmes + adhoc days.
-  // These toggles let us keep legacy methods for compilation,
-  // while preventing new legacy data from being written.
-  //
   static const bool kWriteLegacyProgramStateDoc = false; // mealPlan/state
   static const bool kWriteLegacyFlatProgramDays = false; // users/{uid}/mealProgramDays/{dateKey}
 
   // -------------------------------------------------------
   // ✅ Day Docs (NEW - optional helper for controller migration)
   // -------------------------------------------------------
-  //
-  // This is a generic "days" collection you can use if you want the controller
-  // to simply watch all day docs keyed by dayKey/dateKey.
-  //
-  // Path:
-  // users/{uid}/mealPlan/days/items/{dayKey}
-  //
-  // If you don't use it yet, it won't affect anything else.
-  //
   CollectionReference<Map<String, dynamic>> daysCol({required String uid}) {
     return _firestore
         .collection('users')
@@ -62,7 +48,8 @@ class MealPlanRepository {
       final out = <String, dynamic>{};
       for (final doc in snap.docs) {
         final data = doc.data();
-        final dk = (data['dayKey'] is String && (data['dayKey'] as String).trim().isNotEmpty)
+        final dk = (data['dayKey'] is String &&
+                (data['dayKey'] as String).trim().isNotEmpty)
             ? (data['dayKey'] as String).trim()
             : doc.id;
         out[dk] = data;
@@ -151,7 +138,11 @@ class MealPlanRepository {
     required String programId,
     required String dateKey,
   }) {
-    return programDayDocForProgram(uid: uid, programId: programId, dateKey: dateKey);
+    return programDayDocForProgram(
+      uid: uid,
+      programId: programId,
+      dateKey: dateKey,
+    );
   }
 
   // -------------------------------------------------------
@@ -187,7 +178,10 @@ class MealPlanRepository {
   }
 
   /// ✅ IMPORTANT: writes to settings only (legacy state is OFF by default)
-  Future<void> setActiveProgramId({required String uid, String? programId}) async {
+  Future<void> setActiveProgramId({
+    required String uid,
+    String? programId,
+  }) async {
     final payload = <String, dynamic>{
       if (programId == null)
         'activeProgramId': FieldValue.delete()
@@ -208,7 +202,9 @@ class MealPlanRepository {
     required String uid,
     required String programId,
   }) {
-    return programDoc(uid: uid, programId: programId).snapshots().map((s) => s.data());
+    return programDoc(uid: uid, programId: programId)
+        .snapshots()
+        .map((s) => s.data());
   }
 
   Future<Map<String, dynamic>?> getProgram({
@@ -220,6 +216,8 @@ class MealPlanRepository {
   }
 
   /// Create a program doc and return programId.
+  ///
+  /// ✅ Updated: store SSOT household snapshot (adults/kids) + optional childrenSnapshot
   Future<String> createProgram({
     required String uid,
     required String name,
@@ -228,8 +226,17 @@ class MealPlanRepository {
     required int weeks,
     required List<int> weekdays, // Mon=1..Sun=7
     required List<String> scheduledDates, // YYYY-MM-DD
+
+    // ✅ NEW (SSOT snapshot)
+    required int adults,
+    required int kids,
+
+    // Optional: stash an immutable snapshot of children at creation time
+    // (handy for debugging / future “this plan was made for…” UI)
+    List<Map<String, dynamic>>? childrenSnapshot,
   }) async {
     final ref = programsCol(uid: uid).doc();
+
     await ref.set({
       'name': name.trim().isEmpty ? 'My Plan' : name.trim(),
       'startDate': startDateKey,
@@ -237,9 +244,16 @@ class MealPlanRepository {
       'weeks': weeks,
       'weekdays': weekdays,
       'scheduledDates': scheduledDates,
+
+      // ✅ SSOT snapshot
+      'adults': adults,
+      'kids': kids,
+      if (childrenSnapshot != null) 'childrenSnapshot': childrenSnapshot,
+
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
+
     return ref.id;
   }
 
@@ -258,7 +272,10 @@ class MealPlanRepository {
     );
   }
 
-  Future<void> deleteProgram({required String uid, required String programId}) async {
+  Future<void> deleteProgram({
+    required String uid,
+    required String programId,
+  }) async {
     await programDoc(uid: uid, programId: programId).delete();
   }
 
@@ -270,9 +287,11 @@ class MealPlanRepository {
     required String programId,
     required String dateKey,
   }) {
-    return programDayDocForProgram(uid: uid, programId: programId, dateKey: dateKey)
-        .snapshots()
-        .map((s) => s.data());
+    return programDayDocForProgram(
+      uid: uid,
+      programId: programId,
+      dateKey: dateKey,
+    ).snapshots().map((s) => s.data());
   }
 
   Future<Map<String, dynamic>?> getProgramDayInProgram({
@@ -280,8 +299,11 @@ class MealPlanRepository {
     required String programId,
     required String dateKey,
   }) async {
-    final snap =
-        await programDayDocForProgram(uid: uid, programId: programId, dateKey: dateKey).get();
+    final snap = await programDayDocForProgram(
+      uid: uid,
+      programId: programId,
+      dateKey: dateKey,
+    ).get();
     return snap.data();
   }
 
@@ -303,10 +325,11 @@ class MealPlanRepository {
     };
 
     // ✅ Correct location
-    await programDayDocForProgram(uid: uid, programId: programId, dateKey: dateKey).set(
-      payload,
-      SetOptions(merge: true),
-    );
+    await programDayDocForProgram(
+      uid: uid,
+      programId: programId,
+      dateKey: dateKey,
+    ).set(payload, SetOptions(merge: true));
 
     // Optional legacy mirror (disabled by default)
     if (kWriteLegacyFlatProgramDays) {
@@ -322,7 +345,11 @@ class MealPlanRepository {
     required String programId,
     required String dateKey,
   }) async {
-    await programDayDocForProgram(uid: uid, programId: programId, dateKey: dateKey).delete();
+    await programDayDocForProgram(
+      uid: uid,
+      programId: programId,
+      dateKey: dateKey,
+    ).delete();
   }
 
   // -------------------------------------------------------
@@ -332,7 +359,9 @@ class MealPlanRepository {
     required String uid,
     required String dateKey,
   }) {
-    return adhocDayDoc(uid: uid, dateKey: dateKey).snapshots().map((s) => s.data());
+    return adhocDayDoc(uid: uid, dateKey: dateKey)
+        .snapshots()
+        .map((s) => s.data());
   }
 
   Future<Map<String, dynamic>?> getAdhocDay({
@@ -407,8 +436,11 @@ class MealPlanRepository {
     });
 
     if (programId != null && programId.trim().isNotEmpty) {
-      subP =
-          watchProgramDayInProgram(uid: uid, programId: programId, dateKey: dateKey).listen((p) {
+      subP = watchProgramDayInProgram(
+        uid: uid,
+        programId: programId,
+        dateKey: dateKey,
+      ).listen((p) {
         program = p;
         emit();
       });
@@ -439,7 +471,11 @@ class MealPlanRepository {
     required String uid,
     required String weekId,
   }) {
-    return _firestore.collection('users').doc(uid).collection('mealPlansWeeks').doc(weekId);
+    return _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('mealPlansWeeks')
+        .doc(weekId);
   }
 
   @Deprecated('Legacy: savedMealPlans are no longer used. Remove callers then delete.')
@@ -460,7 +496,11 @@ class MealPlanRepository {
   /// Kept for compatibility only (writes disabled by default).
   @Deprecated('Legacy: do not rely on mealPlan/state. Use mealPlan/settings only.')
   DocumentReference<Map<String, dynamic>> programStateDoc({required String uid}) {
-    return _firestore.collection('users').doc(uid).collection('mealPlan').doc('state');
+    return _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('mealPlan')
+        .doc('state');
   }
 
   /// ⚠️ Legacy flat location:
@@ -484,7 +524,9 @@ class MealPlanRepository {
     required String uid,
     required String dateKey,
   }) {
-    return programDayDocLegacy(uid: uid, dateKey: dateKey).snapshots().map((s) => s.data());
+    return programDayDocLegacy(uid: uid, dateKey: dateKey)
+        .snapshots()
+        .map((s) => s.data());
   }
 
   @Deprecated('Legacy: do not read flat programme days; use getProgramDayInProgram.')
@@ -498,7 +540,6 @@ class MealPlanRepository {
 
   @Deprecated('Legacy: delete the nested program day instead.')
   Future<void> deleteProgramDay({required String uid, required String dateKey}) async {
-    // If you really still need this temporarily, it will work.
     await programDayDocLegacy(uid: uid, dateKey: dateKey).delete();
   }
 
@@ -563,7 +604,6 @@ class MealPlanRepository {
     required String dayKey,
     required Map<String, dynamic> daySlots,
   }) async {
-    // ✅ Legacy write still "works" but should not be used long term.
     final ref = weekDoc(uid: uid, weekId: weekId);
     await ensureWeekExists(uid: uid, weekId: weekId);
     await ref.update({
@@ -694,7 +734,10 @@ class MealPlanRepository {
   }
 
   @Deprecated('Legacy: week docs are no longer used. Remove callers then delete.')
-  static Map<String, dynamic>? dayMapFromWeek(Map<String, dynamic> weekData, String dayKey) {
+  static Map<String, dynamic>? dayMapFromWeek(
+    Map<String, dynamic> weekData,
+    String dayKey,
+  ) {
     final days = weekData['days'];
     if (days is! Map) return null;
     final v = days[dayKey];

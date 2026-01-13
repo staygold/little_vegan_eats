@@ -10,11 +10,39 @@ import '../core/meal_plan_repository.dart';
 import '../core/meal_plan_log.dart' as mplog;
 
 // -------------------------------------------------------
-// Leftovers ledger model (top-level; Dart forbids nested classes)
+// ✅ Debug toggle
+// -------------------------------------------------------
+class MealPlanDebug {
+  static bool enabled = true; 
+  static int sampleIds = 6;
+
+  static void i(String msg, {String? key}) {
+    if (!enabled) return;
+    mplog.MealPlanLog.i(msg, key: key);
+  }
+
+  static void d(String msg, {String? key}) {
+    if (!enabled) return;
+    mplog.MealPlanLog.d(msg, key: key);
+  }
+
+  static void w(String msg, {String? key}) {
+    if (!enabled) return;
+    mplog.MealPlanLog.w(msg, key: key);
+  }
+
+  static void e(String msg, {String? key}) {
+    if (!enabled) return;
+    mplog.MealPlanLog.e(msg, key: key);
+  }
+}
+
+// -------------------------------------------------------
+// ✅ Leftovers ledger model
 // -------------------------------------------------------
 class _LeftoverBatch {
   final int recipeId;
-  final String audience; // family|kids
+  final String audience; 
   final DateTime cookedOn;
   final DateTime expiresOn;
   int remainingItems;
@@ -32,8 +60,17 @@ class MealPlanBuilderService {
   final MealPlanController controller;
   MealPlanBuilderService(this.controller);
 
+  Future<void> _awaitProfileReadySafe() async {
+    try {
+      await controller.profileReady.timeout(
+        const Duration(seconds: 3),
+        onTimeout: () {},
+      );
+    } catch (_) {}
+  }
+
   // -------------------------------------------------------
-  // Date helpers (YYYY-MM-DD)
+  // Date helpers
   // -------------------------------------------------------
   DateTime _parseDateKey(String dateKey) {
     final parts = dateKey.split('-');
@@ -56,8 +93,8 @@ class MealPlanBuilderService {
 
   List<String> _buildScheduledDates({
     required String startDateKey,
-    required int weeks, // 1..4
-    required List<int> weekdays, // Mon=1..Sun=7
+    required int weeks,
+    required List<int> weekdays,
   }) {
     final start = _parseDateKey(startDateKey);
     final totalDays = (weeks.clamp(1, 4)) * 7;
@@ -104,7 +141,8 @@ class MealPlanBuilderService {
     final lunch = _normalizeAudience(inMap['lunch'], fallback: _audFamily);
     final dinner = _normalizeAudience(inMap['dinner'], fallback: _audFamily);
 
-    final snackFallback = _normalizeAudience(inMap['snack'], fallback: _audKids);
+    final snackFallback =
+        _normalizeAudience(inMap['snack'], fallback: _audKids);
     final snack1 = _normalizeAudience(inMap['snack1'], fallback: snackFallback);
     final snack2 = _normalizeAudience(inMap['snack2'], fallback: snackFallback);
 
@@ -120,7 +158,6 @@ class MealPlanBuilderService {
 
   // -------------------------------------------------------
   // Batch cooking reuse tracking
-  // recipeId -> first served date
   // -------------------------------------------------------
   Map<int, DateTime> _firstUsedDates = {};
 
@@ -133,7 +170,7 @@ class MealPlanBuilderService {
   }
 
   // -------------------------------------------------------
-  // Leftovers ledger (ITEM serving_mode only)
+  // Leftovers ledger
   // -------------------------------------------------------
   static const String _servingModeItem = 'item';
   final List<_LeftoverBatch> _leftovers = <_LeftoverBatch>[];
@@ -254,7 +291,7 @@ class MealPlanBuilderService {
 
     batch.remainingItems -= itemsNeeded;
 
-    mplog.MealPlanLog.i(
+    MealPlanDebug.i(
       'LEFTOVER_HIT recipe=$recipeId audience=$audience day=${_toDateKey(servingDate)} '
       'used=$itemsNeeded remaining=${batch.remainingItems} expires=${_toDateKey(batch.expiresOn)}',
       key: 'leftoverHit:$recipeId:$audience:${_toDateKey(servingDate)}',
@@ -295,7 +332,7 @@ class MealPlanBuilderService {
       ),
     );
 
-    mplog.MealPlanLog.i(
+    MealPlanDebug.i(
       'LEFTOVER_CREATE recipe=$recipeId audience=$audience cooked=${_toDateKey(cooked)} '
       'made=$itemsMade used=$itemsUsed left=$remaining expires=${_toDateKey(expires)}',
       key: 'leftoverCreate:$recipeId:$audience:${_toDateKey(cooked)}',
@@ -303,74 +340,166 @@ class MealPlanBuilderService {
   }
 
   // -------------------------------------------------------
-  // Baby snack rule markers (entries)
+  // ✅ SSOT snapshot helpers
   // -------------------------------------------------------
-  bool _isSnackSlot(String slot) =>
-      slot == 'snack' || slot == 'snack1' || slot == 'snack2';
+  int _adultCountSSOT() => max(1, controller.adultCount);
 
-  Map<String, dynamic> _firstFoodsSnackEntry({
-    required String childKey,
-    required String childName,
+  List<Map<String, dynamic>> _childrenSnapshotSSOT() {
+    return controller.childrenEffectiveOrNull
+        .map((c) => Map<String, dynamic>.from(c))
+        .toList();
+  }
+
+  String _kidsLine(List<Map<String, dynamic>> kids, DateTime dt) {
+    return kids.map((c) {
+      final name = (c['name'] ?? c['childName'] ?? 'child').toString();
+      final age = MealPlanAgeEngine.childAgeMonths(c, dt);
+      final key = (c['childKey'] ?? c['key'] ?? c['id'] ?? '').toString();
+      return '$name($key):${age ?? "?"}m';
+    }).join(', ');
+  }
+
+  void _logBuilderCtx(
+    String where,
+    DateTime dt,
+    Map<String, String> aud,
+    int adults,
+    List<Map<String, dynamic>> kids,
+  ) {
+    MealPlanDebug.i(
+      'BUILDER_CTX where=$where day=${_toDateKey(dt)} adults=$adults kids=${kids.length} '
+      'kidsAges=[${_kidsLine(kids, dt)}] aud=$aud',
+      key: 'builderCtx:$where:${_toDateKey(dt)}',
+    );
+  }
+
+  // -------------------------------------------------------
+  // ✅ Warning helpers
+  // -------------------------------------------------------
+  String _childKeyFromMap(Map<String, dynamic> c) {
+    final v =
+        (c['childKey'] ?? c['key'] ?? c['id'] ?? c['uid'] ?? '').toString().trim();
+    return v;
+  }
+
+  String _childNameFromMap(Map<String, dynamic> c) {
+    return (c['name'] ?? c['childName'] ?? '').toString().trim();
+  }
+
+  Map<String, dynamic> _attachWarnings(
+    Map<String, dynamic> entry,
+    List<Map<String, dynamic>> warnings,
+  ) {
+    if (warnings.isEmpty) return entry;
+    final first = warnings.first;
+    return <String, dynamic>{
+      ...entry,
+      'warnings': warnings,
+      'warning': first,
+    };
+  }
+
+  // -------------------------------------------------------
+  // ✅ Warning Generation (NOW INCLUDES ALLERGY SWAPS)
+  // -------------------------------------------------------
+  List<Map<String, dynamic>> _buildWarningsForPick({
+    required String slotKey,
     required String audience,
-  }) =>
-      <String, dynamic>{
-        'type': 'first_foods',
-        'source': 'auto-builder',
-        'audience': audience,
-        'childKey': childKey,
-        if (childName.trim().isNotEmpty) 'childName': childName.trim(),
-      };
-
-  Map<String, dynamic> _noSuitableForBabyEntry({
-    required String childKey,
-    required String childName,
-    required String audience,
-  }) =>
-      <String, dynamic>{
-        'type': 'clear',
-        'source': 'auto-builder',
-        'audience': audience,
-        'childKey': childKey,
-        if (childName.trim().isNotEmpty) 'childName': childName.trim(),
-        'reason': 'no_suitable_meals_baby',
-      };
-
-  ({String childKey, String childName})? _youngestBabyChild(
-    List<dynamic>? children,
-    DateTime servingDate, {
-    required int babyThresholdMonths,
+    required int recipeId,
+    required List<Map<String, dynamic>> children,
+    required DateTime servingDate,
   }) {
-    if (children == null || children.isEmpty) return null;
+    final out = <Map<String, dynamic>>[];
 
-    int? bestAgeMonths;
-    String? bestChildKey;
-    String bestChildName = '';
+    // ------------------------------------
+    // 1. ALLERGY SWAP CHECK
+    // ------------------------------------
+    // Since the recipe was picked, we know it's either safe OR needs swaps.
+    // If it needs swaps, the Controller will tell us via the label.
+    final swapLabel = controller.allergySubtitleForRecipeId(recipeId);
+    
+    if (swapLabel != null && swapLabel.toLowerCase().contains('swap')) {
+      out.add({
+        'type': 'allergy_swap',
+        'slot': slotKey,
+        'message': swapLabel, // e.g. "Needs swap (Dairy)"
+        'isSwap': true,
+        // The UI will see this warning and suppress "Safe for whole family"
+      });
+    }
 
-    for (final c in children) {
-      if (c is! Map) continue;
-      final m = Map<String, dynamic>.from(c);
+    // ------------------------------------
+    // 2. AGE SUITABILITY CHECKS (Existing)
+    // ------------------------------------
+    if (children.isEmpty) return out;
 
-      final key = (m['childKey'] ?? m['id'] ?? m['key'] ?? m['uid'] ?? '')
-          .toString()
-          .trim();
-      if (key.isEmpty) continue;
+    final ix = controller.indexForId(recipeId);
+    if (ix == null) {
+      return out;
+    }
 
-      // Let the AgeEngine parse (dobYear/dobMonth OR timestamp/string)
-      final age = MealPlanAgeEngine.ageInMonths(child: m, now: servingDate);
-      if (age == null) continue;
+    final minAge = ix.minAgeMonths;
+    final normAudience = audience.trim().toLowerCase();
+    
+    // Missing Data Check
+    if (minAge == null || minAge <= 0) {
+      final youngest = MealPlanAgeEngine.youngestChild(children, servingDate);
+      if (youngest != null) {
+        final name = _childNameFromMap(youngest);
+        out.add(_createWarningMap(
+          slotKey, 
+          youngest, 
+          0, 
+          messageOverride: 'Check suitability for $name (no age tag)',
+        ));
+      }
+      return out;
+    }
 
-      if (bestAgeMonths == null || age < bestAgeMonths!) {
-        bestAgeMonths = age;
-        bestChildKey = key;
-        bestChildName = (m['name'] ?? m['childName'] ?? '').toString().trim();
+    // Age Logic
+    if (normAudience == _audKids) {
+      final youngest = MealPlanAgeEngine.youngestChild(children, servingDate);
+      if (youngest != null) {
+        final target = MealPlanAgeEngine.targetChildForKidsAudience(children, servingDate);
+        final youngestKey = _childKeyFromMap(youngest);
+        final targetKey = target != null ? _childKeyFromMap(target) : '';
+
+        // Only warn if youngest is NOT the target we picked for
+        if (youngestKey != targetKey) {
+          final age = MealPlanAgeEngine.childAgeMonths(youngest, servingDate);
+          if (age != null && minAge > age) {
+             out.add(_createWarningMap(slotKey, youngest, minAge));
+          }
+        }
+      }
+    } else {
+      // Family
+      for (final child in children) {
+        final age = MealPlanAgeEngine.childAgeMonths(child, servingDate);
+        if (age != null && minAge > age) {
+          out.add(_createWarningMap(slotKey, child, minAge));
+        }
       }
     }
 
-    if (bestAgeMonths == null || bestChildKey == null) return null;
-    if (bestAgeMonths! < babyThresholdMonths) {
-      return (childKey: bestChildKey, childName: bestChildName);
-    }
-    return null;
+    return out;
+  }
+
+  Map<String, dynamic> _createWarningMap(
+    String slot, 
+    Map<String, dynamic> child, 
+    int minAge, 
+    {String? messageOverride}
+  ) {
+    final name = _childNameFromMap(child);
+    return {
+      'type': 'not_suitable_for_child',
+      'slot': slot,
+      'childKey': _childKeyFromMap(child),
+      'childName': name,
+      'minAgeMonths': minAge,
+      'message': messageOverride ?? 'Not suitable for $name yet', 
+    };
   }
 
   // -------------------------------------------------------
@@ -382,203 +511,129 @@ class MealPlanBuilderService {
     DateTime servingDate,
     List<Map<String, dynamic>> availableRecipes, {
     required String audience,
-    required List<dynamic>? children,
+    required List<Map<String, dynamic>> childrenSSOT,
     required int adultCount,
     required int kidCount,
-    int babyThresholdMonths = MealPlanAgeEngine.defaultBabyThresholdMonths,
+    int babyThresholdMonths =
+        MealPlanAgeEngine.defaultBabyThresholdMonths,
   }) {
-    final baby = _youngestBabyChild(
-      children,
-      servingDate,
-      babyThresholdMonths: babyThresholdMonths,
-    );
+    final normAudience = audience.trim().toLowerCase();
 
-    final isSnack = _isSnackSlot(slot);
-
-    // Baby snack behaviour
-    if (baby != null && isSnack) {
-      mplog.MealPlanLog.i(
-        'PICK_BABY_SNACK slot=$slot audience=$audience day=${_toDateKey(servingDate)} '
-        'youngestChild=${baby.childName}(${baby.childKey}) threshold=$babyThresholdMonths',
-        key: 'pickBabySnack:$slot:${_toDateKey(servingDate)}',
-      );
-
-      final candidates = controller.getCandidatesForSlotUnified(
-        slot,
-        availableRecipes,
-        audience: audience,
-        servingDate: servingDate,
-        firstUsedDates: _firstUsedDates,
-        babyThresholdMonths: babyThresholdMonths,
-        childrenOverride: children,
-      );
-
-      mplog.MealPlanLog.i(
-        'BABY_SNACK_CANDIDATES slot=$slot day=${_toDateKey(servingDate)} count=${candidates.length}',
-        key: 'babySnackCandidates:$slot:${_toDateKey(servingDate)}',
-      );
-
-      if (candidates.isNotEmpty) {
-        final id = candidates[random.nextInt(candidates.length)];
-        _noteFirstUseIfMissing(id, servingDate);
-
-        final full = _findRecipeById(availableRecipes, id);
-        if (full != null && _extractServingMode(full) == _servingModeItem) {
-          final storageDays = controller.extractStorageDays(full) ?? 0;
-          if (storageDays > 0) {
-            final itemsNeeded = _itemsNeededForSlotDay(
-              recipe: full,
-              audience: audience,
-              adultCount: adultCount,
-              kidCount: kidCount,
-            );
-
-            final leftoverEntry = _tryUseLeftoversForRecipe(
-              recipeId: id,
-              audience: audience,
-              servingDate: servingDate,
-              itemsNeeded: itemsNeeded,
-            );
-            if (leftoverEntry != null) {
-              leftoverEntry['childKey'] = baby.childKey;
-              if (baby.childName.trim().isNotEmpty) {
-                leftoverEntry['childName'] = baby.childName.trim();
-              }
-              return leftoverEntry;
-            }
-
-            final made = _itemsMadeBase(full);
-            _createLeftoversIfAny(
-              recipeId: id,
-              audience: audience,
-              servingDate: servingDate,
-              itemsMade: made,
-              itemsUsed: itemsNeeded,
-              storageDays: storageDays,
-            );
-
-            return <String, dynamic>{
-              'type': 'recipe',
-              'recipeId': id,
-              'source': 'auto-builder',
-              'audience': audience,
-              'childKey': baby.childKey,
-              if (baby.childName.trim().isNotEmpty)
-                'childName': baby.childName.trim(),
-              'itemsMade': made,
-              'itemsUsed': itemsNeeded,
-              'storageDays': storageDays,
-            };
-          }
-        }
-
-        return <String, dynamic>{
-          'type': 'recipe',
-          'recipeId': id,
-          'source': 'auto-builder',
-          'audience': audience,
-          'childKey': baby.childKey,
-          if (baby.childName.trim().isNotEmpty) 'childName': baby.childName.trim(),
-        };
-      }
-
-      // No candidates -> first foods marker entry
-      return _firstFoodsSnackEntry(
-        childKey: baby.childKey,
-        childName: baby.childName,
-        audience: audience,
-      );
-    }
-
-    // Baby + kids-audience + non-snack => blocked
-    if (baby != null && !isSnack && audience == _audKids) {
-      mplog.MealPlanLog.i(
-        'PICK_BABY_BLOCK slot=$slot audience=$audience day=${_toDateKey(servingDate)} nonSnack',
-        key: 'pickBabyBlock:$slot:${_toDateKey(servingDate)}',
-      );
-
-      return _noSuitableForBabyEntry(
-        childKey: baby.childKey,
-        childName: baby.childName,
-        audience: audience,
-      );
-    }
-
-    // Normal pick (ONE ENGINE)
-    final candidates = controller.getCandidatesForSlotUnified(
+    var candidates = controller.getCandidatesForSlotUnified(
       slot,
       availableRecipes,
-      audience: audience,
+      audience: normAudience,
       servingDate: servingDate,
       firstUsedDates: _firstUsedDates,
       babyThresholdMonths: babyThresholdMonths,
-      childrenOverride: children,
-    );
-
-    mplog.MealPlanLog.d(
-      'PICK slot=$slot audience=$audience day=${_toDateKey(servingDate)} candidates=${candidates.length}',
-      key: 'pick:$slot:${_toDateKey(servingDate)}',
+      childrenOverride: childrenSSOT,
     );
 
     if (candidates.isEmpty) {
       return <String, dynamic>{
         'type': 'clear',
         'source': 'auto-builder',
-        'audience': audience,
+        'audience': normAudience,
         'reason': 'no_candidates',
       };
     }
 
-    final id = candidates[random.nextInt(candidates.length)];
-    _noteFirstUseIfMissing(id, servingDate);
+    if (normAudience == _audKids && childrenSSOT.length > 1) {
+      final youngest = MealPlanAgeEngine.youngestChild(childrenSSOT, servingDate);
+      final target = MealPlanAgeEngine.targetChildForKidsAudience(childrenSSOT, servingDate);
+      final youngestKey = youngest != null ? _childKeyFromMap(youngest) : '';
+      final targetKey = target != null ? _childKeyFromMap(target) : '';
 
-    final full = _findRecipeById(availableRecipes, id);
+      if (youngest != null && youngestKey != targetKey) {
+        final youngestAge = MealPlanAgeEngine.childAgeMonths(youngest, servingDate);
+        if (youngestAge != null) {
+          final safeForBaby = candidates.where((id) {
+            final ix = controller.indexForId(id);
+            if (ix == null) return false;
+            final minAge = ix.minAgeMonths;
+            if (minAge == null || minAge <= 0) return false;
+            return minAge <= youngestAge;
+          }).toList();
+
+          if (safeForBaby.isNotEmpty) {
+             candidates = safeForBaby;
+          }
+        }
+      }
+    }
+
+    final pickedId = candidates[random.nextInt(candidates.length)];
+    _noteFirstUseIfMissing(pickedId, servingDate);
+
+    Map<String, dynamic> entry;
+
+    final full = _findRecipeById(availableRecipes, pickedId);
     if (full != null && _extractServingMode(full) == _servingModeItem) {
       final storageDays = controller.extractStorageDays(full) ?? 0;
       if (storageDays > 0) {
         final itemsNeeded = _itemsNeededForSlotDay(
           recipe: full,
-          audience: audience,
+          audience: normAudience,
           adultCount: adultCount,
           kidCount: kidCount,
         );
 
         final leftoverEntry = _tryUseLeftoversForRecipe(
-          recipeId: id,
-          audience: audience,
+          recipeId: pickedId,
+          audience: normAudience,
           servingDate: servingDate,
           itemsNeeded: itemsNeeded,
         );
-        if (leftoverEntry != null) return leftoverEntry;
 
-        final made = _itemsMadeBase(full);
-        _createLeftoversIfAny(
-          recipeId: id,
-          audience: audience,
-          servingDate: servingDate,
-          itemsMade: made,
-          itemsUsed: itemsNeeded,
-          storageDays: storageDays,
-        );
+        if (leftoverEntry != null) {
+          entry = leftoverEntry;
+        } else {
+          final made = _itemsMadeBase(full);
+          _createLeftoversIfAny(
+            recipeId: pickedId,
+            audience: normAudience,
+            servingDate: servingDate,
+            itemsMade: made,
+            itemsUsed: itemsNeeded,
+            storageDays: storageDays,
+          );
 
-        return <String, dynamic>{
+          entry = <String, dynamic>{
+            'type': 'recipe',
+            'recipeId': pickedId,
+            'source': 'auto-builder',
+            'audience': normAudience,
+            'itemsMade': made,
+            'itemsUsed': itemsNeeded,
+            'storageDays': storageDays,
+          };
+        }
+      } else {
+        entry = <String, dynamic>{
           'type': 'recipe',
-          'recipeId': id,
+          'recipeId': pickedId,
           'source': 'auto-builder',
-          'audience': audience,
-          'itemsMade': made,
-          'itemsUsed': itemsNeeded,
-          'storageDays': storageDays,
+          'audience': normAudience,
         };
       }
+    } else {
+      entry = <String, dynamic>{
+        'type': 'recipe',
+        'recipeId': pickedId,
+        'source': 'auto-builder',
+        'audience': normAudience,
+      };
     }
 
-    return <String, dynamic>{
-      'type': 'recipe',
-      'recipeId': id,
-      'source': 'auto-builder',
-      'audience': audience,
-    };
+    final warnings = _buildWarningsForPick(
+      slotKey: slot,
+      audience: normAudience,
+      recipeId: pickedId,
+      children: childrenSSOT,
+      servingDate: servingDate,
+    );
+
+    return _attachWarnings(entry, warnings);
   }
 
   Map<String, dynamic> _buildDaySlots({
@@ -591,7 +646,7 @@ class MealPlanBuilderService {
     required bool includeSnacks,
     required int snackCount,
     required Map<String, String> mealAudiences,
-    required List<dynamic>? children,
+    required List<Map<String, dynamic>> childrenSSOT,
     required int adultCount,
     required int kidCount,
     int babyThresholdMonths = MealPlanAgeEngine.defaultBabyThresholdMonths,
@@ -601,10 +656,8 @@ class MealPlanBuilderService {
     final aBreakfast = mealAudiences['breakfast'] ?? _audFamily;
     final aLunch = mealAudiences['lunch'] ?? _audFamily;
     final aDinner = mealAudiences['dinner'] ?? _audFamily;
-    final aSnack1 =
-        mealAudiences['snack1'] ?? (mealAudiences['snack'] ?? _audKids);
-    final aSnack2 =
-        mealAudiences['snack2'] ?? (mealAudiences['snack'] ?? _audKids);
+    final aSnack1 = mealAudiences['snack1'] ?? (mealAudiences['snack'] ?? _audKids);
+    final aSnack2 = mealAudiences['snack2'] ?? (mealAudiences['snack'] ?? _audKids);
 
     slots['breakfast'] = includeBreakfast
         ? _pick(
@@ -613,7 +666,7 @@ class MealPlanBuilderService {
             servingDate,
             availableRecipes,
             audience: aBreakfast,
-            children: children,
+            childrenSSOT: childrenSSOT,
             adultCount: adultCount,
             kidCount: kidCount,
             babyThresholdMonths: babyThresholdMonths,
@@ -627,7 +680,7 @@ class MealPlanBuilderService {
             servingDate,
             availableRecipes,
             audience: aLunch,
-            children: children,
+            childrenSSOT: childrenSSOT,
             adultCount: adultCount,
             kidCount: kidCount,
             babyThresholdMonths: babyThresholdMonths,
@@ -641,7 +694,7 @@ class MealPlanBuilderService {
             servingDate,
             availableRecipes,
             audience: aDinner,
-            children: children,
+            childrenSSOT: childrenSSOT,
             adultCount: adultCount,
             kidCount: kidCount,
             babyThresholdMonths: babyThresholdMonths,
@@ -657,7 +710,7 @@ class MealPlanBuilderService {
             servingDate,
             availableRecipes,
             audience: aSnack1,
-            children: children,
+            childrenSSOT: childrenSSOT,
             adultCount: adultCount,
             kidCount: kidCount,
             babyThresholdMonths: babyThresholdMonths,
@@ -671,7 +724,7 @@ class MealPlanBuilderService {
             servingDate,
             availableRecipes,
             audience: aSnack2,
-            children: children,
+            childrenSSOT: childrenSSOT,
             adultCount: adultCount,
             kidCount: kidCount,
             babyThresholdMonths: babyThresholdMonths,
@@ -681,9 +734,6 @@ class MealPlanBuilderService {
     return slots;
   }
 
-  // -------------------------------------------------------
-  // Backfill new program-day docs when schedule changes
-  // -------------------------------------------------------
   Future<int> backfillNewProgramDays({
     required String programId,
     required List<String> oldScheduledDates,
@@ -702,15 +752,14 @@ class MealPlanBuilderService {
     final random = Random();
     final aud = _normalizeMealAudiences(mealAudiences);
 
-    final childrenProfile = controller.childrenEffectiveOrNull;
-    final adultCount = controller.adultCount;
-    final kidCount = controller.kidCount;
+    await _awaitProfileReadySafe();
 
-    final oldSet = oldScheduledDates
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toSet();
+    final childrenSSOT = _childrenSnapshotSSOT();
+    final adultCount = _adultCountSSOT();
+    final kidCount = childrenSSOT.length;
 
+    final oldSet =
+        oldScheduledDates.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
     final todayKey = MealPlanKeys.todayKey();
 
     final added = <String>[];
@@ -729,9 +778,8 @@ class MealPlanBuilderService {
 
     added.sort();
 
-    mplog.MealPlanLog.i(
-      'BACKFILL program=$programId added=${added.length} recipes=${availableRecipes.length} '
-      'includeSnacks=$includeSnacks snackCount=$snackCount threshold=$babyThresholdMonths',
+    MealPlanDebug.i(
+      'BACKFILL program=$programId added=${added.length} recipes=${availableRecipes.length}',
       key: 'backfill:$programId',
     );
 
@@ -741,16 +789,15 @@ class MealPlanBuilderService {
     int created = 0;
 
     for (final dateKey in added) {
-      final docRef = repo.programDayDoc(
-        uid: controller.uid,
-        programId: programId,
-        dateKey: dateKey,
-      );
+      final docRef =
+          repo.programDayDoc(uid: controller.uid, programId: programId, dateKey: dateKey);
 
       final snap = await docRef.get();
       if (snap.exists) continue;
 
       final dt = _parseDateKey(dateKey);
+
+      _logBuilderCtx('backfill', dt, aud, adultCount, childrenSSOT);
 
       final daySlots = _buildDaySlots(
         random: random,
@@ -762,7 +809,7 @@ class MealPlanBuilderService {
         includeSnacks: includeSnacks,
         snackCount: snackCount,
         mealAudiences: aud,
-        children: childrenProfile,
+        childrenSSOT: childrenSSOT,
         adultCount: adultCount,
         kidCount: kidCount,
         babyThresholdMonths: babyThresholdMonths,
@@ -781,9 +828,6 @@ class MealPlanBuilderService {
     return created;
   }
 
-  // -------------------------------------------------------
-  // ONE-OFF (ad-hoc) day only
-  // -------------------------------------------------------
   Future<void> buildAdhocDay({
     required String dateKey,
     required List<Map<String, dynamic>> availableRecipes,
@@ -800,9 +844,11 @@ class MealPlanBuilderService {
     final random = Random();
     final aud = _normalizeMealAudiences(mealAudiences);
 
-    final childrenProfile = controller.childrenEffectiveOrNull;
-    final adultCount = controller.adultCount;
-    final kidCount = controller.kidCount;
+    await _awaitProfileReadySafe();
+
+    final childrenSSOT = _childrenSnapshotSSOT();
+    final adultCount = _adultCountSSOT();
+    final kidCount = childrenSSOT.length;
 
     final cleanDateKey = dateKey.trim();
     if (cleanDateKey.isEmpty) throw Exception('Invalid day key.');
@@ -810,6 +856,11 @@ class MealPlanBuilderService {
       throw Exception('Invalid day key.');
     }
     if (availableRecipes.isEmpty) throw Exception('No recipes available.');
+
+    MealPlanDebug.i(
+      'ADHOC_BUILD day=$cleanDateKey recipes=${availableRecipes.length} snackCount=$snackCount',
+      key: 'adhocBuild:$cleanDateKey',
+    );
 
     final docRef = repo.adhocDayDoc(uid: controller.uid, dateKey: cleanDateKey);
 
@@ -823,6 +874,8 @@ class MealPlanBuilderService {
 
     final dt = _parseDateKey(cleanDateKey);
 
+    _logBuilderCtx('adhoc', dt, aud, adultCount, childrenSSOT);
+
     final daySlots = _buildDaySlots(
       random: random,
       servingDate: dt,
@@ -833,7 +886,7 @@ class MealPlanBuilderService {
       includeSnacks: snackCount > 0,
       snackCount: snackCount,
       mealAudiences: aud,
-      children: childrenProfile,
+      childrenSSOT: childrenSSOT,
       adultCount: adultCount,
       kidCount: kidCount,
       babyThresholdMonths: babyThresholdMonths,
@@ -847,9 +900,6 @@ class MealPlanBuilderService {
     );
   }
 
-  // -------------------------------------------------------
-  // Programs-only: Build + Activate
-  // -------------------------------------------------------
   Future<void> buildAndActivate({
     required String title,
     required List<Map<String, dynamic>> availableRecipes,
@@ -864,38 +914,52 @@ class MealPlanBuilderService {
     Map<String, String>? mealAudiences,
     int babyThresholdMonths = MealPlanAgeEngine.defaultBabyThresholdMonths,
   }) async {
+    MealPlanDebug.i(
+      'BUILD_START title="${title.trim()}" start=$startDayKey weeks=$weeks weekdays=$weekdays '
+      'includeB=$includeBreakfast includeL=$includeLunch includeD=$includeDinner '
+      'includeSnacks=$includeSnacks snackCount=$snackCount recipes=${availableRecipes.length}',
+      key: 'buildStart:$startDayKey',
+    );
+
     final random = Random();
     final repo = MealPlanRepository(FirebaseFirestore.instance);
     final aud = _normalizeMealAudiences(mealAudiences);
 
-    final childrenProfile = controller.childrenEffectiveOrNull;
-    final adultCount = controller.adultCount;
-    final kidCount = controller.kidCount;
+    await _awaitProfileReadySafe();
+
+    final childrenSSOT = _childrenSnapshotSSOT();
+    final adultCount = _adultCountSSOT();
+    final kidCount = childrenSSOT.length;
 
     final cleanTitle = title.trim().isEmpty ? 'My Plan' : title.trim();
     final cleanWeekdays =
         weekdays.where((d) => d >= 1 && d <= 7).toSet().toList()..sort();
-
-    if (cleanWeekdays.isEmpty) {
-      throw Exception('Please select at least one weekday.');
-    }
+    if (cleanWeekdays.isEmpty) throw Exception('Please select at least one weekday.');
 
     final startDateKey = startDayKey.trim();
-
     final scheduledDates = _buildScheduledDates(
       startDateKey: startDateKey,
       weeks: weeks,
       weekdays: cleanWeekdays,
     );
 
-    if (scheduledDates.isEmpty) {
-      throw Exception('No planned days found for that schedule.');
+    if (scheduledDates.isEmpty) throw Exception('No planned days found for that schedule.');
+
+    _logBuilderCtx('program:create', _parseDateKey(startDateKey), aud, adultCount, childrenSSOT);
+
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      for (final dateKey in scheduledDates) {
+        final adhocRef = repo.adhocDayDoc(uid: controller.uid, dateKey: dateKey);
+        batch.delete(adhocRef);
+      }
+      await batch.commit();
+      MealPlanDebug.i('ADHOC_CLEANUP cleaned ${scheduledDates.length} days', key: 'adhocCleanup');
+    } catch (e) {
+      MealPlanDebug.e('ADHOC_CLEANUP_FAIL $e');
     }
 
-    final endDateKey = _computeEndDateKey(
-      startDateKey: startDateKey,
-      weeks: weeks,
-    );
+    final endDateKey = _computeEndDateKey(startDateKey: startDateKey, weeks: weeks);
 
     final programId = await repo.createProgram(
       uid: controller.uid,
@@ -905,9 +969,10 @@ class MealPlanBuilderService {
       weeks: weeks.clamp(1, 4),
       weekdays: cleanWeekdays,
       scheduledDates: scheduledDates,
+      adults: adultCount,
+      kids: kidCount,
+      childrenSnapshot: childrenSSOT,
     );
-
-    await repo.setActiveProgramId(uid: controller.uid, programId: programId);
 
     _resetReuseTracking();
     _resetLeftovers();
@@ -925,7 +990,7 @@ class MealPlanBuilderService {
         includeSnacks: includeSnacks,
         snackCount: snackCount,
         mealAudiences: aud,
-        children: childrenProfile,
+        childrenSSOT: childrenSSOT,
         adultCount: adultCount,
         kidCount: kidCount,
         babyThresholdMonths: babyThresholdMonths,
@@ -938,5 +1003,7 @@ class MealPlanBuilderService {
         daySlots: daySlots,
       );
     }
+
+    await repo.setActiveProgramId(uid: controller.uid, programId: programId);
   }
 }

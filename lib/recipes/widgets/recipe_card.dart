@@ -1,4 +1,6 @@
+// lib/recipes/widgets/recipe_card.dart
 import 'package:flutter/material.dart';
+
 import '../../theme/app_theme.dart';
 
 class RecipeCard extends StatelessWidget {
@@ -6,81 +8,106 @@ class RecipeCard extends StatelessWidget {
     super.key,
     required this.title,
     this.subtitle,
+    this.subtitleWidget,
     this.imageUrl,
     this.onTap,
     this.trailing,
     this.badge,
     this.compact = false,
+    this.statusText,
+    this.statusIcon,
+    this.cardColor,
   });
 
   final String title;
   final String? subtitle;
+  final Widget? subtitleWidget;
   final String? imageUrl;
 
   final VoidCallback? onTap;
-
-  /// Right-side area (e.g. star icon button, chevron, etc.)
   final Widget? trailing;
-
-  /// Small overlay on the image (e.g. favourite star, allergy icon)
   final Widget? badge;
-
-  /// For tighter lists if needed
   final bool compact;
+  final String? statusText;
+  final IconData? statusIcon;
+  final Color? cardColor;
 
   @override
   Widget build(BuildContext context) {
-    final h = compact ? 82.0 : 92.0;
+    // Defines the MINIMUM height, but allows growth
+    final minH = compact ? 82.0 : 92.0;
     final imgW = compact ? 104.0 : 112.0;
 
+    final hasSubtitle = (subtitle != null && subtitle!.trim().isNotEmpty) || subtitleWidget != null;
+    final hasStatus = statusText != null && statusText!.trim().isNotEmpty;
+
     return Card(
+      color: cardColor,
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
-        child: SizedBox(
-          height: h,
-          child: Row(
-            children: [
-              SizedBox(
-                width: imgW,
-                height: double.infinity,
-                child: _ImageWithBadge(
-                  url: imageUrl,
-                  badge: badge,
+        // ✅ CHANGED: Use ConstrainedBox + IntrinsicHeight to allow dynamic expansion
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: minH),
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch, // stretches image to full height
+              children: [
+                SizedBox(
+                  width: imgW,
+                  // Image height will now match the tallest content (the text column)
+                  child: _ImageWithBadge(url: imageUrl, badge: badge),
                 ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 14, 10, 14),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      if (subtitle != null && subtitle!.trim().isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          subtitle!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall,
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 14, 10, 14),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Title row
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                maxLines: 2, // Allow title to wrap if needed
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                            ),
+                            if (hasStatus) ...[
+                              const SizedBox(width: 10),
+                              RecipeStatusPill(
+                                text: statusText!.trim(),
+                                icon: statusIcon,
+                              ),
+                            ],
+                          ],
                         ),
+
+                        if (hasSubtitle) ...[
+                          const SizedBox(height: 6),
+                          // Render widget or text
+                          subtitleWidget ?? 
+                          Text(
+                            subtitle!.trim(),
+                            maxLines: 2, // Allow subtitle to wrap
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
-              ),
-              if (trailing != null)
-                Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: trailing,
-                ),
-            ],
+                if (trailing != null)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: Center(child: trailing), // Center trailing icon vertically
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -89,10 +116,7 @@ class RecipeCard extends StatelessWidget {
 }
 
 class _ImageWithBadge extends StatelessWidget {
-  const _ImageWithBadge({
-    this.url,
-    this.badge,
-  });
+  const _ImageWithBadge({this.url, this.badge});
 
   final String? url;
   final Widget? badge;
@@ -106,26 +130,16 @@ class _ImageWithBadge extends StatelessWidget {
       children: [
         if (u == null || u.isEmpty)
           Container(
-            color: Theme.of(context)
-                .colorScheme
-                .surfaceContainerHighest,
-            child: const Icon(
-              Icons.restaurant_menu,
-              size: 22,
-            ),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: const Icon(Icons.restaurant_menu, size: 22),
           )
         else
           Image.network(
             u,
             fit: BoxFit.cover,
             errorBuilder: (_, __, ___) => Container(
-              color: Theme.of(context)
-                  .colorScheme
-                  .surfaceContainerHighest,
-              child: const Icon(
-                Icons.restaurant_menu,
-                size: 22,
-              ),
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: const Icon(Icons.restaurant_menu, size: 22),
             ),
           ),
         if (badge != null)
@@ -139,7 +153,6 @@ class _ImageWithBadge extends StatelessWidget {
   }
 }
 
-/// Small standard “pill” you can reuse for status (safe / swap / blocked)
 class RecipeStatusPill extends StatelessWidget {
   const RecipeStatusPill({
     super.key,
@@ -162,11 +175,7 @@ class RecipeStatusPill extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (icon != null) ...[
-            Icon(
-              icon,
-              size: 16,
-              color: AppColors.textPrimary,
-            ),
+            Icon(icon, size: 16, color: AppColors.textPrimary),
             const SizedBox(width: 4),
           ],
           Text(

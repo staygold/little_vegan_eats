@@ -21,9 +21,16 @@ import '../app/no_bounce_scroll_behavior.dart';
 import '../lists/shopping_list_picker_sheet.dart';
 import '../lists/shopping_repo.dart';
 
-// ✅ Family profile now comes from the repo (single source of truth)
-import '../recipes/family_profile_repository.dart';
-import '../recipes/family_profile.dart';
+// ✅ household repo + policy façade (same pattern as list screen)
+import 'family_profile_repository.dart';
+import 'family_profile.dart';
+import 'household_food_policy.dart';
+
+// ✅ allergy swap parser lives with rules (already used by list policy path)
+import 'profile_person.dart';
+import 'recipe_rules_engine.dart';
+import 'allergy_engine.dart';
+import 'allergy_keys.dart';
 
 class _RText {
   static const String font = 'Montserrat';
@@ -272,15 +279,17 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   /// 1 = Metric (default), 2 = US (if conversion exists)
   int _unitSystem = 1;
 
-  /// ✅ Only used to decide whether to show the "ALLERGY SWAPS" section.
-  bool _profileHasAllergies = false;
-
-  // ✅ single subscription via repo
+  // ✅ household + policy
+  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
+  late final HouseholdFoodPolicy _policy = HouseholdFoodPolicy(familyRepo: _familyRepo);
   StreamSubscription<FamilyProfile>? _familySub;
+  FamilyProfile _family = const FamilyProfile(adults: [], children: []);
+
+  /// ✅ Only used to decide whether to show swaps + optional labels.
+  bool _profileHasAllergies = false;
 
   final ScrollController _scrollCtrl = ScrollController();
   double _scrollY = 0;
-
   bool _showStickyHeader = false;
 
   @override
@@ -312,10 +321,14 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     super.dispose();
   }
 
+  // ----------------------------------------------------------------------------
+  // ✅ household wiring (minimal + policy-driven)
+  // ----------------------------------------------------------------------------
   void _wireFamilyProfile() {
-    final repo = FamilyProfileRepository();
+    _familySub?.cancel();
 
-    _familySub = repo.watchFamilyProfile().listen((family) {
+    _familySub = _familyRepo.watchFamilyProfile().listen((family) {
+      // Count only named people (same behaviour as before, but cleaner)
       int namedCount(List list) {
         return list.where((p) {
           try {
@@ -327,33 +340,33 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
         }).length;
       }
 
-      bool anyAllergies(List list) {
-        return list.any((p) {
-          try {
-            return p.hasAllergies == true;
-          } catch (_) {
-            return false;
-          }
-        });
-      }
-
       final adultCount = namedCount(family.adults);
       final kidCount = namedCount(family.children);
 
       final nextAdults = adultCount > 0 ? adultCount : 1;
       final nextKids = kidCount;
 
-      final hasAllergies = anyAllergies(family.adults) || anyAllergies(family.children);
+      // ✅ allergy presence via policy (single source of truth)
+      final selection = AllergiesSelection(
+        enabled: true,
+        mode: SuitabilityMode.wholeFamily,
+        includeSwaps: true,
+      );
+      final activeProfiles = _policy.activeProfiles(family: family, selection: selection);
+      final hasAllergies = _policy.hasAnyAllergies(profiles: activeProfiles, selection: selection);
 
       if (!mounted) return;
 
       final changedCounts = (nextAdults != _profileAdults) || (nextKids != _profileKids);
       final changedAllergies = hasAllergies != _profileHasAllergies;
+      final changedFamily = family != _family;
 
-      if (changedCounts || changedAllergies) {
+      if (changedCounts || changedAllergies || changedFamily) {
         setState(() {
           final prevProfileAdults = _profileAdults;
           final prevProfileKids = _profileKids;
+
+          _family = family;
 
           _profileAdults = nextAdults;
           _profileKids = nextKids;
@@ -367,6 +380,9 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     });
   }
 
+  // ----------------------------------------------------------------------------
+  // Load recipe (unchanged behaviour)
+  // ----------------------------------------------------------------------------
   Future<void> _load({required bool forceRefresh}) async {
     setState(() {
       _loading = true;
@@ -422,7 +438,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   void _applyScale(double value) => setState(() => _scale = value);
 
   // ===========================================================================
-  // 🟢 HELPERS: FIELDS & PARSING
+  // 🟢 HELPERS: FIELDS & PARSING (kept local; no new deps)
   // ===========================================================================
 
   String _sanitize(dynamic val) {
@@ -469,6 +485,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     return '';
   }
 
+  // ✅ shared with list screen behaviour: allow "from>to, from>to"
   List<Map<String, String>> _parseSwaps(String raw) {
     if (raw.trim().isEmpty) return [];
     final list = <Map<String, String>>[];
@@ -476,7 +493,11 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     for (var pair in pairs) {
       final parts = pair.split('>');
       if (parts.length == 2) {
-        list.add({'from': parts[0].trim(), 'to': parts[1].trim()});
+        final from = parts[0].trim();
+        final to = parts[1].trim();
+        if (from.isNotEmpty && to.isNotEmpty) {
+          list.add({'from': from, 'to': to});
+        }
       }
     }
     return list;
@@ -856,8 +877,8 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
-  /// ✅ Allergies only affect whether we show swaps.
-  /// If the profile has no allergies, we hide swaps completely.
+  // ✅ Detail screen only needs swaps display gating.
+  // Filtering/safety assumed done elsewhere.
   Widget _swapsCard(Map<String, dynamic>? recipe) {
     if (!_profileHasAllergies) return const SizedBox.shrink();
 
@@ -998,8 +1019,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       ? 'UPDATE TO HALF BATCH'
       : 'UPDATE INGREDIENTS (${_fmtMultiplier(v).toUpperCase()})';
 
-  String _suggestMultiplierLine(double recommended, {required bool itemsMode}) => '';
-
   Widget _servingPanelCard(BuildContext context, Map<String, dynamic>? recipe) {
     final itemsMode = _isItemsMode(recipe);
     final ipp = _itemsPerPerson(recipe);
@@ -1054,8 +1073,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     final showRecommended = recommended != null && (needsMore || showHalf);
     final isApplied = recommended != null && (recommended - _scale).abs() < 0.001;
     final showHiddenSection = showRecommended || _scale != 1.0;
-
-    final perPersonSuffix = (itemsMode && ipp != null) ? '' : null;
 
     final bannerHeadline = needsMore
         ? 'You may want to make more'
@@ -1135,18 +1152,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                 Text('Recommended:', style: _RText.servingRecLabel),
                 const SizedBox(width: 10),
                 Text(_multiplierLabel(recommended!), style: _RText.servingRecStrong),
-                if (perPersonSuffix != null && !showHalf) ...[
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      perPersonSuffix,
-                      style: _RText.servingRecSoft.copyWith(
-                        color: const Color(0xFF044246).withOpacity(0.6),
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
               ],
             ),
             const SizedBox(height: 12),
@@ -1385,7 +1390,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   }
 
   // ===========================================================================
-  // ✅ SCALING HELPERS (these were missing in your broken file)
+  // ✅ SCALING HELPERS
   // ===========================================================================
 
   String _scaledAmount(String rawAmount, double mult) {
@@ -1672,8 +1677,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                           return;
                                         }
 
-                                        final ingredients =
-                                            _ingredientsToShoppingIngredients(ingredientsFlat);
+                                        final ingredients = _ingredientsToShoppingIngredients(ingredientsFlat);
 
                                         ShoppingListPickerSheet.open(
                                           context,

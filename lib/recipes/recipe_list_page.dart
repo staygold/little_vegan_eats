@@ -1,9 +1,5 @@
 import 'package:flutter/material.dart';
-
 import 'recipe_list_screen.dart';
-
-// ✅ reuse shared UI (same as Favourites / CoursePage)
-import '../app/sub_header_bar.dart';
 
 class RecipeListPage extends StatelessWidget {
   const RecipeListPage({
@@ -24,26 +20,12 @@ class RecipeListPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final title = (titleOverride != null && titleOverride!.trim().isNotEmpty)
-        ? titleOverride!.trim()
-        : 'ALL Recipes';
-
-    return Scaffold(
-      backgroundColor: const Color(0xFFECF3F4),
-      body: Column(
-        children: [
-          // ✅ Same sub header bar as Favourites / Course pages
-          SubHeaderBar(title: title),
-
-          // ✅ Content
-          Expanded(
-            child: RecipeListScreen(
-              initialCourseSlug: initialCourseSlug,
-              lockCourse: lockCourse,
-            ),
-          ),
-        ],
-      ),
+    // ✅ SIMPLIFIED: Just let RecipeListScreen handle the "Page Mode"
+    // by passing the pageTitle.
+    return RecipeListScreen(
+      initialCourseSlug: initialCourseSlug,
+      lockCourse: lockCourse,
+      pageTitle: titleOverride ?? 'ALL Recipes',
     );
   }
 }

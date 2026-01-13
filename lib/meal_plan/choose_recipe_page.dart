@@ -1,22 +1,24 @@
 // lib/meal_plan/choose_recipe_page.dart
+
 import 'dart:math';
 import 'dart:ui';
-
 import 'package:flutter/material.dart';
 
-
-// ✅ Reuse shared UI (same as CoursePage)
 import '../app/sub_header_bar.dart';
 import '../shared/search_pill.dart';
 import '../theme/app_theme.dart';
 
-
-// ✅ Reuse RecipeCard (same as CoursePage)
-import '../recipes/widgets/recipe_card.dart';
+import '../recipes/household_food_policy.dart';
+import '../recipes/recipe_index.dart';
+import '../recipes/family_profile.dart';
+import '../recipes/family_profile_repository.dart';
+import '../recipes/allergy_engine.dart'; 
+import '../recipes/widgets/recipe_filters_ui.dart';
+import '../recipes/widgets/smart_recipe_card.dart';
 
 class _MPChooseStyle {
   static const Color bg = Color(0xFFECF3F4);
-static const Color brandDark = AppColors.brandDark;
+  static const Color brandDark = AppColors.brandDark;
 
   static const EdgeInsets sectionPad = EdgeInsets.fromLTRB(16, 0, 16, 16);
   static const EdgeInsets metaPad = EdgeInsets.fromLTRB(16, 0, 16, 10);
@@ -28,55 +30,31 @@ static const Color brandDark = AppColors.brandDark;
         fontVariations: const [FontVariation('wght', 600)],
       );
 
-  static TextStyle h2(BuildContext context) =>
-      (Theme.of(context).textTheme.titleMedium ?? const TextStyle()).copyWith(
-        fontVariations: const [FontVariation('wght', 800)],
-      );
-
   static TextStyle recTitle(BuildContext context) =>
       (Theme.of(context).textTheme.titleMedium ?? const TextStyle()).copyWith(
         color: Colors.white,
         fontVariations: const [FontVariation('wght', 800)],
       );
-
-  static TextStyle recMeta(BuildContext context) =>
-      (Theme.of(context).textTheme.bodySmall ?? const TextStyle()).copyWith(
-        color: Colors.white,
-        height: 1.2,
-        fontSize: 14,
-        fontVariations: const [FontVariation('wght', 600)],
-      );
 }
 
 class ChooseRecipePage extends StatefulWidget {
+  // ✅ Renamed back to 'recipes' to match your caller
   final List<Map<String, dynamic>> recipes;
-  final String Function(Map<String, dynamic>) titleOf;
-  final String? Function(Map<String, dynamic>) thumbOf;
-  final int? Function(Map<String, dynamic>) idOf;
-  final String Function(Map<String, dynamic> recipe)? statusTextOf;
-
-  final String? headerLabel; // e.g. "DINNER • Monday, 5 Jan"
-  final int? currentId;
-
-  // ✅ Old Inspire parity inputs
-  final List<int> availableIds; // slot/course filtered by controller
-  final String recentKey; // "$dayKey|$slot"
-  final List<int> initialRecent; // last N picks for this slot
-  final int recentWindow; // N
+  final Map<int, RecipeIndex> indexById;
+  final FamilyProfile familyProfile; 
+  
+  final String? headerLabel; 
+  final int? currentId; 
+  final String initialCourse;
 
   const ChooseRecipePage({
     super.key,
     required this.recipes,
-    required this.titleOf,
-    required this.thumbOf,
-    required this.idOf,
-    this.statusTextOf,
+    required this.indexById,
+    required this.familyProfile,
     this.headerLabel,
     this.currentId,
-    required this.availableIds,
-    required this.recentKey,
-    required this.initialRecent,
-    required this.recentWindow,
+    this.initialCourse = 'All',
   });
 
   @override
@@ -84,20 +62,35 @@ class ChooseRecipePage extends StatefulWidget {
 }
 
 class _ChooseRecipePageState extends State<ChooseRecipePage> {
+  late final HouseholdFoodPolicy _policy;
+  
   final _searchCtrl = TextEditingController();
   final _searchFocus = FocusNode();
+  String _query = '';
+  
+  late RecipeFilterSelection _filters;
+  late AllergiesSelection _allergies;
 
-  String _q = '';
-  final Random _rng = Random();
-
-  late List<int> _recent;
+  List<Map<String, dynamic>> _visible = [];
   int? _recommendedId;
+  final Random _rng = Random();
 
   @override
   void initState() {
     super.initState();
-    _recent = List<int>.from(widget.initialRecent);
-    _recommendedId = _pickRecommendedId();
+    _policy = HouseholdFoodPolicy(familyRepo: FamilyProfileRepository());
+    
+    _filters = RecipeFilterSelection(course: widget.initialCourse);
+    
+    _allergies = const AllergiesSelection(
+      enabled: true,
+      mode: SuitabilityMode.wholeFamily,
+      includeSwaps: true,
+      hideUnsafe: true,
+    );
+
+    _runFilter();
+    _pickRecommendation();
   }
 
   @override
@@ -107,108 +100,107 @@ class _ChooseRecipePageState extends State<ChooseRecipePage> {
     super.dispose();
   }
 
-  String _status(Map<String, dynamic> r) =>
-      (widget.statusTextOf?.call(r) ?? 'safe').toLowerCase();
+  void _runFilter() {
+    final res = _policy.filterRecipes(
+      items: widget.recipes,
+      indexById: widget.indexById,
+      filters: _filters,
+      query: _query,
+      family: widget.familyProfile,
+      selection: _allergies,
+    );
 
-  bool _isAllowedId(int id) => widget.availableIds.contains(id);
+    setState(() {
+      _visible = res.visible;
+    });
 
-  Map<String, dynamic>? _recipeById(int id) {
-    for (final r in widget.recipes) {
-      final rid = widget.idOf(r);
-      if (rid == id) return r;
+    if (_recommendedId != null) {
+      final stillVisible = _visible.any((r) => r['id'] == _recommendedId);
+      if (!stillVisible) {
+        _pickRecommendation();
+      }
+    } else {
+      _pickRecommendation();
+    }
+  }
+
+  void _pickRecommendation() {
+    if (_visible.isEmpty) {
+      setState(() => _recommendedId = null);
+      return;
+    }
+
+    final pool = _visible.where((r) => r['id'] != widget.currentId).toList();
+    
+    if (pool.isEmpty) {
+      setState(() => _recommendedId = null);
+      return;
+    }
+
+    final randomItem = pool[_rng.nextInt(pool.length)];
+    setState(() => _recommendedId = randomItem['id']);
+  }
+
+  void _onSelect(int id) {
+    Navigator.of(context).pop(id);
+  }
+
+  String _titleOf(Map<String, dynamic> r) =>
+      (r['title']?['rendered'] as String?) ?? 'Untitled';
+
+  String? _thumbOf(Map<String, dynamic> r) =>
+      r['recipe']?['image_url'] as String?;
+
+  String? _calculateAllergyStatus(RecipeIndex ix, Map<String, dynamic> r) {
+    final activePeople = _policy.activeProfiles(
+      family: widget.familyProfile, 
+      selection: _allergies
+    );
+    
+    final blockedNames = <String>[];
+    final swapNames = <String>[];
+
+    for (final person in activePeople) {
+      if (person.allergies.isEmpty) continue;
+
+      final result = AllergyEngine.evaluate(
+        recipeAllergyTags: ix.allergies,
+        swapFieldText: ix.ingredientSwaps ?? '',
+        userAllergies: person.allergies,
+      );
+
+      if (result.status == AllergyStatus.notSuitable) {
+        blockedNames.add(person.name);
+      } else if (result.status == AllergyStatus.swapRequired) {
+        swapNames.add(person.name);
+      }
+    }
+
+    if (blockedNames.isNotEmpty) return "Not suitable"; 
+    if (swapNames.isNotEmpty) return "Needs swap";
+
+    if (activePeople.any((p) => p.allergies.isNotEmpty)) {
+      if (_allergies.mode == SuitabilityMode.allChildren) return "Safe for kids";
+      if (_allergies.mode == SuitabilityMode.specificPeople) return "Safe for selected";
+      return "Safe for family";
     }
     return null;
   }
 
-  List<Map<String, dynamic>> get _safePool {
-    // ✅ slot-filtered + not blocked
-    return widget.recipes.where((r) {
-      final st = _status(r);
-      if (st == 'blocked') return false;
-
-      final id = widget.idOf(r);
-      if (id == null) return false;
-      if (!_isAllowedId(id)) return false;
-
-      return true;
-    }).toList();
-  }
-
-  List<Map<String, dynamic>> get _filteredAll {
-    final pool = _safePool;
-    final q = _q.trim().toLowerCase();
-    if (q.isEmpty) return pool;
-    return pool.where((r) => widget.titleOf(r).toLowerCase().contains(q)).toList();
-  }
-
-  int? _pickRecommendedId() {
-    // ✅ candidates = allowed ids (slot/course filtered), excluding current
-    final ids = widget.availableIds.where((id) => id != widget.currentId).toList();
-    if (ids.isEmpty) return null;
-
-    // ✅ avoid recent window first (old Inspire behaviour)
-    final fresh = ids.where((id) => !_recent.contains(id)).toList();
-    final pool = fresh.isNotEmpty ? fresh : ids;
-
-    if (pool.isEmpty) return null;
-    return pool[_rng.nextInt(pool.length)];
-  }
-
-  void _shuffle() {
-    setState(() => _recommendedId = _pickRecommendedId());
-  }
-
-  void _commitRecent(int pickedId) {
-    _recent.add(pickedId);
-    if (_recent.length > widget.recentWindow) {
-      _recent = _recent.sublist(_recent.length - widget.recentWindow);
-    }
-  }
-
-  void _returnPicked(int pickedId) {
-    _commitRecent(pickedId);
-    Navigator.of(context).pop(<String, dynamic>{
-      'pickedId': pickedId,
-      'recentKey': widget.recentKey,
-      'recent': _recent,
-    });
-  }
-
-  Widget _selectButton({required VoidCallback onPressed}) {
-    return SizedBox(
-      height: 34,
-      child: OutlinedButton(
-        onPressed: onPressed,
-        style: OutlinedButton.styleFrom(
-          shape: const StadiumBorder(),
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-        ),
-        child: const Text('Select'),
-      ),
-    );
-  }
-
-  Widget _selectButtonOnDark({required VoidCallback onPressed}) {
-    return SizedBox(
-      height: 34,
-      child: OutlinedButton(
-        onPressed: onPressed,
-        style: OutlinedButton.styleFrom(
-          foregroundColor: Colors.white,
-          side: const BorderSide(color: Colors.white, width: 1),
-          shape: const StadiumBorder(),
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-        ),
-        child: const Text('Select'),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final recId = _recommendedId;
-    final recRecipe = (recId != null) ? _recipeById(recId) : null;
-    final visible = _filteredAll;
+    final recRecipe = (_recommendedId != null) 
+        ? widget.recipes.firstWhere((r) => r['id'] == _recommendedId, orElse: () => {})
+        : null;
+    
+    final validRec = (recRecipe != null && recRecipe.isNotEmpty) ? recRecipe : null;
+
+    final allIndexes = widget.indexById.values;
+    final courseOpts = ['All', ...allIndexes.expand((i) => i.courses).toSet().toList()..sort()];
+    final cuisineOpts = ['All', ...allIndexes.expand((i) => i.cuisines).toSet().toList()..sort()];
+    final suitableOpts = ['All', ...allIndexes.expand((i) => i.suitable).toSet().toList()..sort()];
+    final nutritionOpts = ['All', ...allIndexes.expand((i) => i.nutrition).toSet().toList()..sort()];
+    final colOpts = ['All', ...allIndexes.expand((i) => i.collections).toSet().toList()..sort()];
 
     return Scaffold(
       backgroundColor: _MPChooseStyle.bg,
@@ -216,7 +208,7 @@ class _ChooseRecipePageState extends State<ChooseRecipePage> {
         children: [
           SubHeaderBar(title: 'Choose recipe'),
 
-          if (widget.headerLabel != null && widget.headerLabel!.trim().isNotEmpty)
+          if (widget.headerLabel != null)
             Padding(
               padding: _MPChooseStyle.metaPad,
               child: Align(
@@ -225,118 +217,148 @@ class _ChooseRecipePageState extends State<ChooseRecipePage> {
               ),
             ),
 
+          Container(
+            color: _MPChooseStyle.bg,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Column(
+              children: [
+                SearchPill(
+                  controller: _searchCtrl,
+                  focusNode: _searchFocus,
+                  hintText: 'Search recipes',
+                  onChanged: (v) {
+                    _query = v;
+                    _runFilter(); 
+                  },
+                  // ✅ FIXED: Added missing parameter
+                  onSubmitted: (v) {
+                    _query = v;
+                    _runFilter();
+                  },
+                  onClear: () {
+                    _searchCtrl.clear();
+                    _query = '';
+                    _runFilter();
+                  },
+                ),
+                const SizedBox(height: 10),
+                RecipeFilterBar(
+                  filters: _filters,
+                  allergies: _allergies,
+                  courseOptions: courseOpts,
+                  cuisineOptions: cuisineOpts,
+                  suitableForOptions: suitableOpts,
+                  nutritionOptions: nutritionOpts,
+                  collectionOptions: colOpts,
+                  adults: widget.familyProfile.adults,
+                  children: widget.familyProfile.children,
+                  onFiltersApplied: (f) {
+                    setState(() => _filters = f);
+                    _runFilter();
+                  },
+                  onAllergiesApplied: (a) {
+                    setState(() => _allergies = a);
+                    _runFilter();
+                  },
+                ),
+              ],
+            ),
+          ),
+
           Expanded(
             child: ListView(
               padding: EdgeInsets.zero,
               children: [
-                // ==========================================================
-                // ✅ Recommended (brand dark, full width, white text)
-                // ==========================================================
-                Container(
-                  color: _MPChooseStyle.brandDark,
-                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text('Recommended', style: _MPChooseStyle.recTitle(context)),
-                          ),
-                          TextButton.icon(
-                            onPressed: _shuffle,
-                            icon: const Icon(Icons.shuffle_rounded, size: 18, color: Colors.white),
-                            label: const Text('Shuffle'),
-                            style: TextButton.styleFrom(
-                              foregroundColor: Colors.white,
+                if (validRec != null)
+                  Container(
+                    color: _MPChooseStyle.brandDark,
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                    margin: const EdgeInsets.only(bottom: 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text('Recommended for you', style: _MPChooseStyle.recTitle(context)),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-
-                      if (recId == null || recRecipe == null)
-                        Text('No recommendation available.', style: _MPChooseStyle.recMeta(context))
-                      else
-                        // ✅ Keep RecipeCard for consistency, but remove chevron + add Select button
-                        RecipeCard(
-                          title: widget.titleOf(recRecipe),
-                          subtitle: (_status(recRecipe) == 'swap') ? '⚠️ Swap required' : null,
-                          imageUrl: widget.thumbOf(recRecipe),
-                          compact: false,
-                          onTap: null, // 👈 force explicit CTA
-                          trailing: _selectButton(
-  onPressed: () => _returnPicked(recId),
-),
+                            TextButton.icon(
+                              onPressed: _pickRecommendation,
+                              icon: const Icon(Icons.shuffle_rounded, size: 18, color: Colors.white),
+                              label: const Text('Shuffle'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                          ],
                         ),
-                    ],
+                        const SizedBox(height: 10),
+                        _buildCard(validRec, isDark: true),
+                      ],
+                    ),
                   ),
-                ),
 
-                // ==========================================================
-                // ✅ Search (separated visually)
-                // ==========================================================
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
-                  child: SearchPill(
-                    controller: _searchCtrl,
-                    focusNode: _searchFocus,
-                    hintText: 'Search recipes',
-                    onChanged: (v) => setState(() => _q = v),
-                    onSubmitted: (v) => setState(() => _q = v),
-                    onClear: () {
-                      _searchCtrl.clear();
-                      setState(() => _q = '');
-                    },
+                if (_visible.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(32),
+                    child: Center(child: Text("No recipes found matching your filters.")),
+                  )
+                else
+                  Padding(
+                    padding: _MPChooseStyle.sectionPad,
+                    child: Column(
+                      children: _visible.map((r) {
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _buildCard(r, isDark: false),
+                        );
+                      }).toList(),
+                    ),
                   ),
-                ),
-
-                // ==========================================================
-                // ✅ List (no All recipes / no Showing X)
-                // ==========================================================
-                Padding(
-                  padding: _MPChooseStyle.sectionPad,
-                  child: Column(
-                    children: [
-                      if (visible.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.only(top: 20),
-                          child: Center(
-                            child: Text(
-                              'No suitable recipes found.',
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        )
-                      else
-                        ...visible.map((r) {
-                          final id = widget.idOf(r);
-                          final swap = _status(r) == 'swap';
-
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
-                            child: RecipeCard(
-                              title: widget.titleOf(r),
-                              subtitle: swap ? '⚠️ Swap required' : null,
-                              imageUrl: widget.thumbOf(r),
-                              compact: false,
-                              onTap: null, // 👈 force explicit CTA
-                              trailing: (id == null)
-                                  ? null
-                                  : _selectButton(
-                                      onPressed: () => _returnPicked(id),
-                                    ),
-                            ),
-                          );
-                        }),
-                    ],
-                  ),
-                ),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildCard(Map<String, dynamic> r, {required bool isDark}) {
+    final id = r['id'] as int;
+    final ix = widget.indexById[id];
+    final allergyStatus = (ix != null) ? _calculateAllergyStatus(ix, r) : null;
+    
+    // ✅ FIXED: Removed trailing, using Stack for Select Button
+    return Stack(
+      alignment: Alignment.bottomRight,
+      children: [
+        SmartRecipeCard(
+          title: _titleOf(r),
+          imageUrl: _thumbOf(r),
+          isFavorite: false, 
+          // Tapping the card selects it
+          onTap: () => _onSelect(id),
+          tags: ix?.suitable ?? [],
+          allergyStatus: allergyStatus,
+        ),
+        
+        // Explicit Select Button overlay
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: SizedBox(
+            height: 32,
+            child: FilledButton(
+              onPressed: () => _onSelect(id),
+              style: FilledButton.styleFrom(
+                backgroundColor: isDark ? Colors.white : AppColors.brandDark,
+                foregroundColor: isDark ? AppColors.brandDark : Colors.white,
+                elevation: 2,
+              ),
+              child: const Text('Select', style: TextStyle(fontSize: 12)),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

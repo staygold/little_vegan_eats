@@ -3,6 +3,9 @@
 class MealPlanEntryParser {
   MealPlanEntryParser._();
 
+  // ------------------------------------
+  // BASIC COERCION HELPERS
+  // ------------------------------------
   static int? recipeIdFromAny(dynamic raw) {
     if (raw is int) return raw;
     if (raw is num) return raw.toInt();
@@ -18,6 +21,19 @@ class MealPlanEntryParser {
     return s.isEmpty ? null : s;
   }
 
+  static Map<String, dynamic>? _mapOrNull(dynamic v) {
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return null;
+  }
+
+  static List<dynamic>? _listOrNull(dynamic v) {
+    if (v is List) return v;
+    return null;
+  }
+
+  // ------------------------------------
+  // PARSE
+  // ------------------------------------
   static Map<String, dynamic>? parse(dynamic raw) {
     if (raw == null) return null;
 
@@ -33,13 +49,25 @@ class MealPlanEntryParser {
       final m = Map<String, dynamic>.from(raw);
       final type = _typeOf(m);
 
+      // If controller gives already-resolved entries with _reuseFrom attached,
+      // keep them as-is so we don't lose extra fields (warnings/meta/etc).
+      if (m['_reuseFrom'] is Map && (type == 'recipe' || type == 'note')) {
+        return m;
+      }
+
       // -----------------------------
       // NOTE
       // -----------------------------
       if (type == 'note') {
         final text = _stringOrNull(m['text']);
         if (text == null) return null;
-        return {'type': 'note', 'text': text};
+
+        return {
+          'type': 'note',
+          'text': text,
+          if (m['_reuseFrom'] is Map)
+            '_reuseFrom': Map<String, dynamic>.from(m['_reuseFrom']),
+        };
       }
 
       // -----------------------------
@@ -49,26 +77,56 @@ class MealPlanEntryParser {
         final rid = recipeIdFromAny(m['recipeId']);
         if (rid == null) return null;
 
+        final source = (m['source'] ?? 'auto').toString();
+        final audience = _stringOrNull(m['audience']);
+        final childKey = _stringOrNull(m['childKey']);
+        final childName = _stringOrNull(m['childName']);
+
+        // ✅ warnings (new + legacy)
+        // - warning: Map<String,dynamic> (single warning object)
+        // - warnings: List<Map> (many warning objects) OR List<String> (legacy codes)
+        final warning = _mapOrNull(m['warning']);
+        final warnings = _listOrNull(m['warnings']);
+
+        // ✅ optional warningMeta (legacy support)
+        final warningMeta = _mapOrNull(m['warningMeta']);
+
+        // ✅ leftover marker (optional)
+        final leftover = (m['leftover'] == true);
+
         return {
           'type': 'recipe',
           'recipeId': rid,
-          'source': (m['source'] ?? 'auto').toString(),
-          if (m['audience'] != null) 'audience': (m['audience'] ?? '').toString(),
-          if (m['childKey'] != null) 'childKey': (m['childKey'] ?? '').toString(),
-          if (m['childName'] != null) 'childName': (m['childName'] ?? '').toString(),
+          'source': source,
+          if (audience != null) 'audience': audience,
+          if (childKey != null) 'childKey': childKey,
+          if (childName != null) 'childName': childName,
+
+          // Keep raw shapes so UI can render message cleanly.
+          if (warning != null) 'warning': warning,
+          if (warnings != null) 'warnings': warnings,
+
+          if (warningMeta != null) 'warningMeta': warningMeta,
+
+          if (leftover) 'leftover': true,
           if (m['_reuseFrom'] is Map)
             '_reuseFrom': Map<String, dynamic>.from(m['_reuseFrom']),
         };
       }
 
       // -----------------------------
-      // REUSE
+      // REUSE (raw placeholder)
       // -----------------------------
       if (type == 'reuse') {
         final fromDayKey = _stringOrNull(m['fromDayKey']);
         final fromSlot = _stringOrNull(m['fromSlot']);
         if (fromDayKey == null || fromSlot == null) return null;
-        return {'type': 'reuse', 'fromDayKey': fromDayKey, 'fromSlot': fromSlot};
+
+        return {
+          'type': 'reuse',
+          'fromDayKey': fromDayKey,
+          'fromSlot': fromSlot,
+        };
       }
 
       // -----------------------------
@@ -94,9 +152,6 @@ class MealPlanEntryParser {
       // -----------------------------
       // CLEAR / CLEARED
       // -----------------------------
-      // clear = explicit empty
-      // cleared = persisted locked empty
-      // We normalize both to type: clear, while preserving metadata.
       if (type == 'clear' || type == 'cleared') {
         final reason = _stringOrNull(m['reason']);
         final childKey = _stringOrNull(m['childKey']);
@@ -113,16 +168,14 @@ class MealPlanEntryParser {
           if (source != null) 'source': source,
         };
       }
-
-      // Sometimes controller gives us already-resolved entries with _reuseFrom attached
-      if (m['_reuseFrom'] is Map && (type == 'recipe' || type == 'note')) {
-        return m;
-      }
     }
 
     return null;
   }
 
+  // ------------------------------------
+  // READ HELPERS
+  // ------------------------------------
   static int? entryRecipeId(Map<String, dynamic>? e) {
     if (e == null) return null;
     if ((e['type'] ?? '').toString() != 'recipe') return null;
@@ -140,7 +193,9 @@ class MealPlanEntryParser {
       e != null && (e['type'] ?? '').toString() == 'first_foods';
 
   static bool isClear(Map<String, dynamic>? e) =>
-      e == null || (e['type'] ?? '').toString().trim().isEmpty || (e['type'] ?? '').toString() == 'clear';
+      e == null ||
+      (e['type'] ?? '').toString().trim().isEmpty ||
+      (e['type'] ?? '').toString() == 'clear';
 
   static String? clearReason(Map<String, dynamic>? e) {
     if (e == null) return null;
@@ -159,7 +214,101 @@ class MealPlanEntryParser {
     return k.isEmpty ? null : k;
   }
 
-  /// ✅ If entry is resolved and has reuse meta, return it
+  static String? audience(Map<String, dynamic>? e) {
+    final a = (e?['audience'] ?? '').toString().trim();
+    return a.isEmpty ? null : a;
+  }
+
+  // ------------------------------------
+  // WARNINGS
+  // ------------------------------------
+
+  /// Returns a single warning object if present (new shape).
+  static Map<String, dynamic>? warning(Map<String, dynamic>? e) {
+    final w = e?['warning'];
+    if (w is Map) return Map<String, dynamic>.from(w);
+    return null;
+  }
+
+  /// Returns warning objects list (new shape) if present.
+  static List<Map<String, dynamic>> warningObjects(Map<String, dynamic>? e) {
+    final w = e?['warnings'];
+    if (w is List) {
+      final out = <Map<String, dynamic>>[];
+      for (final x in w) {
+        if (x is Map) out.add(Map<String, dynamic>.from(x));
+      }
+      return out;
+    }
+    return const [];
+  }
+
+  /// Returns legacy warning codes (List<String>) if warnings are strings.
+  static List<String> warningCodes(Map<String, dynamic>? e) {
+    final w = e?['warnings'];
+    if (w is List) {
+      final out = <String>[];
+      for (final x in w) {
+        if (x is String) {
+          final s = x.trim();
+          if (s.isNotEmpty) out.add(s);
+        } else {
+          final s = (x ?? '').toString().trim();
+          if (s.isNotEmpty) out.add(s);
+        }
+      }
+      return out;
+    }
+    if (w is String) {
+      final s = w.trim();
+      return s.isEmpty ? const [] : <String>[s];
+    }
+    return const [];
+  }
+
+  static Map<String, dynamic>? warningMeta(Map<String, dynamic>? e) {
+    final m = e?['warningMeta'];
+    if (m is Map) return Map<String, dynamic>.from(m);
+    return null;
+  }
+
+  /// ✅ UI-friendly warning message.
+  ///
+  /// Priority:
+  /// 1) warning.message (new)
+  /// 2) warnings[0].message (new list)
+  /// 3) warningMeta.text (legacy)
+  /// 4) warningCodes[0] (legacy)
+  static String? warningText(Map<String, dynamic>? e) {
+    if (e == null) return null;
+
+    // 1) single warning object
+    final w = warning(e);
+    final wm = (w?['message'] ?? w?['text'] ?? '').toString().trim();
+    if (wm.isNotEmpty) return wm;
+
+    // 2) warnings list of objects
+    final objs = warningObjects(e);
+    if (objs.isNotEmpty) {
+      final first = objs.first;
+      final m = (first['message'] ?? first['text'] ?? '').toString().trim();
+      if (m.isNotEmpty) return m;
+    }
+
+    // 3) legacy meta text
+    final meta = warningMeta(e);
+    final t = meta?['text'];
+    if (t is String && t.trim().isNotEmpty) return t.trim();
+
+    // 4) legacy code fallback
+    final codes = warningCodes(e);
+    if (codes.isEmpty) return null;
+    return codes.first.trim();
+  }
+
+  // ------------------------------------
+  // REUSE META (resolved + raw reuse)
+  // ------------------------------------
   static Map<String, String>? entryReuseFrom(Map<String, dynamic>? e) {
     if (e == null) return null;
 

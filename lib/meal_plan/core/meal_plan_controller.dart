@@ -1,7 +1,6 @@
 // lib/meal_plan/core/meal_plan_controller.dart
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
@@ -15,18 +14,21 @@ import '../../recipes/family_profile_repository.dart';
 import '../../recipes/family_profile.dart';
 import '../../recipes/profile_person.dart';
 
+import '../../recipes/recipe_index.dart';
+import '../../recipes/food_policy_core.dart';
 import '../../recipes/allergy_engine.dart';
-import '../../recipes/allergy_keys.dart';
 
 class MealPlanController extends ChangeNotifier {
   MealPlanController({
     required FirebaseAuth auth,
     required MealPlanRepository repo,
-    required FamilyProfileRepository profileRepo, // ✅ NEW
+    required FamilyProfileRepository profileRepo,
+    required Map<int, RecipeIndex> recipeIndexById,
     String? initialWeekId,
   })  : _auth = auth,
         _repo = repo,
         _profileRepo = profileRepo,
+        _recipeIndexById = recipeIndexById,
         weekId = (initialWeekId != null && initialWeekId.trim().isNotEmpty)
             ? initialWeekId.trim()
             : MealPlanKeys.currentWeekId();
@@ -34,6 +36,23 @@ class MealPlanController extends ChangeNotifier {
   final FirebaseAuth _auth;
   final MealPlanRepository _repo;
   final FamilyProfileRepository _profileRepo;
+  final Map<int, RecipeIndex> _recipeIndexById;
+
+  // -------------------------------------------------------
+  // ✅ Debug switches
+  // -------------------------------------------------------
+  bool debugSuitability = true; // flip off when done
+  int debugExampleIds = 6;
+
+  void _dbgI(String msg, {String? key}) {
+    if (!debugSuitability) return;
+    mplog.MealPlanLog.i(msg, key: key);
+  }
+
+  void _dbgD(String msg, {String? key}) {
+    if (!debugSuitability) return;
+    mplog.MealPlanLog.d(msg, key: key);
+  }
 
   // -------------------------------------------------------
   // Week view state
@@ -45,7 +64,7 @@ class MealPlanController extends ChangeNotifier {
   final Map<String, StreamSubscription<Map<String, dynamic>?>> _daySubs = {};
   final Map<String, String> _daySources = {};
 
-  // Draft state
+  // Draft state (kept for UI edits)
   final Map<String, Map<String, Map<String, dynamic>>> _draft = {};
 
   // -------------------------------------------------------
@@ -86,52 +105,93 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // ✅ Profile state (ONE SOURCE OF TRUTH)
+  // ✅ Profile state (SSOT)
   // -------------------------------------------------------
   FamilyProfile? _family;
   StreamSubscription<FamilyProfile>? _familySub;
 
-  // Allergies derived from FamilyProfile
-  Set<String> _excludedAllergens = {};
-  Set<String> _childAllergens = {};
   int _adultCount = 2;
 
   int get adultCount => _adultCount;
   int get kidCount => _family?.children.length ?? 0;
 
-  Set<String> get excludedAllergens => _excludedAllergens;
-  Set<String> get childAllergens => _childAllergens;
+  FamilyProfile? get family => _family;
+  bool get hasChildren => (_family?.children.isNotEmpty ?? false);
 
-  /// Program children snapshot fallback only (old plans)
-  List<dynamic>? get childrenFromProgramOrNull {
-    final p = _activeProgram;
-    if (p == null) return null;
-    final c = p['children'];
-    return (c is List) ? c : null;
+  // -------------------------------------------------------
+  // ✅ Profile readiness latch
+  // -------------------------------------------------------
+  Completer<void>? _profileReady;
+
+  Future<void> get profileReady async {
+    final c = _profileReady;
+    if (c == null) return;
+    if (c.isCompleted) return;
+    await c.future;
   }
 
-  /// ✅ Always prefer profile repo children
-  List<dynamic>? get childrenEffectiveOrNull {
+  bool get isProfileReady => _profileReady?.isCompleted ?? false;
+
+  // -------------------------------------------------------
+  // ✅ Children bridge (ProfilePerson -> Map<String,dynamic>)
+  // -------------------------------------------------------
+  Map<String, dynamic> _childToMap(ProfilePerson k) {
+    final key = (k.key.isNotEmpty ? k.key : k.id).toString().trim();
+
+    return <String, dynamic>{
+      'dobMonth': k.dobMonth,
+      'dobYear': k.dobYear,
+      'dob': k.dob,
+      'name': k.name,
+      'childName': k.name,
+      if (key.isNotEmpty) 'childKey': key,
+      if (key.isNotEmpty) 'id': key,
+      if (key.isNotEmpty) 'key': key,
+      if (key.isNotEmpty) 'uid': key,
+    };
+  }
+
+  /// ✅ Used by builder service.
+  List<Map<String, dynamic>> get childrenEffectiveOrNull {
     final kids = _family?.children ?? const <ProfilePerson>[];
-    if (kids.isNotEmpty) {
-      // Convert ProfilePerson -> Map that MealPlanAgeEngine expects
-      return kids.map((k) {
-        return <String, dynamic>{
-          'dobMonth': k.dobMonth,
-          'dobYear': k.dobYear,
-          'dob': k.dob,
-        };
-      }).toList();
+    if (kids.isEmpty) return const <Map<String, dynamic>>[];
+    return kids.map(_childToMap).toList();
+  }
+
+  List<Map<String, dynamic>> _normalizeChildrenOverride(List<dynamic>? raw) {
+    if (raw == null || raw.isEmpty) return const <Map<String, dynamic>>[];
+
+    if (raw.first is Map) {
+      return raw
+          .whereType<Map>()
+          .map((m) => Map<String, dynamic>.from(m))
+          .toList();
     }
 
-    // Fallback only
-    final b = childrenFromProgramOrNull;
-    if (b != null && b.isNotEmpty) return b;
+    if (raw.first is ProfilePerson) {
+      return raw.cast<ProfilePerson>().map(_childToMap).toList();
+    }
 
-    return null;
+    return const <Map<String, dynamic>>[];
   }
 
-  bool get hasChildren => (childrenEffectiveOrNull?.isNotEmpty ?? false);
+  // -------------------------------------------------------
+  // ✅ Household allergy policy settings
+  // -------------------------------------------------------
+  bool _allergyPolicyEnabled = true;
+  bool _includeSwaps = true;
+
+  bool get allergyPolicyEnabled => _allergyPolicyEnabled;
+  bool get includeSwaps => _includeSwaps;
+
+  void setAllergyPolicy({
+    bool? enabled,
+    bool? includeSwaps,
+  }) {
+    if (enabled != null) _allergyPolicyEnabled = enabled;
+    if (includeSwaps != null) _includeSwaps = includeSwaps;
+    notifyListeners();
+  }
 
   // -------------------------------------------------------
   // Lifecycle helpers
@@ -141,6 +201,8 @@ class MealPlanController extends ChangeNotifier {
     if (u == null) throw StateError('User not logged in');
     return u.uid;
   }
+
+  RecipeIndex? indexForId(int id) => _recipeIndexById[id];
 
   bool get hasActivePlan {
     if (hasActiveProgram) return true;
@@ -155,41 +217,6 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // ✅ Allergies derived from FamilyProfile
-  // -------------------------------------------------------
-
-  Set<String> _normalizeAllergySet(Iterable<String> raw) {
-    final out = <String>{};
-    for (final a in raw) {
-      final key = AllergyKeys.normalize(a);
-      if (key != null && key.trim().isNotEmpty) out.add(key);
-    }
-    return out;
-  }
-
-  /// Derive the two buckets MealPlan uses today:
-  /// - excludedAllergens: adults
-  /// - childAllergens: children
-  void _deriveAllergensFromFamily(FamilyProfile fam) {
-    final adults = <String>{};
-    final kids = <String>{};
-
-    for (final p in fam.adults) {
-      if (p.hasAllergies && p.allergies.isNotEmpty) {
-        adults.addAll(p.allergies);
-      }
-    }
-    for (final p in fam.children) {
-      if (p.hasAllergies && p.allergies.isNotEmpty) {
-        kids.addAll(p.allergies);
-      }
-    }
-
-    _excludedAllergens = _normalizeAllergySet(adults);
-    _childAllergens = _normalizeAllergySet(kids);
-  }
-
-  // -------------------------------------------------------
   // Start/Stop
   // -------------------------------------------------------
   void start() {
@@ -197,34 +224,33 @@ class MealPlanController extends ChangeNotifier {
     _programSub?.cancel();
     _familySub?.cancel();
 
+    _profileReady = Completer<void>();
     isLoading = true;
 
-    // ✅ Subscribe profile repo here (controller doesn't parse firebase anymore)
     _familySub = _profileRepo.watchFamilyProfile().listen((fam) {
       _family = fam;
-
       _adultCount = fam.adults.isEmpty ? 1 : fam.adults.length;
 
-      // ✅ Allergies now come from profile repo (no users/{uid} reads)
-      _deriveAllergensFromFamily(fam);
+      final c = _profileReady;
+      if (c != null && !c.isCompleted) c.complete();
 
-      final kids = childrenEffectiveOrNull;
       final youngest = MealPlanAgeEngine.youngestAgeMonths(
-        children: kids,
+        children: childrenEffectiveOrNull,
         onDate: DateTime.now(),
       );
 
       mplog.MealPlanLog.i(
-        'PROFILE_WIRED adults=$adultCount kids=$kidCount youngest=$youngest '
-        'firstKidDobMonth=${fam.children.isNotEmpty ? fam.children.first.dobMonth : null} '
-        'firstKidDobYear=${fam.children.isNotEmpty ? fam.children.first.dobYear : null}',
+        'PROFILE_WIRED adults=$_adultCount kids=$kidCount youngest=$youngest',
         key: 'profile:wired',
       );
 
       notifyListeners();
+    }, onError: (e) {
+      final c = _profileReady;
+      if (c != null && !c.isCompleted) c.complete();
+      mplog.MealPlanLog.e('PROFILE_WATCH_ERROR $e');
     });
 
-    // Active program id + active program doc
     _programIdSub = _repo.watchActiveProgramId(uid: uid).listen((pid) {
       final cleaned = (pid ?? '').trim();
       final next = cleaned.isEmpty ? null : cleaned;
@@ -252,6 +278,12 @@ class MealPlanController extends ChangeNotifier {
     _rebuildWeekDayWatchers();
   }
 
+  @override
+  void dispose() {
+    stop();
+    super.dispose();
+  }
+
   Future<void> stop() async {
     await _programIdSub?.cancel();
     _programIdSub = null;
@@ -263,9 +295,9 @@ class MealPlanController extends ChangeNotifier {
     _familySub = null;
 
     _family = null;
-    _excludedAllergens = {};
-    _childAllergens = {};
     _adultCount = 2;
+
+    _profileReady = null;
 
     for (final sub in _daySubs.values) {
       await sub.cancel();
@@ -333,7 +365,7 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // Program day helpers
+  // Program helpers
   // -------------------------------------------------------
   Stream<Map<String, dynamic>?> watchProgramDay(String dateKey) {
     final pid = _activeProgramId;
@@ -380,60 +412,8 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // GENERATE PLAN STRUCTURE (builder helper)
-  // -------------------------------------------------------
-  Map<String, dynamic> generatePlanData({
-    required bool wantsBreakfast,
-    required bool wantsLunch,
-    required bool wantsDinner,
-    required int snackCount,
-    required String? planName,
-    required bool isWeek,
-  }) {
-    final Map<String, dynamic> dayStructure = {};
-
-    dayStructure['breakfast'] = wantsBreakfast ? null : {'type': 'clear'};
-    dayStructure['lunch'] = wantsLunch ? null : {'type': 'clear'};
-    dayStructure['dinner'] = wantsDinner ? null : {'type': 'clear'};
-
-    if (snackCount == 0) {
-      dayStructure['snack1'] = {'type': 'clear'};
-      dayStructure['snack2'] = {'type': 'clear'};
-    } else if (snackCount == 1) {
-      dayStructure['snack1'] = null;
-      dayStructure['snack2'] = {'type': 'clear'};
-    } else {
-      dayStructure['snack1'] = null;
-      dayStructure['snack2'] = null;
-    }
-
-    final timestamp = FieldValue.serverTimestamp();
-
-    if (!isWeek) {
-      return {
-        'title': (planName?.trim().isNotEmpty == true) ? planName : 'My Day Plan',
-        'type': 'day',
-        'savedAt': timestamp,
-        'updatedAt': timestamp,
-        'day': dayStructure,
-      };
-    } else {
-      final Map<String, dynamic> weekDays = {};
-      for (int i = 0; i < 7; i++) {
-        weekDays[i.toString()] = dayStructure;
-      }
-      return {
-        'title': (planName?.trim().isNotEmpty == true) ? planName : 'My Week Plan',
-        'type': 'week',
-        'savedAt': timestamp,
-        'updatedAt': timestamp,
-        'days': weekDays,
-      };
-    }
-  }
-
-  // -------------------------------------------------------
-  // Day doc slot extraction (supports both shapes)
+  // ✅ Day doc slot extraction (NEW SHAPE ONLY)
+  // { slots: { breakfast: ..., lunch: ..., ... } }
   // -------------------------------------------------------
   static Map<String, dynamic> slotsFromAnyDayDoc(Map<String, dynamic>? doc) {
     if (doc == null) return <String, dynamic>{};
@@ -442,17 +422,7 @@ class MealPlanController extends ChangeNotifier {
     if (v is Map<String, dynamic>) return v;
     if (v is Map) return Map<String, dynamic>.from(v);
 
-    final out = <String, dynamic>{};
-    for (final slot in MealPlanSlots.order) {
-      if (doc.containsKey(slot)) out[slot] = doc[slot];
-      if (slot == 'snack1' && doc.containsKey('snack_1')) {
-        out['snack1'] = doc['snack_1'];
-      }
-      if (slot == 'snack2' && doc.containsKey('snack_2')) {
-        out['snack2'] = doc['snack_2'];
-      }
-    }
-    return out;
+    return <String, dynamic>{};
   }
 
   // -------------------------------------------------------
@@ -472,14 +442,13 @@ class MealPlanController extends ChangeNotifier {
         keys.contains('text') ||
         keys.contains('note') ||
         keys.contains('fromDayKey') ||
-        keys.contains('fromSlot');
+        keys.contains('fromSlot') ||
+        keys.contains('warning') ||
+        keys.contains('warnings');
   }
 
   bool _slotHasRealContent(Map m) {
-    final type = (m['type'] ?? m['kind'] ?? '')
-        .toString()
-        .trim()
-        .toLowerCase();
+    final type = (m['type'] ?? m['kind'] ?? '').toString().trim().toLowerCase();
 
     if (type == 'clear' || type == 'cleared') return false;
 
@@ -488,13 +457,14 @@ class MealPlanController extends ChangeNotifier {
       return t.isNotEmpty;
     }
 
-    if (type == 'recipe') {
+    if (type == 'recipe' || type == 'reuse') {
       return _isValidRecipeId(m['recipeId']) || _isValidRecipeId(m['id']);
     }
 
-    if (type == 'reuse') return false;
+    if (_isValidRecipeId(m['recipeId']) || _isValidRecipeId(m['id'])) {
+      return true;
+    }
 
-    if (_isValidRecipeId(m['recipeId']) || _isValidRecipeId(m['id'])) return true;
     final t = (m['text'] ?? m['note'] ?? '').toString().trim();
     if (t.isNotEmpty) return true;
 
@@ -537,15 +507,12 @@ class MealPlanController extends ChangeNotifier {
     for (final slot in MealPlanSlots.order) {
       final v = day[slot];
       if (_hasMeaningfulValue(v)) return true;
-
-      if (slot == 'snack1' && _hasMeaningfulValue(day['snack_1'])) return true;
-      if (slot == 'snack2' && _hasMeaningfulValue(day['snack_2'])) return true;
     }
     return false;
   }
 
   // -------------------------------------------------------
-  // Parsing / Entries (KEEP for review service)
+  // Parsing / Entries
   // -------------------------------------------------------
   int? recipeIdFromAny(dynamic raw) {
     if (raw is int) return raw;
@@ -554,35 +521,8 @@ class MealPlanController extends ChangeNotifier {
     return null;
   }
 
-  dynamic _lookupSlot(Map<String, dynamic>? container, String slot) {
-    if (container == null) return null;
-    if (container.containsKey(slot)) return container[slot];
+  String _normSlot(String slot) => slot.trim().toLowerCase();
 
-    if (slot == 'snack1' && container.containsKey('snack_1')) {
-      return container['snack_1'];
-    }
-    if (slot == 'snack2' && container.containsKey('snack_2')) {
-      return container['snack_2'];
-    }
-
-    return null;
-  }
-
-  String _normSlot(String slot) {
-    final s = slot.trim().toLowerCase();
-    if (s == 'snack_1' || s == 'snacks_1' || s == 'snack 1') return 'snack1';
-    if (s == 'snack1' || s == 'snacks1') return 'snack1';
-    if (s == 'snack_2' || s == 'snacks_2' || s == 'snack 2') return 'snack2';
-    if (s == 'snack2' || s == 'snacks2') return 'snack2';
-    return s;
-  }
-
-  // -------------------------------------------------------
-  // ✅ Backwards compat for MealPlanReviewService
-  // -------------------------------------------------------
-
-  /// Firestore-only entry for a given dayKey + slot.
-  /// This is intentionally read-only and ignores drafts.
   Map<String, dynamic>? firestoreEntry(String dayKey, String slot) {
     final dk = dayKey.trim();
     if (dk.isEmpty) return null;
@@ -591,16 +531,12 @@ class MealPlanController extends ChangeNotifier {
 
     final doc = _dayDocCache[dk];
     final slots = slotsFromAnyDayDoc(doc);
-    final raw = _lookupSlot(slots, s);
+    final raw = slots[s];
 
     if (raw == null) return null;
 
-    // If already a map entry (your normal slot shape)
-    if (raw is Map) {
-      return Map<String, dynamic>.from(raw);
-    }
+    if (raw is Map) return Map<String, dynamic>.from(raw);
 
-    // If legacy/simple shape: recipeId stored directly
     final rid = recipeIdFromAny(raw);
     if (rid != null && rid > 0) {
       return <String, dynamic>{
@@ -612,23 +548,107 @@ class MealPlanController extends ChangeNotifier {
     return null;
   }
 
-  /// Extract a recipeId from a slot entry map.
   int? entryRecipeId(Map<String, dynamic>? entry) {
     if (entry == null) return null;
 
-    // Most common
-    final rid = recipeIdFromAny(entry['recipeId']) ?? recipeIdFromAny(entry['id']);
+    final rid =
+        recipeIdFromAny(entry['recipeId']) ?? recipeIdFromAny(entry['id']);
     if (rid != null && rid > 0) return rid;
 
-    // Some shapes store it differently
-    final alt = recipeIdFromAny(entry['recipe_id']) ?? recipeIdFromAny(entry['recipe']);
+    final alt = recipeIdFromAny(entry['recipe_id']) ??
+        recipeIdFromAny(entry['recipe']);
     if (alt != null && alt > 0) return alt;
 
     return null;
   }
 
   // -------------------------------------------------------
-  // ✅ ONE ENGINE: Candidate selection (uses profile children)
+  // ✅ Allergy gating (WHOLE FAMILY default)
+  // -------------------------------------------------------
+  bool recipeAllowedForGeneration(Map<String, dynamic> recipe) {
+    if (!_allergyPolicyEnabled) return true;
+
+    final fam = _family;
+    if (fam == null) return true;
+
+    final id = recipeIdFromAny(recipe['id']);
+    if (id == null || id <= 0) return false;
+
+    final ix = _recipeIndexById[id];
+    if (ix == null) return false;
+
+    final profiles = <ProfilePerson>[
+      ...fam.adults,
+      ...fam.children,
+    ];
+
+    final anyAllergies =
+        profiles.any((p) => p.hasAllergies && p.allergies.isNotEmpty);
+    if (!anyAllergies) return true;
+
+    final sel = AllergiesSelection(
+      enabled: true,
+      mode: SuitabilityMode.wholeFamily,
+      includeSwaps: _includeSwaps,
+      personIds: const <String>{},
+    );
+
+    return FoodPolicyCore.isAllowedForProfiles(
+      ix: ix,
+      profiles: profiles,
+      selection: sel,
+    );
+  }
+
+  bool recipeAllowed(Map<String, dynamic> recipe) =>
+      recipeAllowedForGeneration(recipe);
+
+  // -------------------------------------------------------
+  // ✅ Allergy label (UI helper for meal plan cards)
+  // Mirrors recipe list label logic via FoodPolicyCore.
+  // -------------------------------------------------------
+  String? allergySubtitleForRecipeId(int recipeId) {
+    if (!_allergyPolicyEnabled) return null;
+
+    final fam = _family;
+    if (fam == null) return null;
+
+    final ix = _recipeIndexById[recipeId];
+    if (ix == null) return null;
+
+    final activeProfiles = <ProfilePerson>[
+      ...fam.adults,
+      ...fam.children,
+    ];
+
+    final anyAllergies = activeProfiles.any(
+      (p) => p.hasAllergies && p.allergies.isNotEmpty,
+    );
+    if (!anyAllergies) return null;
+
+    final selection = AllergiesSelection(
+      enabled: true,
+      mode: SuitabilityMode.wholeFamily,
+      includeSwaps: _includeSwaps,
+      personIds: const <String>{},
+    );
+
+    final res = FoodPolicyCore.allergyTagForRecipe(
+      ix: ix,
+      activeProfiles: activeProfiles,
+      selection: selection,
+    );
+
+    final tag = res.tag?.trim();
+    if (tag == null || tag.isEmpty) return null;
+    return tag;
+  }
+
+  // -------------------------------------------------------
+  // ✅ ONE ENGINE: Candidate selection (SSOT)
+  // - Kids audience => filter by TARGET CHILD (eldest if 2+)
+  // - Family audience => NO age gating
+  // - Snacks follow the same rules as meals
   // -------------------------------------------------------
   List<int> getCandidatesForSlotUnified(
     String slot,
@@ -642,32 +662,20 @@ class MealPlanController extends ChangeNotifier {
     final normSlot = _normSlot(slot);
     final dt = servingDate ?? DateTime.now();
 
+    final overrideKids = _normalizeChildrenOverride(childrenOverride);
     final effectiveChildren =
-        (childrenOverride != null && childrenOverride.isNotEmpty)
-            ? childrenOverride
-            : childrenEffectiveOrNull;
+        overrideKids.isNotEmpty ? overrideKids : childrenEffectiveOrNull;
 
-    final hasKids = (effectiveChildren?.isNotEmpty ?? false);
     final baseAudience = audience.toLowerCase().trim();
-
-    final youngest = MealPlanAgeEngine.youngestAgeMonths(
-      children: effectiveChildren,
-      onDate: dt,
-    );
-
-    final isBaby = (youngest != null && youngest < babyThresholdMonths);
-
-    final forceKidsGating =
-        hasKids && (isBaby || normSlot.startsWith('snack') || baseAudience == 'kids');
-
-    final effectiveAudience = forceKidsGating ? 'kids' : baseAudience;
+    final effectiveAudience = (baseAudience == 'kids') ? 'kids' : 'family';
 
     final dayKey = dt.toIso8601String().substring(0, 10);
 
-    mplog.MealPlanLog.i(
+    _dbgI(
       'SUITABILITY_START slot=$normSlot audience=$audience effectiveAudience=$effectiveAudience '
-      'day=$dayKey recipesIn=${recipes.length} youngest=$youngest isBaby=$isBaby '
-      'threshold=$babyThresholdMonths adults=$adultCount kids=$kidCount',
+      'day=$dayKey recipesIn=${recipes.length} adults=$adultCount kids=${effectiveChildren.length} '
+      'allergyEnabled=$_allergyPolicyEnabled includeSwaps=$_includeSwaps '
+      'overrideKids=${overrideKids.isNotEmpty}',
       key: 'suitability:$normSlot:$dayKey',
     );
 
@@ -676,27 +684,69 @@ class MealPlanController extends ChangeNotifier {
     int dropCourse = 0;
     int dropStorage = 0;
     int dropNoId = 0;
+    int dropNoIndex = 0;
+
+    final exAllergy = <int>[];
+    final exAge = <int>[];
+    final exCourse = <int>[];
+    final exStorage = <int>[];
+
+    void addExample(List<int> list, int id) {
+      if (!debugSuitability) return;
+      if (list.length >= debugExampleIds) return;
+      list.add(id);
+    }
+
+    // Helpful context for kids audience
+    if (debugSuitability && effectiveAudience == 'kids') {
+      final target =
+          MealPlanAgeEngine.targetChildForKidsAudience(effectiveChildren, dt);
+      final youngest = MealPlanAgeEngine.youngestChild(effectiveChildren, dt);
+      _dbgI(
+        'KIDS_CTX slot=$normSlot day=$dayKey '
+        'kidsAges=${effectiveChildren.map((c) => "${c['name']}:${MealPlanAgeEngine.childAgeMonths(c, dt)}").toList()} '
+        'target=${target?['name']} youngest=${youngest?['name']}',
+        key: 'kidsCtx:$normSlot:$dayKey',
+      );
+    }
 
     final out = <int>[];
 
     for (final r in recipes) {
-      // 1) Allergy gate (strict)
-      if (!recipeAllowedForGeneration(r)) {
-        dropAllergy++;
+      final id = recipeIdFromAny(r['id']);
+      if (id == null || id <= 0) {
+        dropNoId++;
         continue;
       }
 
-      // 2) Age/baby gate (only when in kids mode)
+      final ix = _recipeIndexById[id];
+      if (ix == null) {
+        dropNoIndex++;
+        continue;
+      }
+
+      // 1) Allergy gate
+      if (!recipeAllowedForGeneration(r)) {
+        dropAllergy++;
+        addExample(exAllergy, id);
+        continue;
+      }
+
+      // 2) Age gate ONLY in kids audience (SSOT: target child)
+      // ✅ Also enforces baby-only strict rule: (6m + first_foods only)
       if (effectiveAudience == 'kids') {
-        final ok = MealPlanAgeEngine.allowRecipeForSlotUsingFirstFoodsGate(
-          recipe: r,
+        final ok = MealPlanAgeEngine.allowForKidsAudience(
           slotKey: normSlot,
           children: effectiveChildren,
-          babyThresholdMonths: babyThresholdMonths,
           servingDate: dt,
+          ix: ix,
+          recipe: r,
+          babyThresholdMonths: babyThresholdMonths,
         );
+
         if (!ok) {
           dropAgeGate++;
+          addExample(exAge, id);
           continue;
         }
       }
@@ -706,33 +756,30 @@ class MealPlanController extends ChangeNotifier {
       final tokens = _courseTokens(courseRaw);
       if (tokens.isEmpty) {
         dropCourse++;
+        addExample(exCourse, id);
         continue;
       }
 
       if (normSlot.contains('breakfast') && !_isBreakfastCourseTokens(tokens)) {
         dropCourse++;
+        addExample(exCourse, id);
         continue;
       }
 
       if ((normSlot.contains('lunch') || normSlot.contains('dinner')) &&
           !_isMainsCourseTokens(tokens)) {
         dropCourse++;
+        addExample(exCourse, id);
         continue;
       }
 
       if (normSlot.contains('snack') && !_isSnacksCourseTokens(tokens)) {
         dropCourse++;
+        addExample(exCourse, id);
         continue;
       }
 
-      // 4) Recipe id
-      final id = recipeIdFromAny(r['id']);
-      if (id == null || id <= 0) {
-        dropNoId++;
-        continue;
-      }
-
-      // 5) Storage window
+      // 4) Storage window (reuse only if still within storageDays)
       if (firstUsedDates != null && firstUsedDates.containsKey(id)) {
         final storageDays = extractStorageDays(r);
         if (storageDays != null) {
@@ -740,6 +787,7 @@ class MealPlanController extends ChangeNotifier {
           final expires = first.add(Duration(days: storageDays));
           if (dt.isAfter(expires)) {
             dropStorage++;
+            addExample(exStorage, id);
             continue;
           }
         }
@@ -748,9 +796,10 @@ class MealPlanController extends ChangeNotifier {
       out.add(id);
     }
 
-    mplog.MealPlanLog.i(
-      'SUITABILITY_END slot=$normSlot kept=${out.length} dropAllergy=$dropAllergy '
-      'dropAgeGate=$dropAgeGate dropCourse=$dropCourse dropStorage=$dropStorage dropNoId=$dropNoId',
+    _dbgI(
+      'SUITABILITY_END slot=$normSlot kept=${out.length} dropNoId=$dropNoId dropNoIndex=$dropNoIndex '
+      'dropAllergy=$dropAllergy dropAgeGate=$dropAgeGate dropCourse=$dropCourse dropStorage=$dropStorage '
+      'exAllergy=$exAllergy exAge=$exAge exCourse=$exCourse exStorage=$exStorage',
       key: 'suitabilityEnd:$normSlot:$dayKey',
     );
 
@@ -758,16 +807,8 @@ class MealPlanController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------
-  // Everything below this point is your existing code:
-  // - extractStorageDays
-  // - allergy parsing / recipeAllowedForGeneration
-  // - course parsing
-  // - etc.
-  //
-  // KEEP what you already have.
+  // Storage days taxonomy
   // -------------------------------------------------------
-
-  // ✅ Storage days taxonomy
   int? extractStorageDays(Map<String, dynamic> recipe) {
     final r = (recipe['recipe'] is Map)
         ? Map<String, dynamic>.from(recipe['recipe'] as Map)
@@ -790,109 +831,9 @@ class MealPlanController extends ChangeNotifier {
     return parsed.clamp(1, 30);
   }
 
-  // ---- allergy + course methods below unchanged ----
-
-  List<String> _allUserAllergies() {
-    if (_excludedAllergens.isEmpty && _childAllergens.isEmpty) return const [];
-    return <String>{..._excludedAllergens, ..._childAllergens}.toList();
-  }
-
-  List<String> _extractAllergyTags(Map<String, dynamic> recipe) {
-    final r = (recipe['recipe'] is Map)
-        ? Map<String, dynamic>.from(recipe['recipe'] as Map)
-        : recipe;
-
-    final out = <String>[];
-
-    void addFrom(dynamic v) {
-      if (v == null) return;
-
-      if (v is List) {
-        for (final item in v) {
-          if (item is String) {
-            final s = item.trim();
-            if (s.isNotEmpty) out.add(s);
-          } else if (item is Map) {
-            final m = Map<String, dynamic>.from(item);
-            final name = (m['slug'] ?? m['name'] ?? m['term'] ?? '')
-                .toString()
-                .trim();
-            if (name.isNotEmpty) out.add(name);
-          }
-        }
-        return;
-      }
-
-      if (v is String) {
-        final s = v.trim();
-        if (s.isNotEmpty) {
-          out.addAll(
-            s.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty),
-          );
-        }
-      }
-    }
-
-    final tags = r['tags'];
-    if (tags is Map) addFrom(tags['allergies']);
-
-    addFrom(r['wprm_allergies']);
-    addFrom(r['allergies']);
-    addFrom(r['allergy_tags']);
-
-    final norm = out
-        .map((s) => s.trim().toLowerCase())
-        .where((s) => s.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort();
-
-    return norm;
-  }
-
-  String _extractSwapText(Map<String, dynamic> recipe) {
-    final r = (recipe['recipe'] is Map)
-        ? Map<String, dynamic>.from(recipe['recipe'] as Map)
-        : recipe;
-
-    final cf = r['custom_fields'];
-    if (cf is Map) {
-      final v = (cf['ingredient_swaps'] ?? '').toString().trim();
-      if (v.isNotEmpty) return v;
-    }
-
-    final v2 =
-        (r['ingredient_swaps'] ?? r['swap_text'] ?? '').toString().trim();
-    return v2;
-  }
-
-  AllergyResult? _evaluateWithTags(Map<String, dynamic> recipe) {
-    final allergies = _allUserAllergies();
-    if (allergies.isEmpty) return null;
-
-    final tags = _extractAllergyTags(recipe);
-    if (tags.isEmpty) return null;
-
-    final swaps = _extractSwapText(recipe);
-
-    return AllergyEngine.evaluate(
-      recipeAllergyTags: tags,
-      swapFieldText: swaps,
-      userAllergies: allergies,
-    );
-  }
-
-  bool recipeAllowedForGeneration(Map<String, dynamic> recipe) {
-    final allergies = _allUserAllergies();
-    if (allergies.isEmpty) return true;
-
-    final res = _evaluateWithTags(recipe);
-    if (res == null) return false;
-    return res.status == AllergyStatus.safe;
-  }
-
-  bool recipeAllowed(Map<String, dynamic> recipe) => recipeAllowedForGeneration(recipe);
-
+  // -------------------------------------------------------
+  // Course parsing
+  // -------------------------------------------------------
   String? _extractCourse(Map<String, dynamic> recipe) {
     final r = recipe['recipe'] is Map ? (recipe['recipe'] as Map) : recipe;
     dynamic v;

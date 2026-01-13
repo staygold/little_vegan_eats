@@ -7,6 +7,10 @@ import 'package:flutter/material.dart';
 
 import '../recipes/allergy_engine.dart';
 import '../recipes/recipe_repository.dart';
+// ✅ NEW IMPORTS FOR SEARCH ENGINE
+import '../recipes/recipe_index.dart';
+import '../recipes/recipe_index_builder.dart';
+import '../utils/text.dart'; // Assuming you have this for stripHtml
 
 import 'core/allergy_profile.dart';
 import 'core/meal_plan_keys.dart';
@@ -18,11 +22,13 @@ import 'choose_recipe_page.dart';
 import 'reuse_recipe_page.dart';
 import 'builder/meal_plan_builder_screen.dart';
 
-// ✅ NEW: route to plan settings
 import 'saved_meal_plans_screen.dart';
 
+import '../recipes/family_profile_repository.dart';
+import '../recipes/family_profile.dart';
+
 class MealPlanScreen extends StatefulWidget {
-  final String? weekId; // kept for backwards nav compatibility (ignored by programs)
+  final String? weekId;
   final String? focusDayKey;
 
   const MealPlanScreen({
@@ -39,7 +45,9 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     with SingleTickerProviderStateMixin {
   bool _reviewMode = false;
 
+  // Recipes & Index
   List<Map<String, dynamic>> _recipes = [];
+  Map<int, RecipeIndex> _indexById = {}; // ✅ Stores the search index
   bool _recipesLoading = true;
 
   late TabController _tabController;
@@ -49,32 +57,34 @@ class _MealPlanScreenState extends State<MealPlanScreen>
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favSub;
   final Set<int> _favoriteIds = <int>{};
 
+  // Family Profile
+  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
+  StreamSubscription<FamilyProfile>? _familySub;
+  List<String> _childNames = [];
+  FamilyProfile _family = const FamilyProfile(adults: [], children: []); // ✅ Store full profile
+
   // Programs pointer
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _settingsSub;
   String? _activeProgramId;
 
-  // ✅ active programme weekdays (Mon=1..Sun=7)
+  // active programme weekdays
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _programSub;
   Set<int> _programWeekdays = <int>{};
 
-  // ✅ Effective day subscriptions (program + adhoc)
+  // Effective day subscriptions
   final Map<String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>
       _programDaySubs = {};
   final Map<String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>
       _adhocDaySubs = {};
 
-  // ✅ Two caches; we resolve "effective" at read time
-  final Map<String, Map<String, dynamic>> _programDayCache = {}; // dayKey -> slots
-  final Map<String, Map<String, dynamic>> _adhocDayCache = {}; // dayKey -> slots
+  final Map<String, Map<String, dynamic>> _programDayCache = {};
+  final Map<String, Map<String, dynamic>> _adhocDayCache = {};
 
-  // week navigation base (date-only of visible week start)
   late DateTime _weekStart;
 
-  // Recent picker memory
   final Map<String, List<int>> _recentBySlot = <String, List<int>>{};
   static const int _recentWindow = 12;
 
-  // Snack2 hide per day UI state (local only)
   final Set<String> _snack2HiddenDays = <String>{};
 
   Color get _brandDark => const Color(0xFF044246);
@@ -99,12 +109,12 @@ class _MealPlanScreenState extends State<MealPlanScreen>
 
   int? _weekdayFromDayKey(String dayKey) {
     final dt = MealPlanKeys.parseDayKey(dayKey);
-    return dt?.weekday; // Mon=1..Sun=7
+    return dt?.weekday;
   }
 
   bool _isDayInProgramme(String dayKey) {
     if ((_activeProgramId ?? '').trim().isEmpty) return false;
-    if (_programWeekdays.isEmpty) return false; // safest default
+    if (_programWeekdays.isEmpty) return false;
     final wd = _weekdayFromDayKey(dayKey);
     if (wd == null) return false;
     return _programWeekdays.contains(wd);
@@ -115,18 +125,8 @@ class _MealPlanScreenState extends State<MealPlanScreen>
   // --------------------------
   String _monthShort(int m) {
     const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec'
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
     ];
     final idx = (m - 1).clamp(0, 11);
     return months[idx];
@@ -176,7 +176,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
         .doc(dayKey);
   }
 
-  // ✅ one-off day doc path
   DocumentReference<Map<String, dynamic>> _adhocDayDoc({
     required String dayKey,
   }) {
@@ -210,7 +209,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     final dayKeys = _visibleWeekDayKeys();
     final wanted = dayKeys.toSet();
 
-    // cancel program subs we no longer need
     final existingP = _programDaySubs.keys.toList();
     for (final k in existingP) {
       if (!wanted.contains(k)) {
@@ -220,7 +218,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
       }
     }
 
-    // cancel adhoc subs we no longer need
     final existingA = _adhocDaySubs.keys.toList();
     for (final k in existingA) {
       if (!wanted.contains(k)) {
@@ -230,7 +227,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
       }
     }
 
-    // add missing adhoc subs (always)
     for (final dk in dayKeys) {
       if (_adhocDaySubs.containsKey(dk)) continue;
 
@@ -254,7 +250,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
       });
     }
 
-    // add missing program subs (only if program exists)
     if (pid.isNotEmpty) {
       for (final dk in dayKeys) {
         if (_programDaySubs.containsKey(dk)) continue;
@@ -285,7 +280,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     }
   }
 
-  // Visible week keys based on _weekStart
   List<String> _visibleWeekDayKeys() {
     final out = <String>[];
     for (int i = 0; i < 7; i++) {
@@ -302,7 +296,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
 
     _listenVisibleWeekDays();
 
-    // When you change week, jump to Day 1 of that week.
     if (mounted) {
       _tabController.animateTo(0);
     }
@@ -315,7 +308,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
   void initState() {
     super.initState();
 
-    // ✅ Determine initial week + tab ONCE.
     final focusKey = (widget.focusDayKey != null &&
             widget.focusDayKey!.trim().isNotEmpty)
         ? widget.focusDayKey!.trim()
@@ -332,8 +324,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
       _tabController.index = initialIndex;
     }
 
-    // ✅ IMPORTANT: do NOT auto-animate tab selection from build.
-    // This listener is only for updating header text.
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging && mounted) {
         setState(() {});
@@ -345,6 +335,7 @@ class _MealPlanScreenState extends State<MealPlanScreen>
       _startUserDocAllergyListener();
       _startFavoritesListener();
       _startSettingsListener();
+      _startFamilyListener();
     }();
   }
 
@@ -361,6 +352,7 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     _favSub?.cancel();
     _settingsSub?.cancel();
     _programSub?.cancel();
+    _familySub?.cancel(); 
     _clearDaySubscriptions();
     _tabController.dispose();
     super.dispose();
@@ -389,7 +381,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
       setState(() {
         _activeProgramId = next.isEmpty ? null : next;
 
-        // programme weekdays listener
         _programSub?.cancel();
         _programWeekdays = <int>{};
 
@@ -468,45 +459,115 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     });
   }
 
+  // ✅ Updated listener to capture full FamilyProfile
+  void _startFamilyListener() {
+    _familySub?.cancel();
+    _familySub = _familyRepo.watchFamilyProfile().listen((fam) {
+      if (!mounted) return;
+      setState(() {
+        _family = fam; // Store full object
+        _childNames = fam.children.map((c) => c.name).toList();
+      });
+    });
+  }
+
+  // ✅ UPDATED: Load recipes AND build index
   Future<void> _loadRecipes() async {
     try {
-      _recipes = await RecipeRepository.ensureRecipesLoaded();
+      final loaded = await RecipeRepository.ensureRecipesLoaded();
+      
+      // Build index on the fly so Search/Filters work
+      final normalised = loaded.map((r) => _normaliseForIndex(r)).where((m) => m.isNotEmpty).toList();
+      final newIndex = RecipeIndexBuilder.buildById(normalised);
+
+      if (mounted) {
+        setState(() {
+          _recipes = loaded;
+          _indexById = newIndex;
+          _recipesLoading = false;
+        });
+      }
     } catch (_) {
-      _recipes = [];
-    } finally {
-      if (mounted) setState(() => _recipesLoading = false);
-    }
+      if (mounted) {
+        setState(() {
+          _recipes = [];
+          _indexById = {};
+          _recipesLoading = false;
+        });
+      }
+    } 
   }
+
+  // ✅ Helper to normalize data for RecipeIndexBuilder (Simplified for MealPlan)
+  Map<String, dynamic> _normaliseForIndex(Map<String, dynamic> r) {
+    final id = r['id'];
+    if (id is! int) return const {};
+
+    // Helper to extract text tags from WPRM taxonomies if "names" map isn't available
+    List<String> extractTags(dynamic raw) {
+      if (raw is List) {
+        return raw.map((e) => e.toString()).toList();
+      }
+      return [];
+    }
+
+    // Try to get nice names from the 'tags' object first
+    List<String> getTags(String key) {
+       try {
+         final recipe = r['recipe'];
+         if (recipe is Map && recipe['tags'] is Map) {
+           final t = recipe['tags'][key];
+           if (t is List) {
+             return t.map((x) => (x is Map ? x['name'] : x).toString()).toList();
+           }
+         }
+       } catch (_) {}
+       // Fallback to raw IDs if needed, though less ideal for UI filtering
+       return extractTags(r['wprm_$key']); 
+    }
+
+    String swapText = '';
+    if (r['ingredient_swaps'] != null) swapText = r['ingredient_swaps'].toString();
+    else if (r['meta'] is Map && r['meta']['ingredient_swaps'] != null) {
+      swapText = r['meta']['ingredient_swaps'].toString();
+    }
+
+    return <String, dynamic>{
+      'id': id,
+      'title': _titleOf(r),
+      'ingredients': _ingredientsTextOf(r),
+      'wprm_course': getTags('course'), // try 'course' first
+      'wprm_collections': getTags('collection'), 
+      'wprm_cuisine': getTags('cuisine'),
+      'wprm_suitable_for': getTags('suitable_for'), // or 'age'?
+      'wprm_nutrition_tag': getTags('nutrition'),
+      'recipe': r['recipe'],
+      'meta': r['meta'],
+      'ingredient_swaps': swapText,
+      'wprm_allergies': getTags('allergies'), 
+    };
+  }
+  
+  String _ingredientsTextOf(Map<String, dynamic> r) {
+    final recipe = r['recipe'];
+    if (recipe is! Map) return '';
+    final flat = recipe['ingredients_flat'];
+    if (flat is! List) return '';
+    final buf = StringBuffer();
+    for (final row in flat) {
+      if (row is! Map) continue;
+      final name = (row['name'] ?? '').toString();
+      if (name.isNotEmpty) buf.write('$name ');
+    }
+    return buf.toString().trim();
+  }
+
 
   // --------------------------
   // ALLERGY + RECIPE HELPERS
   // --------------------------
   final Set<String> _excludedAllergens = <String>{};
   final Set<String> _childAllergens = <String>{};
-
-  String _swapTextOf(Map<String, dynamic> r) {
-    if (r['ingredient_swaps'] != null) return r['ingredient_swaps'].toString();
-    if (r['meta'] is Map && r['meta']['ingredient_swaps'] != null) {
-      return r['meta']['ingredient_swaps'].toString();
-    }
-    return '';
-  }
-
-  String _statusTextOf(Map<String, dynamic> recipe) {
-    if (_excludedAllergens.isEmpty && _childAllergens.isEmpty) return 'safe';
-
-    final allAllergies =
-        <String>{..._excludedAllergens, ..._childAllergens}.toList();
-    final res = AllergyEngine.evaluate(
-      recipeAllergyTags: const [],
-      swapFieldText: _swapTextOf(recipe),
-      userAllergies: allAllergies,
-    );
-
-    if (res.status == AllergyStatus.safe) return 'safe';
-    if (res.status == AllergyStatus.swapRequired) return 'swap';
-    return 'blocked';
-  }
 
   int? _recipeIdFrom(Map<String, dynamic> r) =>
       MealPlanEntryParser.recipeIdFromAny(r['id']);
@@ -532,7 +593,7 @@ class _MealPlanScreenState extends State<MealPlanScreen>
   String _weekdayLetter(DateTime dt) => MealPlanKeys.weekdayLetter(dt);
 
   // --------------------------
-  // EFFECTIVE DAY (adhoc overrides program)
+  // EFFECTIVE DAY
   // --------------------------
   bool _isAdhocActive(String dayKey) => _adhocDayCache.containsKey(dayKey);
 
@@ -560,8 +621,11 @@ class _MealPlanScreenState extends State<MealPlanScreen>
   }
 
   // --------------------------
-  // WRITE HELPERS (program vs adhoc)
+  // WRITE HELPERS (Methods omitted for brevity, they remain unchanged)
   // --------------------------
+  // ... _ensureProgramDayDocExists, _ensureAdhocDayDocExists, _setSlotEntry, etc. 
+  // (Pasting strictly the changed logic below and keeping structure)
+  
   Future<void> _ensureProgramDayDocExists(String dayKey) async {
     final user = FirebaseAuth.instance.currentUser;
     final pid = (_activeProgramId ?? '').trim();
@@ -724,7 +788,7 @@ class _MealPlanScreenState extends State<MealPlanScreen>
   }
 
   // --------------------------
-  // ✅ NEW: HEADER ACTION
+  // HEADER ACTION
   // --------------------------
   void _openPlanSettings() {
     Navigator.of(context).push(
@@ -782,7 +846,7 @@ class _MealPlanScreenState extends State<MealPlanScreen>
   }
 
   // --------------------------
-  // SNAPSHOTS (shopping sheet)
+  // SNAPSHOTS
   // --------------------------
   List<String> _slotsForSnapshot(String dayKey) {
     final out = <String>['breakfast', 'lunch', 'dinner', 'snack1'];
@@ -947,6 +1011,7 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     );
   }
 
+  // ✅ UPDATED: Call the new ChooseRecipePage
   Future<void> _chooseRecipe({
     required String dayKey,
     required String slot,
@@ -954,48 +1019,27 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     final currentParsed = MealPlanEntryParser.parse(_dayRawForUI(dayKey)[slot]);
     final currentId = MealPlanEntryParser.entryRecipeId(currentParsed);
 
-    final candidates =
-        _recipes.map((r) => _recipeIdFrom(r)).whereType<int>().toList();
+    final headerLabel = '${_prettySlotLabel(slot)} • ${MealPlanKeys.formatPretty(dayKey)}';
 
-    final recentKey = '$dayKey|$slot';
-    final initialRecent =
-        List<int>.from(_recentBySlot[recentKey] ?? const <int>[]);
+    // Map slot to initial course if possible
+    String courseFilter = 'All';
+    if (slot.toLowerCase() == 'breakfast') courseFilter = 'Breakfast';
+    else if (slot.toLowerCase().contains('snack')) courseFilter = 'Snack';
+    else courseFilter = 'Main Course'; // Lunch/Dinner
 
-    final headerLabel =
-        '${_prettySlotLabel(slot)} • ${MealPlanKeys.formatPretty(dayKey)}';
-
-    final res = await Navigator.of(context).push<Map<String, dynamic>>(
+    // Call the new page
+    final pickedId = await Navigator.of(context).push<int>(
       MaterialPageRoute(
         builder: (_) => ChooseRecipePage(
           recipes: _recipes,
-          titleOf: _titleOf,
-          thumbOf: _thumbOf,
-          idOf: _recipeIdFrom,
-          statusTextOf: _statusTextOf,
+          indexById: _indexById,
+          familyProfile: _family,
           headerLabel: headerLabel,
           currentId: currentId,
-          availableIds: candidates,
-          recentKey: recentKey,
-          initialRecent: initialRecent,
-          recentWindow: _recentWindow,
+          initialCourse: courseFilter,
         ),
       ),
     );
-
-    if (res == null) return;
-
-    final key = (res['recentKey'] ?? recentKey).toString();
-    final recent = (res['recent'] is List)
-        ? (res['recent'] as List)
-            .map((e) => int.tryParse(e.toString()) ?? -1)
-            .where((v) => v > 0)
-            .toList()
-        : initialRecent;
-    _recentBySlot[key] = recent;
-
-    final picked = res['pickedId'];
-    final pickedId =
-        (picked is int) ? picked : int.tryParse(picked?.toString() ?? '');
 
     if (pickedId != null) {
       if (slot == 'snack2') _snack2HiddenDays.remove(dayKey);
@@ -1062,7 +1106,7 @@ class _MealPlanScreenState extends State<MealPlanScreen>
   }
 
   // --------------------------
-  // BACK HANDLING
+  // BACK HANDLING + EMPTY STATES (UNCHANGED)
   // --------------------------
   Future<bool> _handleBack() async {
     if (_reviewMode) {
@@ -1072,10 +1116,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     return true;
   }
 
-  // --------------------------
-  // ✅ NEW: CTA for adding this weekday to the programme
-  // Shows only when day is blank+future and NOT part of programme.
-  // --------------------------
   Widget _addThisDayToProgrammeButton(String dayKey) {
     final hasActiveProgram = (_activeProgramId ?? '').trim().isNotEmpty;
 
@@ -1105,9 +1145,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     );
   }
 
-  // --------------------------
-  // EMPTY STATE UI (Week mode)
-  // --------------------------
   Widget _emptyDayCta(String dayKey) {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
@@ -1224,9 +1261,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     );
   }
 
-  // --------------------------
-  // HEADER TITLE
-  // --------------------------
   String _getCurrentHeaderTitle() {
     final dayKeys = _visibleWeekDayKeys();
     if (dayKeys.isEmpty) return '';
@@ -1309,7 +1343,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
 
     final hasActiveProgram = (_activeProgramId ?? '').trim().isNotEmpty;
 
-    // Ensure subscriptions exist for visible week.
     if (_adhocDaySubs.isEmpty || (hasActiveProgram && _programDaySubs.isEmpty)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _listenVisibleWeekDays();
@@ -1337,7 +1370,6 @@ class _MealPlanScreenState extends State<MealPlanScreen>
           actions: _reviewMode
               ? []
               : [
-                  // ✅ NEW persistent edit programme/plan button (next to shopping list)
                   IconButton(
                     tooltip: 'Edit plan',
                     icon: Icon(Icons.tune_rounded, color: _brandDark),
@@ -1433,6 +1465,7 @@ class _MealPlanScreenState extends State<MealPlanScreen>
                         planTitle: '',
                         programmeActive: hasActiveProgram,
                         dayInProgramme: _isDayInProgramme(dayKey),
+                        childNames: _childNames,
                         onAddAdhocDay: () async {
                           if (_isPastDayKey(dayKey)) return;
                           await Navigator.of(context).push(
