@@ -1,4 +1,5 @@
 // lib/shell/app_shell.dart
+import 'dart:ui' show FontVariation;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -6,7 +7,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import '../home/home_screen.dart';
 import '../recipes/recipe_hub_screen.dart';
 import '../meal_plan/plans_hub_screen.dart';
-import '../lists/lists_hub_screen.dart'; // 👈 NEW
+import '../lists/lists_hub_screen.dart';
 import '../profile/profile_screen.dart';
 
 import 'top_header_bar.dart';
@@ -27,10 +28,10 @@ class _AppShellState extends State<AppShell> {
   static const int _familyIndex = 4;
 
   final List<Widget> _pages = const [
-    HomeScreen(),        // 0
-    RecipeHubScreen(),   // 1
-    PlansHubScreen(),    // 2
-    ListsHubScreen(),    // 3  👈 NEW
+    HomeScreen(),       // 0
+    RecipeHubScreen(),  // 1
+    PlansHubScreen(),   // 2
+    ListsHubScreen(),   // 3
     ProfileScreen(),    // 4 (Family)
   ];
 
@@ -67,6 +68,22 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
+  BottomNavigationBarItem _item({
+    required String asset,
+    required String label,
+    required bool isFamily,
+  }) {
+    // When on Family/Profile, make activeIcon identical to icon so
+    // nothing ever looks "selected".
+    final icon = _navIcon(asset, false);
+
+    return BottomNavigationBarItem(
+      icon: icon,
+      activeIcon: isFamily ? icon : _navIcon(asset, true),
+      label: label,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context).copyWith(
@@ -76,8 +93,22 @@ class _AppShellState extends State<AppShell> {
       hoverColor: Colors.transparent,
     );
 
+    final bool isFamily = _index == _familyIndex;
+
     // Bottom nav only maps to first 4 pages
-    final int bottomIndex = (_index <= 3) ? _index : 3;
+    final int bottomIndex = _index.clamp(0, 3);
+
+    // When on Family, force a valid index but style it so nothing looks selected.
+    final int navIndex = isFamily ? 0 : bottomIndex;
+
+    final Color navSelectedColor = isFamily ? inactiveColor : activeColor;
+    final Color navUnselectedColor = inactiveColor;
+
+    final TextStyle navLabelStyle = const TextStyle(
+      fontFamily: 'Montserrat',
+      fontWeight: FontWeight.w700,
+      fontVariations: [FontVariation('wght', 700)],
+    );
 
     return Scaffold(
       body: Column(
@@ -95,7 +126,6 @@ class _AppShellState extends State<AppShell> {
           ),
         ],
       ),
-
       bottomNavigationBar: Theme(
         data: theme,
         child: Container(
@@ -113,53 +143,45 @@ class _AppShellState extends State<AppShell> {
             child: Padding(
               padding: const EdgeInsets.only(top: 6),
               child: BottomNavigationBar(
-                currentIndex: bottomIndex,
+                currentIndex: navIndex,
                 onTap: (i) {
-                  if (i == bottomIndex) return;
+                  // Always navigate to actual tab pages (0..3)
+                  if (i == bottomIndex && !isFamily) return;
                   setState(() => _index = i);
                 },
                 type: BottomNavigationBarType.fixed,
                 backgroundColor: Colors.white,
                 elevation: 0,
                 iconSize: iconSize,
-                selectedItemColor: activeColor,
-                unselectedItemColor: inactiveColor,
+
+                // ✅ Make selected + unselected look the same when on Family
+                selectedItemColor: navSelectedColor,
+                unselectedItemColor: navUnselectedColor,
                 selectedFontSize: 12,
                 unselectedFontSize: 12,
-                selectedLabelStyle: const TextStyle(
-                  fontFamily: 'Montserrat',
-                  fontWeight: FontWeight.w700,
-                  fontVariations: [FontVariation('wght', 700)],
-                ),
-                unselectedLabelStyle: const TextStyle(
-                  fontFamily: 'Montserrat',
-                  fontWeight: FontWeight.w700,
-                  fontVariations: [FontVariation('wght', 700)],
-                ),
+                selectedLabelStyle: navLabelStyle,
+                unselectedLabelStyle: navLabelStyle,
+
                 items: [
-                  BottomNavigationBarItem(
-                    icon: _navIcon('assets/images/icons/home.svg', false),
-                    activeIcon:
-                        _navIcon('assets/images/icons/home.svg', true),
+                  _item(
+                    asset: 'assets/images/icons/home.svg',
                     label: 'Home',
+                    isFamily: isFamily,
                   ),
-                  BottomNavigationBarItem(
-                    icon: _navIcon('assets/images/icons/recipes.svg', false),
-                    activeIcon:
-                        _navIcon('assets/images/icons/recipes.svg', true),
+                  _item(
+                    asset: 'assets/images/icons/recipes.svg',
                     label: 'Recipes',
+                    isFamily: isFamily,
                   ),
-                  BottomNavigationBarItem(
-                    icon: _navIcon('assets/images/icons/plans.svg', false),
-                    activeIcon:
-                        _navIcon('assets/images/icons/plans.svg', true),
+                  _item(
+                    asset: 'assets/images/icons/plans.svg',
                     label: 'Plans',
+                    isFamily: isFamily,
                   ),
-                  BottomNavigationBarItem(
-                    icon: _navIcon('assets/images/icons/lists.svg', false),
-                    activeIcon:
-                        _navIcon('assets/images/icons/lists.svg', true),
+                  _item(
+                    asset: 'assets/images/icons/lists.svg',
                     label: 'Lists',
+                    isFamily: isFamily,
                   ),
                 ],
               ),

@@ -57,6 +57,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   // -----------------------
+  // ✅ provider helpers
+  // -----------------------
+  bool _isPasswordUser(User user) {
+    // providerId examples: "password", "google.com", "apple.com"
+    return user.providerData.any((p) => p.providerId == 'password');
+  }
+
+  // -----------------------
   // ✅ unified read
   // -----------------------
   String _readParentName(Map<String, dynamic> data) {
@@ -530,7 +538,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _emailVerifyBanner(BuildContext context) {
+  Widget _emailVerifyBanner(BuildContext context, User user) {
+    // ✅ Only show for email/password users who are not verified.
+    if (!_isPasswordUser(user)) return const SizedBox.shrink();
     if (_emailVerified) return const SizedBox.shrink();
 
     return Padding(
@@ -575,15 +585,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     onPressed: () async {
                       await _syncEmailVerified();
                       if (!mounted) return;
-                      if (_emailVerified) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Email verified')),
-                        );
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Not verified yet')),
-                        );
-                      }
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            _emailVerified ? 'Email verified' : 'Not verified yet',
+                          ),
+                        ),
+                      );
                     },
                     style: TextButton.styleFrom(foregroundColor: Colors.white),
                     child: const Text("I've verified"),
@@ -627,11 +636,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
         // Keep local state aligned with auth changes (no setState here)
         _emailVerified = user.emailVerified;
-
-        // ✅ reset ensures if a different user signs in
-        // (rare, but prevents stale flags if you test multiple accounts)
-        // ignore: unrelated_type_equality_checks
-        // (no need to store uid; this screen gets rebuilt via auth gate anyway)
 
         final docRef =
             FirebaseFirestore.instance.collection('users').doc(user.uid);
@@ -726,7 +730,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
-                            _emailVerifyBanner(context),
+
+                            // ✅ only shows for password users + not verified
+                            _emailVerifyBanner(context, user),
+
                             const SizedBox(height: 16),
                             SizedBox(
                               height: 52,
@@ -888,15 +895,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               );
                             },
                           ),
-                          const SizedBox(height: 12),
-                          _bigOutlineButton(
-                            label: 'SETTINGS',
-                            onTap: () {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Settings (TODO)')),
-                              );
-                            },
-                          ),
+                         
                           const SizedBox(height: 12),
                           _bigOutlineButton(
                             label: 'SIGN OUT',

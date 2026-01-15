@@ -5,8 +5,8 @@ import 'dart:ui' show FontVariation;
 import 'package:flutter/material.dart';
 
 import '../../recipes/recipe_detail_screen.dart';
-import '../../recipes/widgets/recipe_card.dart'; // Still used for non-smart variants (empty/notes)
-import '../../recipes/widgets/smart_recipe_card.dart'; // ✅ The Smart Component
+import '../../recipes/widgets/recipe_card.dart';
+import '../../recipes/widgets/smart_recipe_card.dart';
 import '../../theme/app_theme.dart';
 import '../core/meal_plan_keys.dart';
 import 'meal_plan_entry_parser.dart';
@@ -15,6 +15,7 @@ class TodayMealPlanSection extends StatelessWidget {
   const TodayMealPlanSection({
     super.key,
     required this.todayRaw,
+    this.tomorrowRaw,
     required this.recipes,
     required this.favoriteIds,
     this.childNames = const [],
@@ -51,6 +52,7 @@ class TodayMealPlanSection extends StatelessWidget {
   });
 
   final Map<String, dynamic> todayRaw;
+  final Map<String, dynamic>? tomorrowRaw;
   final List<Map<String, dynamic>> recipes;
   final Set<int> favoriteIds;
   final List<String> childNames;
@@ -104,32 +106,6 @@ class TodayMealPlanSection extends StatelessWidget {
       onSaveChanges != null;
 
   VoidCallback? get _mainAction => onOpenWeek;
-
-  int _clampWght(int v) => v.clamp(100, 900);
-
-  FontWeight _fontWeightFromWght(int w) {
-    final step = (w / 100).round().clamp(1, 9);
-    switch (step) {
-      case 1:
-        return FontWeight.w100;
-      case 2:
-        return FontWeight.w200;
-      case 3:
-        return FontWeight.w300;
-      case 4:
-        return FontWeight.w400;
-      case 5:
-        return FontWeight.w500;
-      case 6:
-        return FontWeight.w600;
-      case 7:
-        return FontWeight.w700;
-      case 8:
-        return FontWeight.w800;
-      default:
-        return FontWeight.w900;
-    }
-  }
 
   // -----------------------------
   // THEME TOKENS
@@ -203,9 +179,9 @@ class TodayMealPlanSection extends StatelessWidget {
     return k;
   }
 
-  Map<String, Map<String, dynamic>> _parsedBySlot() {
+  Map<String, Map<String, dynamic>> _parseMap(Map<String, dynamic> raw) {
     final parsedBySlot = <String, Map<String, dynamic>>{};
-    for (final e in todayRaw.entries) {
+    for (final e in raw.entries) {
       final slotKey = _normaliseSlotKey(e.key.toString());
       final parsed = MealPlanEntryParser.parse(e.value);
       if (parsed == null) continue;
@@ -213,6 +189,8 @@ class TodayMealPlanSection extends StatelessWidget {
     }
     return parsedBySlot;
   }
+
+  Map<String, Map<String, dynamic>> _parsedToday() => _parseMap(todayRaw);
 
   bool _hasAnyPlannedEntry(Map<String, Map<String, dynamic>> parsedBySlot) {
     if (parsedBySlot.isEmpty) return false;
@@ -259,7 +237,7 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   // -----------------------------
-  // EDITING ACTIONS (Used by non-smart cards & Smart wrapper)
+  // EDITING ACTIONS
   // -----------------------------
   List<Widget> _buildActionButtons({
     required String slotKey,
@@ -321,7 +299,6 @@ class TodayMealPlanSection extends StatelessWidget {
     return buttons;
   }
 
-  // Fallback for legacy calls (notes, empty slots)
   Widget _slotActions({
     required BuildContext context,
     required String slotKey,
@@ -333,14 +310,14 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   // -----------------------------
-  // HEADER (shared)
+  // HERO & HEADER
   // -----------------------------
-  Widget _heroHeader(BuildContext context) {
+  Widget _heroHeader(BuildContext context, {String? customTitle}) {
     final showPlanTitle = (planTitle?.trim().isNotEmpty == true);
     final showHeroText =
         heroTopText.trim().isNotEmpty || heroBottomText.trim().isNotEmpty;
 
-    if (!showPlanTitle && !showHeroText) {
+    if (!showPlanTitle && !showHeroText && customTitle == null) {
       return const SizedBox.shrink();
     }
 
@@ -364,6 +341,9 @@ class TodayMealPlanSection extends StatelessWidget {
       height: 1.05,
     );
 
+    final displayText = customTitle ??
+        '${heroTopText.trim()} ${heroBottomText.trim()}'.trim();
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(AppSpace.s16, 18, AppSpace.s16, 14),
       child: Column(
@@ -378,9 +358,9 @@ class TodayMealPlanSection extends StatelessWidget {
             ),
             const SizedBox(height: 6),
           ],
-          if (showHeroText)
+          if (customTitle != null || showHeroText)
             Text(
-              '${heroTopText.trim()} ${heroBottomText.trim()}'.trim(),
+              displayText,
               style: heroStyle,
             ),
         ],
@@ -389,7 +369,7 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   // -----------------------------
-  // LABELS + REUSE
+  // REUSE & LABELS
   // -----------------------------
   String _slotLabel(String slotKey) {
     switch (slotKey) {
@@ -411,11 +391,9 @@ class TodayMealPlanSection extends StatelessWidget {
   String _prettyReuseLabel(Map<String, String> meta) {
     final dk = (meta['dayKey'] ?? '').toString().trim();
     final sl = (meta['slot'] ?? '').toString().trim();
-
     final prettyDay =
         dk.isNotEmpty ? MealPlanKeys.formatPretty(dk) : 'Unknown day';
     final prettySlot = sl.isNotEmpty ? _slotLabel(sl) : 'Meal';
-
     return 'Reused from $prettyDay • $prettySlot';
   }
 
@@ -431,7 +409,7 @@ class TodayMealPlanSection extends StatelessWidget {
   }
 
   // -----------------------------
-  // ✅ UNIFIED CARD BUILDER
+  // CARD BUILDER
   // -----------------------------
   Widget _mealCard({
     required BuildContext context,
@@ -439,12 +417,10 @@ class TodayMealPlanSection extends StatelessWidget {
     required Map<String, dynamic>? entry,
     String? displaySlotLabel,
   }) {
-    // 0. FIRST FOODS
     if (MealPlanEntryParser.isFirstFoods(entry)) {
       final childName = MealPlanEntryParser.childName(entry);
       final nameText =
           (childName != null && childName.isNotEmpty) ? childName : 'your baby';
-
       return RecipeCard(
         title: 'First foods for $nameText',
         subtitle: 'Baby snack ideas',
@@ -455,13 +431,11 @@ class TodayMealPlanSection extends StatelessWidget {
       );
     }
 
-    // 0.5 NO SUITABLE MEALS
     if ((entry?['type'] ?? '').toString() == 'clear' &&
         MealPlanEntryParser.clearReason(entry) == 'no_suitable_meals_baby') {
       final childName = MealPlanEntryParser.childName(entry);
       final nameText =
           (childName != null && childName.isNotEmpty) ? childName : 'your baby';
-
       return RecipeCard(
         title: 'No suitable meals for $nameText yet',
         subtitle: 'Try a different slot or add first foods',
@@ -472,7 +446,6 @@ class TodayMealPlanSection extends StatelessWidget {
       );
     }
 
-    // 1. NOTES
     final note = MealPlanEntryParser.entryNoteText(entry);
     if (note != null) {
       return RecipeCard(
@@ -485,7 +458,6 @@ class TodayMealPlanSection extends StatelessWidget {
       );
     }
 
-    // 2. EMPTY SLOT
     if (_isEmptyOrClear(entry)) {
       return RecipeCard(
         title: 'Not planned yet',
@@ -497,7 +469,6 @@ class TodayMealPlanSection extends StatelessWidget {
       );
     }
 
-    // 3. RECIPE
     final rid = MealPlanEntryParser.entryRecipeId(entry);
     if (rid != null) {
       final r = _byId(rid);
@@ -506,15 +477,17 @@ class TodayMealPlanSection extends StatelessWidget {
         final thumb = _thumbOf(r);
         final fav = _isFavorited(rid);
 
-        // Handle Leftover logic at card level if needed, or inside SmartCard
         if (_isLeftoverEntry(entry)) {
-           // Leftovers act like reused items usually
-           return RecipeCard(
+          return RecipeCard(
             title: displayTitle,
             subtitle: 'Leftover',
             imageUrl: thumb,
             badge: fav ? _favBadge() : null,
-            trailing: _slotActions(context: context, slotKey: slotKey, hasEntry: true),
+            trailing: _slotActions(
+              context: context,
+              slotKey: slotKey,
+              hasEntry: true,
+            ),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
             ),
@@ -522,7 +495,6 @@ class TodayMealPlanSection extends StatelessWidget {
         }
 
         final reuseMeta = MealPlanEntryParser.entryReuseFrom(entry);
-
         if (reuseMeta != null) {
           final subtitleText = _prettyReuseLabel(reuseMeta);
           return RecipeCard(
@@ -530,70 +502,63 @@ class TodayMealPlanSection extends StatelessWidget {
             subtitle: subtitleText,
             imageUrl: thumb,
             badge: fav ? _favBadge() : null,
-            trailing: _slotActions(context: context, slotKey: slotKey, hasEntry: true),
+            trailing: _slotActions(
+              context: context,
+              slotKey: slotKey,
+              hasEntry: true,
+            ),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
             ),
-          );
-        } else {
-          // ✅ NORMAL RECIPE: USE SMART COMPONENT
-          
-          // A. Extract Warnings
-          final rawWarnings = entry?['warnings'];
-          final List<dynamic> warnings = (rawWarnings is List) ? rawWarnings : [];
-
-          // B. Extract Allergy Status
-          String? allergyStatus; 
-          // If the entry parser set a warning for allergy, use it.
-          // Otherwise, we assume safe if this card was allowed in the plan.
-          // Or we can default to "Safe for whole family".
-          
-          final swapWarning = warnings.firstWhere(
-            (w) => (w is Map) && (w['type'] == 'allergy_swap' || (w['message']?.toString().toLowerCase().contains('swap') ?? false)),
-            orElse: () => null,
-          );
-
-          if (swapWarning != null) {
-            allergyStatus = swapWarning['message'] ?? 'Needs swap';
-          } else {
-            allergyStatus = "Safe for whole family"; // Default positive
-          }
-
-          // C. Extract Age Warning
-          String? ageWarning;
-          final ageW = warnings.firstWhere(
-            (w) => (w is Map) && w != swapWarning, 
-            orElse: () => null
-          );
-          if (ageW != null) {
-            ageWarning = ageW['message'];
-          }
-
-          // D. Generate Buttons for SmartCard
-          final actions = _buildActionButtons(slotKey: slotKey, hasEntry: true);
-
-          return SmartRecipeCard(
-            title: displayTitle,
-            imageUrl: thumb,
-            isFavorite: fav,
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
-            ),
-            
-            // Pass Data
-            tags: const [], // Meal plan hides tags for cleaner look
-            allergyStatus: allergyStatus,
-            ageWarning: ageWarning,
-            childNames: childNames,
-            
-            // Pass Buttons
-            actions: actions,
           );
         }
+
+        final rawWarnings = entry?['warnings'];
+        final List<dynamic> warnings = (rawWarnings is List) ? rawWarnings : [];
+
+        String? allergyStatus;
+        final swapWarning = warnings.firstWhere(
+          (w) =>
+              (w is Map) &&
+              (w['type'] == 'allergy_swap' ||
+                  (w['message']?.toString().toLowerCase().contains('swap') ??
+                      false)),
+          orElse: () => null,
+        );
+
+        if (swapWarning != null) {
+          allergyStatus = swapWarning['message'] ?? 'Needs swap';
+        } else {
+          allergyStatus = "Safe for whole family";
+        }
+
+        String? ageWarning;
+        final ageW = warnings.firstWhere(
+          (w) => (w is Map) && w != swapWarning,
+          orElse: () => null,
+        );
+        if (ageW != null) {
+          ageWarning = ageW['message'];
+        }
+
+        final actions = _buildActionButtons(slotKey: slotKey, hasEntry: true);
+
+        return SmartRecipeCard(
+          title: displayTitle,
+          imageUrl: thumb,
+          isFavorite: fav,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: rid)),
+          ),
+          tags: const [],
+          allergyStatus: allergyStatus,
+          ageWarning: ageWarning,
+          childNames: childNames,
+          actions: actions,
+        );
       }
     }
 
-    // 4. FALLBACK
     final reuseMeta = MealPlanEntryParser.entryReuseFrom(entry);
     if (reuseMeta != null) {
       return RecipeCard(
@@ -606,13 +571,11 @@ class TodayMealPlanSection extends StatelessWidget {
       );
     }
 
-    // 5. UNKNOWN
     return RecipeCard(
       title: 'Unknown item',
       subtitle: null,
       imageUrl: null,
-      trailing:
-          _slotActions(context: context, slotKey: slotKey, hasEntry: true),
+      trailing: _slotActions(context: context, slotKey: slotKey, hasEntry: true),
       onTap: null,
     );
   }
@@ -687,9 +650,6 @@ class TodayMealPlanSection extends StatelessWidget {
     );
   }
 
-  // ... (Rest of file: _plannedSnacks, _emptyProgrammeNotScheduled, _emptyNoProgrammeYet, _nonHomeSection, _homeSection, _homeAccordionItem, _EmptyCtaCard, _HomeAccordionScaffold) ...
-  // (These sections remain unchanged from your base code, just ensure they are included in the file)
-  
   List<MapEntry<String, Map<String, dynamic>>> _plannedSnacks(
     Map<String, Map<String, dynamic>> parsed,
   ) {
@@ -710,8 +670,7 @@ class TodayMealPlanSection extends StatelessWidget {
         children: [
           _heroHeader(context),
           Padding(
-            padding:
-                const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
+            padding: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
             child: _EmptyCtaCard(
               title: notScheduledTitle,
               body: notScheduledBody,
@@ -732,8 +691,7 @@ class TodayMealPlanSection extends StatelessWidget {
         children: [
           _heroHeader(context),
           Padding(
-            padding:
-                const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
+            padding: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
             child: _EmptyCtaCard(
               title: emptyTitle,
               body: emptyBody,
@@ -746,11 +704,15 @@ class TodayMealPlanSection extends StatelessWidget {
     );
   }
 
+  // Non-home
   Widget _nonHomeSection(BuildContext context) {
-    final parsed = _parsedBySlot();
+    final parsed = _parsedToday();
     final hasPlanned = _hasAnyPlannedEntry(parsed);
 
-    if (!hasPlanned && programmeActive && !dayInProgramme && onAddAdhocDay != null) {
+    if (!hasPlanned &&
+        programmeActive &&
+        !dayInProgramme &&
+        onAddAdhocDay != null) {
       return _emptyProgrammeNotScheduled(context);
     }
 
@@ -815,11 +777,17 @@ class TodayMealPlanSection extends StatelessWidget {
     );
   }
 
+  // -----------------------------
+  // HOME SECTION (Accordion)
+  // -----------------------------
   Widget _homeSection(BuildContext context) {
-    final parsed = _parsedBySlot();
-    final hasPlanned = _hasAnyPlannedEntry(parsed);
+    final parsedToday = _parsedToday();
+    final hasPlanned = _hasAnyPlannedEntry(parsedToday);
 
-    if (!hasPlanned && programmeActive && !dayInProgramme && onAddAdhocDay != null) {
+    if (!hasPlanned &&
+        programmeActive &&
+        !dayInProgramme &&
+        onAddAdhocDay != null) {
       return _emptyProgrammeNotScheduled(context);
     }
 
@@ -827,155 +795,57 @@ class TodayMealPlanSection extends StatelessWidget {
       return _emptyNoProgrammeYet(context);
     }
 
-    final breakfast = parsed['breakfast'];
-    final lunch = parsed['lunch'];
-    final dinner = parsed['dinner'];
+    final parsedTomorrow =
+        (tomorrowRaw != null) ? _parseMap(tomorrowRaw!) : null;
 
-    final planned = _plannedSnacks(parsed);
+    final tomorrowHasPlan =
+        (parsedTomorrow != null) && _hasAnyPlannedEntry(parsedTomorrow);
 
-    final hasOneSnack = planned.length == 1;
-    final hasTwoSnacks = planned.length >= 2;
-
-    final showAddAnotherSnack = onAddAnotherSnack != null && hasOneSnack;
-
-    final primarySnackKey =
-        (hasOneSnack || hasTwoSnacks) ? planned[0].key : 'snack1';
-    final primarySnackEntry =
-        (hasOneSnack || hasTwoSnacks) ? planned[0].value : parsed['snack1'];
-
-    final secondarySnackKey = hasTwoSnacks ? planned[1].key : null;
-    final secondarySnackEntry = hasTwoSnacks ? planned[1].value : null;
-
-    return _HomeAccordionScaffold(
+    return _HomeDynamicScaffold(
       panelBg: _homePanelBgConst,
-      hero: _heroHeader(context),
+
+      todayParsed: parsedToday,
+      tomorrowParsed: parsedTomorrow,
+      tomorrowHasPlan: tomorrowHasPlan,
+      onAddAdhocDay: onAddAdhocDay,
+
+      heroBuilder: (BuildContext ctx, String dynamicText) {
+        return _heroHeader(ctx, customTitle: dynamicText);
+      },
+
       breakfastBg: _breakfastBg,
       lunchBg: _lunchBg,
       dinnerBg: _dinnerBg,
       snacksBg: _snacksBg,
       alwaysExpanded: homeAlwaysExpanded,
-      buildItem: ({
-        required String title,
-        required Color bg,
-        required bool expanded,
-        required VoidCallback onToggle,
-        required List<Widget> children,
-        required bool showChevron,
-      }) {
-        return _homeAccordionItem(
-          context: context,
-          title: title,
-          bg: bg,
-          expanded: expanded,
-          onToggle: onToggle,
-          expandedChildren: children,
-          showChevron: showChevron,
-        );
-      },
-      buildBreakfast: (_) => [
-        _mealCard(context: context, slotKey: 'breakfast', entry: breakfast),
-      ],
-      buildLunch: (_) => [
-        _mealCard(context: context, slotKey: 'lunch', entry: lunch),
-      ],
-      buildDinner: (_) => [
-        _mealCard(context: context, slotKey: 'dinner', entry: dinner),
-      ],
-      buildSnacks: (_) => [
-        _mealCard(
-          context: context,
-          slotKey: primarySnackKey,
-          entry: primarySnackEntry,
-          displaySlotLabel: 'Snack 1',
-        ),
-        if (showAddAnotherSnack) ...[
-          const SizedBox(height: 10),
-          _addAnotherSnackButton(context),
-        ],
-        if (secondarySnackKey != null && secondarySnackEntry != null) ...[
-          const SizedBox(height: 10),
-          _mealCard(
-            context: context,
-            slotKey: secondarySnackKey,
-            entry: secondarySnackEntry,
-            displaySlotLabel: 'Snack 2',
-          ),
-        ],
-      ],
+      homeSectionTitleSize: homeSectionTitleSize,
+      homeSectionTitleWeight: homeSectionTitleWeight,
+
+      buildCard: (entry, slotKey, displayLabel) => _mealCard(
+        context: context,
+        slotKey: slotKey,
+        entry: entry,
+        displaySlotLabel: displayLabel,
+      ),
+
       footer: _homeButtons(context),
-    );
-  }
 
-  Widget _homeAccordionItem({
-    required BuildContext context,
-    required String title,
-    required Color bg,
-    required bool expanded,
-    required VoidCallback onToggle,
-    required List<Widget> expandedChildren,
-    required bool showChevron,
-  }) {
-    final theme = Theme.of(context);
-    final base = (theme.textTheme.titleLarge ?? const TextStyle());
+      onAddAnotherSnack: onAddAnotherSnack,
+      addSnackButton: (ctx) => _addAnotherSnackButton(ctx),
+      getTitle: (entry) {
+        if (entry == null) return 'Nothing planned';
+        if (_isLeftoverEntry(entry)) return 'Leftovers';
+        if (MealPlanEntryParser.isFirstFoods(entry)) return 'First Foods';
+        if (MealPlanEntryParser.entryNoteText(entry) != null) return 'Note';
 
-    final wght = _clampWght(homeSectionTitleWeight ?? 800);
-    final fontSize = homeSectionTitleSize ?? 21;
-
-    final titleStyle = base.copyWith(
-      color: Colors.white,
-      fontSize: fontSize,
-      fontWeight: _fontWeightFromWght(wght),
-      fontVariations: [FontVariation('wght', wght.toDouble())],
-      letterSpacing: 1.25,
-      height: 1.0,
-    );
-
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-      margin: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 8),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: showChevron ? onToggle : null,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  Text(title, style: titleStyle),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Container(
-                      height: 2,
-                      color: Colors.white.withOpacity(0.25),
-                    ),
-                  ),
-                  if (showChevron) ...[
-                    const SizedBox(width: 10),
-                    Icon(
-                      expanded
-                          ? Icons.keyboard_arrow_up_rounded
-                          : Icons.keyboard_arrow_down_rounded,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ],
-                ],
-              ),
-              if (expanded) ...[
-                const SizedBox(height: 12),
-                ...expandedChildren,
-              ],
-            ],
-          ),
-        ),
-      ),
+        final rid = MealPlanEntryParser.entryRecipeId(entry);
+        if (rid != null) {
+          final r = _byId(rid);
+          return r != null ? _titleOf(r) : 'Recipe';
+        }
+        return 'Nothing planned';
+      },
+      isPlanned: _isPlannedEntry,
     );
   }
 
@@ -1064,26 +934,42 @@ class _EmptyCtaCard extends StatelessWidget {
   }
 }
 
-/// Home accordion scaffold: stateful ONLY for accordion open state + time-based default.
-class _HomeAccordionScaffold extends StatefulWidget {
-  const _HomeAccordionScaffold({
+/// Dynamic Scaffold:
+/// 1. Highlights current time slot
+/// 2. Switches to TOMORROW data if > 8pm
+/// 3. Shows "Empty Tomorrow" CTA if > 8pm and tomorrow has no plan
+/// 4. ✅ Never auto-opens snacks (snacks only open via user tap)
+class _HomeDynamicScaffold extends StatefulWidget {
+  const _HomeDynamicScaffold({
     required this.panelBg,
-    required this.hero,
+    required this.heroBuilder,
+    required this.todayParsed,
+    required this.tomorrowParsed,
+    required this.tomorrowHasPlan,
+    required this.onAddAdhocDay,
     required this.breakfastBg,
     required this.lunchBg,
     required this.dinnerBg,
     required this.snacksBg,
-    required this.buildItem,
-    required this.buildBreakfast,
-    required this.buildLunch,
-    required this.buildDinner,
-    required this.buildSnacks,
+    required this.buildCard,
     required this.footer,
     required this.alwaysExpanded,
+    this.homeSectionTitleSize,
+    this.homeSectionTitleWeight,
+    required this.onAddAnotherSnack,
+    required this.addSnackButton,
+    required this.getTitle,
+    required this.isPlanned,
   });
 
   final Color panelBg;
-  final Widget hero;
+  final Widget Function(BuildContext context, String dynamicText) heroBuilder;
+
+  final Map<String, Map<String, dynamic>> todayParsed;
+  final Map<String, Map<String, dynamic>>? tomorrowParsed;
+  final bool tomorrowHasPlan;
+
+  final VoidCallback? onAddAdhocDay;
 
   final Color breakfastBg;
   final Color lunchBg;
@@ -1091,29 +977,29 @@ class _HomeAccordionScaffold extends StatefulWidget {
   final Color snacksBg;
 
   final bool alwaysExpanded;
+  final double? homeSectionTitleSize;
+  final int? homeSectionTitleWeight;
 
-  final Widget Function({
-    required String title,
-    required Color bg,
-    required bool expanded,
-    required VoidCallback onToggle,
-    required List<Widget> children,
-    required bool showChevron,
-  }) buildItem;
-
-  final List<Widget> Function(bool expanded) buildBreakfast;
-  final List<Widget> Function(bool expanded) buildLunch;
-  final List<Widget> Function(bool expanded) buildDinner;
-  final List<Widget> Function(bool expanded) buildSnacks;
-
+  final Widget Function(Map<String, dynamic>? entry, String slotKey, String? label)
+      buildCard;
   final Widget footer;
+  final VoidCallback? onAddAnotherSnack;
+  final Widget Function(BuildContext) addSnackButton;
+  final String Function(Map<String, dynamic>? entry) getTitle;
+  final bool Function(Map<String, dynamic>? entry) isPlanned;
 
   @override
-  State<_HomeAccordionScaffold> createState() => _HomeAccordionScaffoldState();
+  State<_HomeDynamicScaffold> createState() => _HomeDynamicScaffoldState();
 }
 
-class _HomeAccordionScaffoldState extends State<_HomeAccordionScaffold> {
-  String _open = 'lunch';
+class _HomeDynamicScaffoldState extends State<_HomeDynamicScaffold> {
+  String _activeSlot = ''; // neutral; auto-select will set this
+  bool _showingTomorrow = false;
+  bool _showingTomorrowEmptyState = false;
+
+  // ✅ Snacks can only be opened by user tap
+  bool _snacksOpenedByUser = false;
+
   Timer? _timer;
 
   @override
@@ -1121,13 +1007,40 @@ class _HomeAccordionScaffoldState extends State<_HomeAccordionScaffold> {
     super.initState();
 
     if (!widget.alwaysExpanded) {
-      _open = _slotForNow();
+      _applyAutoState(force: true);
 
-      _timer = Timer.periodic(const Duration(minutes: 10), (_) {
-        final next = _slotForNow();
+      _timer = Timer.periodic(const Duration(minutes: 5), (_) {
         if (!mounted) return;
-        if (next != _open) setState(() => _open = next);
+        _applyAutoState();
       });
+    }
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    if (!widget.alwaysExpanded) {
+      _applyAutoState(force: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(_HomeDynamicScaffold oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.alwaysExpanded) return;
+
+    final tomorrowJustArrived =
+        oldWidget.tomorrowParsed == null && widget.tomorrowParsed != null;
+
+    if (tomorrowJustArrived) {
+      _applyAutoState(force: true);
+      return;
+    }
+
+    // If tomorrow plan presence changes, re-evaluate.
+    final tomorrowPlanChanged = oldWidget.tomorrowHasPlan != widget.tomorrowHasPlan;
+    if (tomorrowPlanChanged) {
+      _applyAutoState(force: true);
     }
   }
 
@@ -1137,67 +1050,380 @@ class _HomeAccordionScaffoldState extends State<_HomeAccordionScaffold> {
     super.dispose();
   }
 
-  String _slotForNow() {
+  void _applyAutoState({bool force = false}) {
     final h = DateTime.now().hour;
-    if (h >= 4 && h <= 10) return 'breakfast';
-    if (h >= 10 && h <= 14) return 'lunch';
-    if (h >= 14 && h <= 20) return 'dinner';
-    return 'snacks';
+
+    bool nextTomorrow = false;
+    bool nextTomorrowEmpty = false;
+
+    // ✅ IMPORTANT: never auto-select snacks
+    String nextSlot = 'breakfast';
+
+    if (h >= 4 && h < 11) {
+      nextSlot = 'breakfast';
+    } else if (h >= 11 && h < 15) {
+      nextSlot = 'lunch';
+    } else if (h >= 15 && h < 20) {
+      nextSlot = 'dinner';
+    } else {
+      // After 8pm
+      if (widget.tomorrowParsed != null) {
+        nextTomorrow = true;
+
+        // If tomorrow has no plan and you want empty CTA
+        if (!widget.tomorrowHasPlan && widget.onAddAdhocDay != null) {
+          nextTomorrowEmpty = true;
+          nextSlot = '';
+        } else {
+          // ✅ Tomorrow default: breakfast (never snacks)
+          nextSlot = 'breakfast';
+        }
+      } else {
+        // No tomorrow data yet: still open breakfast
+        nextSlot = 'breakfast';
+      }
+    }
+
+    // If somehow snacks is active but user didn't open it, force a reset.
+    if (_activeSlot == 'snacks' && !_snacksOpenedByUser) {
+      force = true;
+      nextSlot = nextSlot.isEmpty ? '' : 'breakfast';
+    }
+
+    if (force ||
+        _activeSlot != nextSlot ||
+        _showingTomorrow != nextTomorrow ||
+        _showingTomorrowEmptyState != nextTomorrowEmpty) {
+      setState(() {
+        _activeSlot = nextSlot;
+        _showingTomorrow = nextTomorrow;
+        _showingTomorrowEmptyState = nextTomorrowEmpty;
+
+        // Reset the snacks user-open flag whenever auto state runs.
+        _snacksOpenedByUser = false;
+      });
+    }
+  }
+
+  String _getDynamicHeaderText() {
+    if (widget.alwaysExpanded) return "HERE’S SOME IDEAS FOR TODAY";
+    if (_showingTomorrowEmptyState) return "HERE’S HOW TOMORROW LOOKS";
+
+    if (_showingTomorrow) {
+      switch (_activeSlot) {
+        case 'breakfast':
+          return "HERE’S TOMORROW’S BREAKFAST";
+        case 'lunch':
+          return "HERE’S TOMORROW’S LUNCH";
+        case 'dinner':
+          return "HERE’S TOMORROW’S DINNER";
+        case 'snacks':
+          return "HERE’S TOMORROW’S SNACKS";
+        default:
+          return "HERE’S TOMORROW’S PLAN";
+      }
+    }
+
+    switch (_activeSlot) {
+      case 'breakfast':
+        return "YOUR PLAN FOR BREAKFAST";
+      case 'lunch':
+        return "YOUR PLAN FOR LUNCH";
+      case 'dinner':
+        return "YOUR PLAN FOR DINNER";
+      case 'snacks':
+        return "YOUR HEALTHY SNACKS";
+      default:
+        return "YOUR DAILY MEAL PLAN";
+    }
   }
 
   void _toggle(String slot) {
     if (widget.alwaysExpanded) return;
-    setState(() => _open = (_open == slot) ? '' : slot);
+
+    setState(() {
+      if (_activeSlot == slot) {
+        _activeSlot = '';
+        if (slot == 'snacks') _snacksOpenedByUser = false;
+      } else {
+        _activeSlot = slot;
+        _snacksOpenedByUser = (slot == 'snacks');
+      }
+    });
   }
 
-  bool _isOpen(String slot) {
+  bool _isActive(String slot) {
     if (widget.alwaysExpanded) return true;
-    return _open == slot;
+
+    // ✅ Snacks can only be expanded if user explicitly opened it
+    if (slot == 'snacks' && !_snacksOpenedByUser) return false;
+
+    // If snacks somehow became active without user action, don't expand it.
+    if (_activeSlot == 'snacks' && !_snacksOpenedByUser) return false;
+
+    return _activeSlot == slot;
   }
 
+  int _clampWght(int v) => v.clamp(100, 900);
+
+  FontWeight _fontWeightFromWght(int w) {
+    final step = (w / 100).round().clamp(1, 9);
+    switch (step) {
+      case 1:
+        return FontWeight.w100;
+      case 2:
+        return FontWeight.w200;
+      case 3:
+        return FontWeight.w300;
+      case 4:
+        return FontWeight.w400;
+      case 5:
+        return FontWeight.w500;
+      case 6:
+        return FontWeight.w600;
+      case 7:
+        return FontWeight.w700;
+      case 8:
+        return FontWeight.w800;
+      default:
+        return FontWeight.w900;
+    }
+  }
+
+  Map<String, dynamic>? _getEntry(String slotKey) {
+    if (_showingTomorrow && widget.tomorrowParsed != null) {
+      return widget.tomorrowParsed![slotKey];
+    }
+    return widget.todayParsed[slotKey];
+  }
+
+  List<Widget> _buildSnacks() {
+    final data = (_showingTomorrow && widget.tomorrowParsed != null)
+        ? widget.tomorrowParsed!
+        : widget.todayParsed;
+
+    final s1 = data['snack1'];
+    final s2 = data['snack2'];
+
+    final planned = <MapEntry<String, Map<String, dynamic>>>[];
+    if (widget.isPlanned(s1)) planned.add(MapEntry('snack1', s1!));
+    if (widget.isPlanned(s2)) planned.add(MapEntry('snack2', s2!));
+
+    final hasOne = planned.length == 1;
+    final hasTwo = planned.length >= 2;
+
+    final showAddBtn = widget.onAddAnotherSnack != null && hasOne && !_showingTomorrow;
+
+    final pKey = (hasOne || hasTwo) ? planned[0].key : 'snack1';
+    final pEntry = (hasOne || hasTwo) ? planned[0].value : data['snack1'];
+
+    final sKey = hasTwo ? planned[1].key : null;
+    final sEntry = hasTwo ? planned[1].value : null;
+
+    return [
+      widget.buildCard(pEntry, pKey, 'Snack 1'),
+      if (showAddBtn) ...[
+        const SizedBox(height: 10),
+        widget.addSnackButton(context),
+      ],
+      if (sKey != null && sEntry != null) ...[
+        const SizedBox(height: 10),
+        widget.buildCard(sEntry, sKey, 'Snack 2'),
+      ]
+    ];
+  }
+
+  String _getSnacksPeekTitle() {
+  final data = (_showingTomorrow && widget.tomorrowParsed != null)
+      ? widget.tomorrowParsed!
+      : widget.todayParsed;
+
+  final s1 = data['snack1'];
+  final s2 = data['snack2'];
+
+  // Prefer Snack 1 if planned, otherwise Snack 2.
+  if (widget.isPlanned(s1)) {
+    return widget.getTitle(s1);
+  }
+  if (widget.isPlanned(s2)) {
+    return widget.getTitle(s2);
+  }
+
+  return "Nothing planned";
+}
   @override
   Widget build(BuildContext context) {
-    final showChevron = !widget.alwaysExpanded;
+    if (_showingTomorrowEmptyState) {
+      return Container(
+        color: widget.panelBg,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            widget.heroBuilder(context, _getDynamicHeaderText()),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, 18),
+              child: _EmptyCtaCard(
+                title: 'Nothing planned yet!',
+                body: 'Get a head start on tomorrow by creating your plan now.',
+                buttonText: 'CREATE PLAN',
+                onPressed: widget.onAddAdhocDay,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     return Container(
       color: widget.panelBg,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          widget.hero,
-          widget.buildItem(
+          widget.heroBuilder(context, _getDynamicHeaderText()),
+          _buildItem(
+            slotKey: 'breakfast',
             title: 'BREAKFAST',
+            peekTitle: widget.getTitle(_getEntry('breakfast')),
             bg: widget.breakfastBg,
-            expanded: _isOpen('breakfast'),
-            onToggle: () => _toggle('breakfast'),
-            children: widget.buildBreakfast(_isOpen('breakfast')),
-            showChevron: showChevron,
+            children: [widget.buildCard(_getEntry('breakfast'), 'breakfast', null)],
           ),
-          widget.buildItem(
+          _buildItem(
+            slotKey: 'lunch',
             title: 'LUNCH',
+            peekTitle: widget.getTitle(_getEntry('lunch')),
             bg: widget.lunchBg,
-            expanded: _isOpen('lunch'),
-            onToggle: () => _toggle('lunch'),
-            children: widget.buildLunch(_isOpen('lunch')),
-            showChevron: showChevron,
+            children: [widget.buildCard(_getEntry('lunch'), 'lunch', null)],
           ),
-          widget.buildItem(
+          _buildItem(
+            slotKey: 'dinner',
             title: 'DINNER',
+            peekTitle: widget.getTitle(_getEntry('dinner')),
             bg: widget.dinnerBg,
-            expanded: _isOpen('dinner'),
-            onToggle: () => _toggle('dinner'),
-            children: widget.buildDinner(_isOpen('dinner')),
-            showChevron: showChevron,
+            children: [widget.buildCard(_getEntry('dinner'), 'dinner', null)],
           ),
-          widget.buildItem(
-            title: 'SNACKS',
+          _buildItem(
+            slotKey: 'snacks',
+            title: 'HEALTHY SNACKS',
+            peekTitle: _getSnacksPeekTitle(),
             bg: widget.snacksBg,
-            expanded: _isOpen('snacks'),
-            onToggle: () => _toggle('snacks'),
-            children: widget.buildSnacks(_isOpen('snacks')),
-            showChevron: showChevron,
+            children: _buildSnacks(),
           ),
           widget.footer,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildItem({
+    required String slotKey,
+    required String title,
+    required String peekTitle,
+    required Color bg,
+    required List<Widget> children,
+  }) {
+    final expanded = _isActive(slotKey);
+    final theme = Theme.of(context);
+    final base = (theme.textTheme.titleLarge ?? const TextStyle());
+
+    final wght = _clampWght(widget.homeSectionTitleWeight ?? 800);
+    final fontSize = widget.homeSectionTitleSize ?? 21;
+
+    final titleStyle = base.copyWith(
+      color: Colors.white,
+      fontSize: expanded ? fontSize : fontSize * 0.85,
+      fontWeight: _fontWeightFromWght(wght),
+      fontVariations: [FontVariation('wght', wght.toDouble())],
+      letterSpacing: expanded ? 1.25 : 1.0,
+      height: 1.0,
+    );
+
+    final peekStyle = TextStyle(
+      fontSize: 15,
+      fontWeight: FontWeight.w600,
+      color: Colors.white.withOpacity(0.85),
+      height: 1.2,
+    );
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.fastOutSlowIn,
+      margin: EdgeInsets.fromLTRB(AppSpace.s16, 0, AppSpace.s16, expanded ? 12 : 8),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: expanded
+            ? [
+                BoxShadow(
+                  offset: const Offset(0, 4),
+                  blurRadius: 12,
+                  color: bg.withOpacity(0.25),
+                )
+              ]
+            : null,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () => _toggle(slotKey),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: EdgeInsets.all(expanded ? 16 : 14),
+              child: Row(
+                children: [
+                  Text(title, style: titleStyle),
+                  const SizedBox(width: 12),
+                  if (expanded)
+                    Expanded(
+                      child: Container(
+                        height: 2,
+                        color: Colors.white.withOpacity(0.25),
+                      ),
+                    )
+                  else
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 1.5,
+                            height: 14,
+                            color: Colors.white.withOpacity(0.4),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              peekTitle,
+                              style: peekStyle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(width: 10),
+                  Icon(
+                    expanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    color: Colors.white,
+                    size: 24,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            alignment: Alignment.topCenter,
+            child: expanded
+                ? Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    child: Column(children: children),
+                  )
+                : const SizedBox.shrink(),
+          ),
         ],
       ),
     );
