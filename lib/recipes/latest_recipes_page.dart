@@ -14,7 +14,7 @@ import 'food_policy_core.dart';
 import 'recipe_index.dart';
 import 'recipe_index_builder.dart';
 import 'allergy_engine.dart';
-import '../utils/text.dart'; 
+import '../utils/text.dart';
 
 class LatestRecipesPage extends StatefulWidget {
   const LatestRecipesPage({
@@ -40,6 +40,7 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
 
   final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
   late final HouseholdFoodPolicy _policy = HouseholdFoodPolicy(familyRepo: _familyRepo);
+
   StreamSubscription<FamilyProfile>? _familySub;
   FamilyProfile _family = const FamilyProfile(adults: [], children: []);
 
@@ -68,6 +69,7 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
   }
 
   void _buildIndex() {
+    _indexById.clear();
     final normalised = <Map<String, dynamic>>[];
     for (final r in widget.recipes) {
       final m = _normaliseForIndex(r);
@@ -76,16 +78,23 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
     _indexById.addAll(RecipeIndexBuilder.buildById(normalised));
   }
 
+  List<String> _householdNames() {
+    return _family.allPeople
+        .map((p) => (p.name ?? '').trim())
+        .where((n) => n.isNotEmpty)
+        .toList();
+  }
+
   // ----------------------------------------------------------------------
-  // ALLERGY LOGIC
+  // ✅ Allergy label (same behaviour as Collections/Favourites fix)
   // ----------------------------------------------------------------------
   String? _calculateAllergyStatus(Map<String, dynamic> recipe, List<String> recipeTags, String swapText) {
     final blockedNames = <String>[];
     final swapNames = <String>[];
 
-    for (final person in _family.allPeople) {
-      if (person.allergies.isEmpty) continue;
+    final allergyPeople = _family.allPeople.where((p) => p.allergies.isNotEmpty).toList();
 
+    for (final person in allergyPeople) {
       final result = AllergyEngine.evaluate(
         recipeAllergyTags: recipeTags,
         swapFieldText: swapText,
@@ -99,25 +108,29 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
       }
     }
 
-    // 1. PRIORITY: HARD STOP (Red)
-    // If ANYONE is hard-blocked (danger), we show that first.
+    // 1) HARD STOP
     if (blockedNames.isNotEmpty) {
-      final unique = blockedNames.toSet().toList();
+      final unique = blockedNames.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet().toList();
       if (unique.length == 1) return "Not suitable for ${unique.first}";
       return "Not suitable for ${unique.length} people";
     }
 
-    // 2. SECONDARY: SWAP (Amber)
-    // If no hard blocks, but swaps are needed.
+    // 2) SWAP REQUIRED
     if (swapNames.isNotEmpty) {
-      final unique = swapNames.toSet().toList();
+      final unique = swapNames.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet().toList();
       if (unique.length == 1) return "Needs swap for ${unique.first}";
       return "Needs swap for ${unique.length} people";
     }
-    
-    // 3. SAFE (Green)
-    final hasAnyAllergies = _family.allPeople.any((p) => p.allergies.isNotEmpty);
-    if (hasAnyAllergies) return "Safe for whole family";
+
+    // 3) SAFE
+    if (allergyPeople.isNotEmpty) {
+      if (allergyPeople.length == 1) {
+        final n = (allergyPeople.first.name ?? '').trim();
+        if (n.isNotEmpty) return "Safe for $n";
+        return "Safe";
+      }
+      return "Safe for whole family";
+    }
 
     return null;
   }
@@ -125,13 +138,10 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
   // ----------------------------------------------------------------------
   // DATA HELPERS
   // ----------------------------------------------------------------------
-  
-  // ✅ IMPROVED SWAP FINDER: Checks 5 different locations
+
   String _swapTextOf(Map<String, dynamic> r) {
     String? tryGet(dynamic val) {
-      if (val != null && val.toString().trim().isNotEmpty) {
-        return val.toString();
-      }
+      if (val != null && val.toString().trim().isNotEmpty) return val.toString();
       return null;
     }
 
@@ -170,7 +180,7 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
     return <String, dynamic>{
       'id': id,
       'title': _titleOf(r),
-      'ingredients': '', 
+      'ingredients': '',
       'wprm_course': _termsFromField(r, 'wprm_course'),
       'wprm_collections': _termsFromField(r, 'wprm_collections'),
       'wprm_cuisine': _termsFromField(r, 'wprm_cuisine'),
@@ -231,7 +241,8 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
       final url = (recipe['thumbnail_url'] ??
               recipe['image_url'] ??
               recipe['image_url_full'] ??
-              recipe['image'])?.toString();
+              recipe['image'])
+          ?.toString();
       if (url != null && url.trim().isNotEmpty) return url.trim();
     }
     return null;
@@ -243,10 +254,10 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
       r['modified'],
       r['date_gmt'],
       r['date'],
-      r['updatedAt'], 
-      r['createdAt'], 
-      r['updated_at'], 
-      r['created_at']
+      r['updatedAt'],
+      r['createdAt'],
+      r['updated_at'],
+      r['created_at'],
     ];
 
     for (final c in candidates) {
@@ -258,12 +269,14 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
 
   DateTime? _parseDate(dynamic v) {
     if (v == null) return null;
+
     if (v is int) {
       if (v < 10000000000) {
         return DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: true).toLocal();
       }
       return DateTime.fromMillisecondsSinceEpoch(v, isUtc: true).toLocal();
     }
+
     if (v is num) {
       final i = v.toInt();
       if (i < 10000000000) {
@@ -271,8 +284,10 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
       }
       return DateTime.fromMillisecondsSinceEpoch(i, isUtc: true).toLocal();
     }
+
     final s = v.toString().trim();
     if (s.isEmpty) return null;
+
     try {
       return DateTime.parse(s).toLocal();
     } catch (_) {
@@ -282,7 +297,7 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
 
   List<Map<String, dynamic>> _latestBase() {
     final list = List<Map<String, dynamic>>.from(widget.recipes);
-    list.sort((a, b) => _dateOf(b).compareTo(_dateOf(a))); 
+    list.sort((a, b) => _dateOf(b).compareTo(_dateOf(a)));
     final limit = widget.limit <= 0 ? 20 : widget.limit;
     if (list.length <= limit) return list;
     return list.take(limit).toList();
@@ -291,8 +306,8 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
   @override
   Widget build(BuildContext context) {
     final baseLatest = _latestBase();
+
     final query = _searchCtrl.text.trim().toLowerCase();
-    
     final filtered = query.isEmpty
         ? baseLatest
         : baseLatest.where((r) => _titleOf(r).toLowerCase().contains(query)).toList();
@@ -300,6 +315,7 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
     final youngestChild = _policy.youngestChild(_family);
     final youngestMonths = _policy.youngestChildAgeMonths(_family);
     final childNames = _family.children.map((c) => c.name).toList();
+    final householdNames = _householdNames();
 
     return Scaffold(
       backgroundColor: const Color(0xFFECF3F4),
@@ -344,7 +360,7 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
                       final isFav = id != null && widget.favoriteIds.contains(id);
 
                       final ix = (id != null) ? _indexById[id] : null;
-                      
+
                       final babyTag = (ix != null)
                           ? FoodPolicyCore.babySuitabilityLabel(
                               ix: ix,
@@ -355,7 +371,11 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
 
                       String? allergyStatus;
                       if (ix != null) {
-                        allergyStatus = _calculateAllergyStatus(r, ix.allergies, _swapTextOf(r));
+                        allergyStatus = _calculateAllergyStatus(
+                          r,
+                          ix.allergies,
+                          _swapTextOf(r),
+                        );
                       }
 
                       return SmartRecipeCard(
@@ -372,6 +392,7 @@ class _LatestRecipesPageState extends State<LatestRecipesPage> {
                         tags: ix?.suitable ?? [],
                         ageWarning: babyTag,
                         childNames: childNames,
+                        householdNames: householdNames,
                         allergyStatus: allergyStatus,
                       );
                     },

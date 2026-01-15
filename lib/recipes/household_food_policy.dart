@@ -199,4 +199,72 @@ class HouseholdFoodPolicy {
     if (y == null) return 999;
     return (DateTime.now().difference(_getBirthDate(y)).inDays / 30).floor(); 
   }
+
+
+    // --------------------------------------------------------------------------
+  // ✅ UI LABEL HELPERS (status text with names)
+  // --------------------------------------------------------------------------
+
+  String _formatNames(List<ProfilePerson> people) {
+    final names = people
+        .map((p) => (p.name ?? '').trim())
+        .where((n) => n.isNotEmpty)
+        .toList();
+
+    if (names.isEmpty) return 'your household';
+    if (names.length == 1) return names.first;
+    if (names.length == 2) return '${names[0]} & ${names[1]}';
+    final last = names.last;
+    final others = names.sublist(0, names.length - 1).join(', ');
+    return '$others & $last';
+  }
+
+  /// Returns a UI-friendly status string for RecipeSuitabilityDisplay.
+  /// Examples:
+  /// - "Safe for Mike"
+  /// - "Needs allergy swap (peanut)"
+  /// - "Not suitable (peanut, sesame)"
+  String? allergyStatusLabel({
+    required RecipeIndex ix,
+    required Map<String, dynamic> item,
+    required FamilyProfile family,
+    required AllergiesSelection selection,
+  }) {
+    if (!selection.enabled) return null;
+
+    final people = activeProfiles(family: family, selection: selection);
+    if (people.isEmpty) return null;
+
+    final userAllergies = people.expand((p) => p.allergies).toList();
+    if (userAllergies.isEmpty) return null;
+
+    final result = AllergyEngine.evaluate(
+      recipeAllergyTags: ix.allergies,
+      swapFieldText: (ix.ingredientSwaps ?? (item['ingredient_swaps']?.toString() ?? '')),
+      userAllergies: userAllergies,
+    );
+
+    final who = _formatNames(people);
+
+    switch (result.status) {
+      case AllergyStatus.safe:
+        // ✅ this is what you asked for
+        return 'Safe for $who';
+
+      case AllergyStatus.swapRequired:
+        if (!selection.includeSwaps) return null;
+        final swaps = result.swapIngredients;
+        if (swaps.isEmpty) return 'Needs allergy swap';
+        return 'Needs allergy swap (${swaps.join(', ')})';
+
+      case AllergyStatus.notSuitable:
+        final blocking = result.blockingIngredients;
+        if (blocking.isEmpty) return 'Not suitable';
+        return 'Not suitable (${blocking.join(', ')})';
+
+      case AllergyStatus.unknown:
+        return 'Check allergy details';
+    }
+  }
+
 }

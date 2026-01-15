@@ -56,12 +56,12 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyBNaJxG9Sy19Q_4zeaseYRSYTrmi9ODRc8',
-    appId: '1:196454276642:ios:7634bbd7b41b8b569f747b',
+    appId: '1:196454276642:ios:6bf85c9f429edc919f747b',
     messagingSenderId: '196454276642',
     projectId: 'little-vegan-eats-app-e1cd3',
     storageBucket: 'little-vegan-eats-app-e1cd3.firebasestorage.app',
-    iosClientId: '196454276642-hg8vii5peam0c6dqcge0hud2f5ahg5o8.apps.googleusercontent.com',
-    iosBundleId: 'com.example.littleVeganEats',
+    iosClientId: '196454276642-3u9f9p7m9mav4252llan8ce32hj28jn5.apps.googleusercontent.com',
+    iosBundleId: 'co.littleveganeats.app',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(

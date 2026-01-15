@@ -285,7 +285,6 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => RecipesBootstrapGate(
-          // ✅ Use the generic wrapper with locks
           child: RecipeListPage(
             initialCourseSlug: slug,
             lockCourse: true,
@@ -332,8 +331,7 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (context, famSnap) {
         final family = famSnap.data;
         final firstName = (family != null) ? _firstNameFromFamily(family) : null;
-        
-        // ✅ Extract names for the Smart Card
+
         final childNames = family?.children.map((c) => c.name).toList() ?? [];
 
         return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -401,7 +399,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           todayRaw: const <String, dynamic>{},
                           recipes: _recipes,
                           favoriteIds: _favoriteIds,
-                          childNames: childNames, // ✅ Pass names
+                          childNames: childNames,
                           heroTopText: "HERE'S SOME IDEAS",
                           heroBottomText: "FOR TODAY",
                           homeAccordion: true,
@@ -548,7 +546,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 todayRaw: effectiveSlots,
                                 recipes: _recipes,
                                 favoriteIds: _favoriteIds,
-                                childNames: childNames, // ✅ Pass names
+                                childNames: childNames,
                                 heroTopText: "HERE'S SOME IDEAS",
                                 heroBottomText: "FOR TODAY",
                                 homeAccordion: true,

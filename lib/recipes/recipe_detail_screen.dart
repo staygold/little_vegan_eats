@@ -1,36 +1,37 @@
 // lib/recipes/recipe_detail_screen.dart
 import 'dart:async';
-import 'dart:ui';
+import 'dart:math' show min;
+import 'dart:ui' show FontVariation, ImageFilter;
 
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 
-import '../theme/app_theme.dart';
-import '../utils/text.dart';
-import '../utils/images.dart';
-import '../recipes/recipe_repository.dart';
-import '../recipes/serving_engine.dart';
-import '../recipes/favorites_service.dart';
-import 'cook_mode_screen.dart';
 import '../app/no_bounce_scroll_behavior.dart';
-
 import '../lists/shopping_list_picker_sheet.dart';
 import '../lists/shopping_repo.dart';
+import '../recipes/favorites_service.dart';
+import '../recipes/recipe_repository.dart';
+import '../recipes/serving_engine.dart';
+import '../theme/app_theme.dart';
+import '../utils/images.dart';
+import '../utils/text.dart';
 
-// ✅ household repo + policy façade (same pattern as list screen)
+import 'cook_mode_screen.dart';
+
+// ✅ household repo + policy façade
 import 'family_profile_repository.dart';
 import 'family_profile.dart';
 import 'household_food_policy.dart';
 
-// ✅ allergy swap parser lives with rules (already used by list policy path)
-import 'profile_person.dart';
-import 'recipe_rules_engine.dart';
-import 'allergy_engine.dart';
-import 'allergy_keys.dart';
+// ✅ age engine
+import '../meal_plan/core/meal_plan_age_engine.dart';
+
+// ✅ swaps on detail
+import 'widgets/recipe_suitability_display.dart';
 
 class _RText {
   static const String font = 'Montserrat';
@@ -103,16 +104,6 @@ class _RText {
     height: 1.0,
     letterSpacing: 0,
     color: AppColors.brandDark,
-  );
-
-  static const TextStyle button = TextStyle(
-    fontFamily: font,
-    fontSize: 14,
-    fontWeight: FontWeight.w800,
-    fontVariations: [FontVariation('wght', 800)],
-    height: 1.0,
-    letterSpacing: 0,
-    color: Colors.white,
   );
 
   static const TextStyle instructionNumber = TextStyle(
@@ -204,15 +195,6 @@ class _RText {
     fontSize: 16,
     fontWeight: FontWeight.w700,
     fontVariations: [FontVariation('wght', 700)],
-    height: 1.1,
-    color: AppColors.brandDark,
-  );
-
-  static const TextStyle servingRecSoft = TextStyle(
-    fontFamily: font,
-    fontSize: 16,
-    fontWeight: FontWeight.w500,
-    fontVariations: [FontVariation('wght', 500)],
     height: 1.1,
     color: AppColors.brandDark,
   );
@@ -325,60 +307,100 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   // ✅ household wiring (minimal + policy-driven)
   // ----------------------------------------------------------------------------
   void _wireFamilyProfile() {
-    _familySub?.cancel();
+  _familySub?.cancel();
 
-    _familySub = _familyRepo.watchFamilyProfile().listen((family) {
-      // Count only named people (same behaviour as before, but cleaner)
-      int namedCount(List list) {
-        return list.where((p) {
-          try {
-            final name = (p.name ?? '').toString().trim();
-            return name.isNotEmpty;
-          } catch (_) {
-            return false;
-          }
-        }).length;
-      }
+  _familySub = _familyRepo.watchFamilyProfile().listen((family) {
+    int namedCount(List list) {
+      return list.where((p) {
+        try {
+          final name = (p.name ?? '').toString().trim();
+          return name.isNotEmpty;
+        } catch (_) {
+          return false;
+        }
+      }).length;
+    }
 
-      final adultCount = namedCount(family.adults);
-      final kidCount = namedCount(family.children);
+    final adultCount = namedCount(family.adults);
+    final kidCount = namedCount(family.children);
 
-      final nextAdults = adultCount > 0 ? adultCount : 1;
-      final nextKids = kidCount;
+    final nextAdults = adultCount > 0 ? adultCount : 1;
+    final nextKids = kidCount;
 
-      // ✅ allergy presence via policy (single source of truth)
-      final selection = AllergiesSelection(
-        enabled: true,
-        mode: SuitabilityMode.wholeFamily,
-        includeSwaps: true,
-      );
-      final activeProfiles = _policy.activeProfiles(family: family, selection: selection);
-      final hasAllergies = _policy.hasAnyAllergies(profiles: activeProfiles, selection: selection);
+    // ✅ compute "has allergies" without AllergiesSelection / SuitabilityMode
+    final hasAllergies = _familyHasAnyAllergies(family);
 
-      if (!mounted) return;
+    if (!mounted) return;
 
-      final changedCounts = (nextAdults != _profileAdults) || (nextKids != _profileKids);
-      final changedAllergies = hasAllergies != _profileHasAllergies;
-      final changedFamily = family != _family;
+    final changedCounts = (nextAdults != _profileAdults) || (nextKids != _profileKids);
+    final changedAllergies = hasAllergies != _profileHasAllergies;
+    final changedFamily = family != _family;
 
-      if (changedCounts || changedAllergies || changedFamily) {
-        setState(() {
-          final prevProfileAdults = _profileAdults;
-          final prevProfileKids = _profileKids;
+    if (changedCounts || changedAllergies || changedFamily) {
+      setState(() {
+        final prevProfileAdults = _profileAdults;
+        final prevProfileKids = _profileKids;
 
-          _family = family;
+        _family = family;
 
-          _profileAdults = nextAdults;
-          _profileKids = nextKids;
-          _profileHasAllergies = hasAllergies;
+        _profileAdults = nextAdults;
+        _profileKids = nextKids;
+        _profileHasAllergies = hasAllergies;
 
-          // keep manual steppers unless they still match the previous profile defaults
-          if (_adults == prevProfileAdults) _adults = _profileAdults;
-          if (_kids == prevProfileKids) _kids = _profileKids;
-        });
-      }
-    });
+        // keep manual steppers unless they still match the previous profile defaults
+        if (_adults == prevProfileAdults) _adults = _profileAdults;
+        if (_kids == prevProfileKids) _kids = _profileKids;
+      });
+    }
+  });
+}
+
+/// ✅ True if ANY adult/child has any allergy IDs/keys set.
+/// Works with either `allergies` being List or Map, and also supports common field names.
+bool _familyHasAnyAllergies(FamilyProfile family) {
+  bool personHasAllergies(dynamic p) {
+    if (p == null) return false;
+
+    dynamic v;
+    try {
+      // Most likely in your models:
+      v = p.allergies;
+    } catch (_) {}
+
+    // Fallbacks if your model uses different naming
+    try {
+      v ??= p.allergyIds;
+    } catch (_) {}
+    try {
+      v ??= p.allergens;
+    } catch (_) {}
+    try {
+      v ??= p.allergy_keys;
+    } catch (_) {}
+    try {
+      v ??= p.allergyKeys;
+    } catch (_) {}
+
+    if (v == null) return false;
+
+    if (v is List) return v.where((e) => e != null).isNotEmpty;
+    if (v is Map) return v.values.where((e) => e == true || (e is String && e.trim().isNotEmpty)).isNotEmpty;
+
+    // Sometimes stored as comma string
+    if (v is String) return v.trim().isNotEmpty;
+
+    return false;
   }
+
+  for (final a in family.adults) {
+    if (personHasAllergies(a)) return true;
+  }
+  for (final c in family.children) {
+    if (personHasAllergies(c)) return true;
+  }
+  return false;
+}
+
 
   // ----------------------------------------------------------------------------
   // Load recipe (unchanged behaviour)
@@ -438,7 +460,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   void _applyScale(double value) => setState(() => _scale = value);
 
   // ===========================================================================
-  // 🟢 HELPERS: FIELDS & PARSING (kept local; no new deps)
+  // 🟢 HELPERS: FIELDS & PARSING
   // ===========================================================================
 
   String _sanitize(dynamic val) {
@@ -485,7 +507,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     return '';
   }
 
-  // ✅ shared with list screen behaviour: allow "from>to, from>to"
   List<Map<String, String>> _parseSwaps(String raw) {
     if (raw.trim().isEmpty) return [];
     final list = <Map<String, String>>[];
@@ -533,7 +554,7 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   }
 
   // ===========================================================================
-  // ✅ WPRM ITEM MODE HELPERS (read from recipe.tags.*)
+  // ✅ WPRM TAG HELPERS (read from recipe.tags.*)
   // ===========================================================================
 
   String _termSlug(Map<String, dynamic>? recipe, String groupKey) {
@@ -709,7 +730,6 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     for (final row in ingredientsFlat) {
       if (row is! Map) continue;
 
-      // ✅ FILTER OUT GROUPS/HEADERS
       final type = (row['type'] ?? '').toString().toLowerCase();
       if (type == 'group' || type == 'header') continue;
 
@@ -877,8 +897,105 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
     );
   }
 
+  // ----------------------------------------------------------------------------
+  // ✅ Suitability (Age + Allergy) — feeds RecipeSuitabilityDisplay
+  // ----------------------------------------------------------------------------
+
+  List<String> _ageTagsFromRecipe(Map<String, dynamic>? recipe) {
+    if (recipe == null) return [];
+
+    final tags = recipe['tags'];
+    if (tags is! Map) return [];
+
+    final suitable = tags['suitable_for'];
+    if (suitable is! List) return [];
+
+    return suitable
+        .whereType<Map>()
+        .map((t) => (t['name'] ?? '').toString().trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
+
+  List<String> _childNames() {
+    return _family.children
+        .map((c) => (c.name ?? '').toString().trim())
+        .where((n) => n.isNotEmpty)
+        .toList();
+  }
+
+  int? _youngestChildMonths() {
+    if (_family.children.isEmpty) return null;
+
+    // Use MealPlanAgeEngine for consistency with the rest of the app
+    final ages = _family.children
+        .map((c) => MealPlanAgeEngine.childAgeMonths({'dob': c.dob}, DateTime.now()) ?? 999)
+        .toList();
+
+    if (ages.isEmpty) return null;
+    ages.sort();
+    return ages.first;
+  }
+
+  int? _minRequiredMonthsFromAgeTags(List<String> ageTags) {
+    final nums = ageTags
+        .map((t) => int.tryParse(t.replaceAll(RegExp(r'[^0-9]'), '')))
+        .whereType<int>()
+        .toList();
+    if (nums.isEmpty) return null;
+    nums.sort();
+    return nums.first;
+  }
+
+  String? _ageWarningForFamily(List<String> ageTags) {
+    final youngest = _youngestChildMonths();
+    final minRequired = _minRequiredMonthsFromAgeTags(ageTags);
+
+    if (youngest == null || minRequired == null) return null;
+
+    if (youngest < minRequired) {
+      final names = _childNames();
+      final childLabel = names.isNotEmpty ? names.first : 'your child';
+      return 'Not suitable for $childLabel (${minRequired}m+)';
+    }
+
+    return null;
+  }
+
+  /// ✅ Allergy status (SAFE / COMPILE-SAFE)
+  ///
+  /// This does NOT guess your internal allergy engine API.
+  /// It gives useful UI today, and you can replace this later with your
+  /// real rules engine in one place.
+  String? _allergyStatusForRecipe(Map<String, dynamic>? recipe) {
+    if (recipe == null) return null;
+    if (!_profileHasAllergies) return null;
+
+    // If swaps exist, we can confidently say it may require a swap.
+    final swapsRaw = _getField(recipe, 'ingredient_swaps');
+    final swaps = _parseSwaps(swapsRaw);
+
+    if (swaps.isNotEmpty) return 'Needs allergy swap';
+
+    // Otherwise, neutral status (we still show it because user has allergies enabled)
+    return 'Check allergy details';
+  }
+
+  Widget _suitabilityBlock(Map<String, dynamic>? recipe) {
+    if (recipe == null) return const SizedBox.shrink();
+
+    final ageTags = _ageTagsFromRecipe(recipe);
+
+    return RecipeSuitabilityDisplay(
+  tags: ageTags,
+  allergyStatus: _allergyStatusForRecipe(recipe),
+  ageWarning: _ageWarningForFamily(ageTags),
+  childNames: _childNames(),
+  variant: RecipeSuitabilityVariant.detail, // ✅ detail screen only
+);
+  }
+
   // ✅ Detail screen only needs swaps display gating.
-  // Filtering/safety assumed done elsewhere.
   Widget _swapsCard(Map<String, dynamic>? recipe) {
     if (!_profileHasAllergies) return const SizedBox.shrink();
 
@@ -1647,6 +1764,11 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                                 'Prep: ${recipe?['prep_time'] ?? '-'} mins  •  Cook: ${recipe?['cook_time'] ?? '-'} mins',
                                 style: _RText.meta,
                               ),
+
+                              // ✅ Suitability block (Age + Allergy) using RecipeSuitabilityDisplay
+                              const SizedBox(height: 12),
+                              _suitabilityBlock(recipe),
+
                               const SizedBox(height: 20),
                               _servingPanelCard(context, recipe),
                               const SizedBox(height: 40),

@@ -5,12 +5,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'steps/step_parent_name.dart';
-import 'steps/step_email.dart';
-import 'steps/step_password.dart';
-
 import 'steps/step_child_name.dart';
-import 'steps/step_child_dob.dart'; // ✅ now Month+Year picker
+import 'steps/step_child_dob.dart'; // Month+Year picker
 import 'steps/step_child_allergies_yes_no.dart';
 import 'steps/step_child_allergies.dart';
 import 'steps/step_another_child.dart';
@@ -19,9 +15,6 @@ import 'steps/onboarding_complete_screen.dart';
 import '../recipes/allergy_keys.dart';
 
 enum OnboardingStep {
-  parentName,
-  parentEmail,
-  parentPassword,
   childName,
   childDob,
   childHasAllergies,
@@ -38,13 +31,9 @@ class OnboardingFlow extends StatefulWidget {
 }
 
 class _OnboardingFlowState extends State<OnboardingFlow> {
-  OnboardingStep step = OnboardingStep.parentName;
+  OnboardingStep step = OnboardingStep.childName;
 
-  // Parent info (collected pre-auth)
-  String? parentName;
-  String? parentEmail;
-
-  // Child info (collected post-auth)
+  // Child info
   final List<Map<String, dynamic>> children = [];
   Map<String, dynamic> currentChild = {};
 
@@ -59,47 +48,14 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   @override
   Widget build(BuildContext context) {
     switch (step) {
-      // -----------------------
-      // PARENT STEPS (pre-auth)
-      // -----------------------
-      case OnboardingStep.parentName:
-        return StepParentName(
-          initialValue: parentName,
-          onNext: (name) {
-            parentName = name.trim();
-            next(OnboardingStep.parentEmail);
-          },
-          onSkip: _skipOnboardingPreAuth,
-        );
-
-      case OnboardingStep.parentEmail:
-        return StepEmail(
-          initialValue: parentEmail,
-          onBack: () => next(OnboardingStep.parentName),
-          onNext: (email) {
-            parentEmail = email.trim();
-            next(OnboardingStep.parentPassword);
-          },
-          onSkip: _skipOnboardingPreAuth,
-        );
-
-      case OnboardingStep.parentPassword:
-        return StepPassword(
-          email: (parentEmail ?? '').trim(),
-          onBack: () => next(OnboardingStep.parentEmail),
-          onCreated: _onAccountCreated,
-        );
-
-      // -----------------------
-      // CHILD STEPS (post-auth)
-      // -----------------------
       case OnboardingStep.childName:
         return StepChildName(
           onNext: (name) {
             currentChild = {"name": name.trim()};
             next(OnboardingStep.childDob);
           },
-          onBack: () => next(OnboardingStep.parentPassword),
+          // If user is in onboarding and hits back, just pop (back to whatever pushed this)
+          onBack: () => Navigator.of(context).maybePop(),
           onSkip: _skipOnboardingPostAuth,
         );
 
@@ -107,14 +63,12 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         return StepChildDob(
           childName: (currentChild["name"] ?? "").toString(),
           onBack: () => next(OnboardingStep.childName),
-          // ✅ StepChildDob now returns (month, year)
           onNext: (month, year) {
             currentChild["dobMonth"] = month; // int 1-12
             currentChild["dobYear"] = year; // int yyyy
-            currentChild.remove("dob"); // ✅ remove legacy field if present
+            currentChild.remove("dob"); // ensure legacy field not present
             next(OnboardingStep.childHasAllergies);
           },
-          // Optional: if you support editing within onboarding later
           initialMonth: currentChild["dobMonth"] is int
               ? currentChild["dobMonth"] as int
               : null,
@@ -129,7 +83,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           onYes: () => next(OnboardingStep.childAllergies),
           onNo: () {
             currentChild["hasAllergies"] = false;
-            currentChild["allergies"] = <String>[]; // canonical keys
+            currentChild["allergies"] = <String>[];
             _commitChild();
             next(OnboardingStep.anotherChild);
           },
@@ -172,36 +126,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   }
 
   void _commitChild() {
-    // IMPORTANT: never put FieldValue.serverTimestamp() inside this map
+    // Do not put FieldValue.serverTimestamp inside these maps.
     children.add({...currentChild});
     currentChild = {};
-  }
-
-  Future<void> _onAccountCreated() async {
-    try {
-      await _userRef
-          .set(
-            {
-              "parentName": (parentName ?? "").trim(),
-              "email": (parentEmail ?? "").trim(),
-              "onboarded": false,
-              "profileComplete": false,
-              "updatedAt": FieldValue.serverTimestamp(),
-            },
-            SetOptions(merge: true),
-          )
-          .timeout(const Duration(seconds: 10));
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not save profile: $e')),
-        );
-      }
-      return;
-    }
-
-    if (!mounted) return;
-    next(OnboardingStep.childName);
   }
 
   Future<void> _finishOnboarding() async {
@@ -211,8 +138,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
             {
               "onboarded": true,
               "profileComplete": true,
-              "children": children, // array of maps, no FieldValue inside
-              "updatedAt": FieldValue.serverTimestamp(), // OK here (top-level)
+              "children": children,
+              "updatedAt": FieldValue.serverTimestamp(),
             },
             SetOptions(merge: true),
           )
@@ -228,13 +155,6 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
     if (!mounted) return;
     Navigator.of(context).pushReplacementNamed('/app');
-  }
-
-  Future<void> _skipOnboardingPreAuth() async {
-    if (!mounted) return;
-
-    // If you don't have a '/login' route, change this to whatever your app uses.
-    Navigator.of(context).pushReplacementNamed('/login');
   }
 
   Future<void> _skipOnboardingPostAuth() async {

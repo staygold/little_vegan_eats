@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CLIENT_ID</key>
-	<string>196454276642-hg8vii5peam0c6dqcge0hud2f5ahg5o8.apps.googleusercontent.com</string>
+	<string>196454276642-3u9f9p7m9mav4252llan8ce32hj28jn5.apps.googleusercontent.com</string>
 	<key>REVERSED_CLIENT_ID</key>
-	<string>com.googleusercontent.apps.196454276642-hg8vii5peam0c6dqcge0hud2f5ahg5o8</string>
+	<string>com.googleusercontent.apps.196454276642-3u9f9p7m9mav4252llan8ce32hj28jn5</string>
 	<key>API_KEY</key>
 	<string>AIzaSyBNaJxG9Sy19Q_4zeaseYRSYTrmi9ODRc8</string>
 	<key>GCM_SENDER_ID</key>
@@ -13,7 +13,7 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.example.littleVeganEats</string>
+	<string>co.littleveganeats.app</string>
 	<key>PROJECT_ID</key>
 	<string>little-vegan-eats-app-e1cd3</string>
 	<key>STORAGE_BUCKET</key>
@@ -29,6 +29,6 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:196454276642:ios:7634bbd7b41b8b569f747b</string>
+	<string>1:196454276642:ios:6bf85c9f429edc919f747b</string>
 </dict>
 </plist>

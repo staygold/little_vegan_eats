@@ -1,3 +1,4 @@
+// lib/recipes/collection_page.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
 
@@ -13,7 +14,7 @@ import 'food_policy_core.dart';
 import 'recipe_index.dart';
 import 'recipe_index_builder.dart';
 import 'allergy_engine.dart';
-import '../utils/text.dart'; 
+import '../utils/text.dart';
 
 class CollectionPage extends StatefulWidget {
   const CollectionPage({
@@ -69,6 +70,7 @@ class _CollectionPageState extends State<CollectionPage> {
   }
 
   void _buildIndex() {
+    _indexById.clear();
     final normalised = <Map<String, dynamic>>[];
     for (final r in widget.recipes) {
       final m = _normaliseForIndex(r);
@@ -77,16 +79,23 @@ class _CollectionPageState extends State<CollectionPage> {
     _indexById.addAll(RecipeIndexBuilder.buildById(normalised));
   }
 
+  List<String> _householdNames() {
+    return _family.allPeople
+        .map((p) => (p.name ?? '').trim())
+        .where((n) => n.isNotEmpty)
+        .toList();
+  }
+
   // ----------------------------------------------------------------------
-  // ALLERGY STATUS (Clean Text + Safety First)
+  // ALLERGY STATUS LABEL (matches Favourites)
   // ----------------------------------------------------------------------
   String? _calculateAllergyStatus(Map<String, dynamic> recipe, List<String> recipeTags, String swapText) {
     final blockedNames = <String>[];
     final swapNames = <String>[];
 
-    for (final person in _family.allPeople) {
-      if (person.allergies.isEmpty) continue;
+    final allergyPeople = _family.allPeople.where((p) => p.allergies.isNotEmpty).toList();
 
+    for (final person in allergyPeople) {
       final result = AllergyEngine.evaluate(
         recipeAllergyTags: recipeTags,
         swapFieldText: swapText,
@@ -100,39 +109,40 @@ class _CollectionPageState extends State<CollectionPage> {
       }
     }
 
-    // 1. Red (Hard Stop)
     if (blockedNames.isNotEmpty) {
-      final unique = blockedNames.toSet().toList();
+      final unique = blockedNames.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet().toList();
       if (unique.length == 1) return "Not suitable for ${unique.first}";
       return "Not suitable for ${unique.length} people";
     }
 
-    // 2. Amber (Needs Swap)
     if (swapNames.isNotEmpty) {
-      final unique = swapNames.toSet().toList();
+      final unique = swapNames.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet().toList();
       if (unique.length == 1) return "Needs swap for ${unique.first}";
       return "Needs swap for ${unique.length} people";
     }
-    
-    // 3. Green (Safe)
-    final hasAnyAllergies = _family.allPeople.any((p) => p.allergies.isNotEmpty);
-    if (hasAnyAllergies) return "Safe for whole family";
+
+    if (allergyPeople.isNotEmpty) {
+      if (allergyPeople.length == 1) {
+        final n = (allergyPeople.first.name ?? '').trim();
+        if (n.isNotEmpty) return "Safe for $n";
+        return "Safe";
+      }
+      return "Safe for whole family";
+    }
 
     return null;
   }
 
   // ----------------------------------------------------------------------
-  // DATA NORMALIZATION
+  // DATA NORMALIZATION + HELPERS
   // ----------------------------------------------------------------------
-  
   Map<String, dynamic> _normaliseForIndex(Map<String, dynamic> r) {
     final id = _toInt(r['id']);
     if (id == null) return const {};
-
     return <String, dynamic>{
       'id': id,
       'title': _titleOf(r),
-      'ingredients': '', 
+      'ingredients': '',
       'wprm_course': _termsFromField(r, 'wprm_course'),
       'wprm_collections': _termsFromField(r, 'wprm_collections'),
       'wprm_cuisine': _termsFromField(r, 'wprm_cuisine'),
@@ -140,38 +150,31 @@ class _CollectionPageState extends State<CollectionPage> {
       'wprm_nutrition_tag': _termsFromField(r, 'wprm_nutrition_tag'),
       'recipe': r['recipe'],
       'meta': r['meta'],
-      'ingredient_swaps': _swapTextOf(r), // ✅ This now finds the hidden text
+      'ingredient_swaps': _swapTextOf(r),
       'wprm_allergies': _allergyTagsOf(r),
     };
   }
 
-  // ✅ IMPROVED SWAP FINDER (Locates text in 5 different places)
   String _swapTextOf(Map<String, dynamic> r) {
     String? tryGet(dynamic val) {
-      if (val != null && val.toString().trim().isNotEmpty) {
-        return val.toString();
-      }
+      if (val != null && val.toString().trim().isNotEmpty) return val.toString();
       return null;
     }
 
-    // 1. Top Level
     var found = tryGet(r['ingredient_swaps']) ?? tryGet(r['swap_text']);
     if (found != null) return stripHtml(found).trim();
 
-    // 2. Meta
     if (r['meta'] is Map) {
       final m = r['meta'];
       found = tryGet(m['ingredient_swaps']) ?? tryGet(m['wprm_ingredient_swaps']);
       if (found != null) return stripHtml(found).trim();
     }
 
-    // 3. Inner Recipe Object
     final recipe = r['recipe'];
     if (recipe is Map) {
       found = tryGet(recipe['ingredient_swaps']) ?? tryGet(recipe['swap_text']);
       if (found != null) return stripHtml(found).trim();
 
-      // 4. Custom Fields (This is where your Wellington data is!)
       if (recipe['custom_fields'] is Map) {
         final cf = recipe['custom_fields'];
         found = tryGet(cf['ingredient_swaps']);
@@ -215,9 +218,7 @@ class _CollectionPageState extends State<CollectionPage> {
     final t = r['title'];
     if (t is Map && t['rendered'] is String) {
       final s = (t['rendered'] as String).trim();
-      if (s.isNotEmpty) {
-        return s.replaceAll('&#038;', '&').replaceAll('&amp;', '&');
-      }
+      if (s.isNotEmpty) return s.replaceAll('&#038;', '&').replaceAll('&amp;', '&');
     }
     final plain = r['title'];
     if (plain is String && plain.trim().isNotEmpty) return plain.trim();
@@ -267,7 +268,7 @@ class _CollectionPageState extends State<CollectionPage> {
   Widget build(BuildContext context) {
     final baseFiltered = widget.recipes.where(_hasCollection).toList();
     final query = _searchCtrl.text.trim().toLowerCase();
-    
+
     final filtered = query.isEmpty
         ? baseFiltered
         : baseFiltered.where((r) => _titleOf(r).toLowerCase().contains(query)).toList();
@@ -275,6 +276,7 @@ class _CollectionPageState extends State<CollectionPage> {
     final youngestChild = _policy.youngestChild(_family);
     final youngestMonths = _policy.youngestChildAgeMonths(_family);
     final childNames = _family.children.map((c) => c.name).toList();
+    final householdNames = _householdNames();
 
     return Scaffold(
       backgroundColor: const Color(0xFFECF3F4),
@@ -318,7 +320,7 @@ class _CollectionPageState extends State<CollectionPage> {
                       final isFav = id != null && widget.favoriteIds.contains(id);
 
                       final ix = (id != null) ? _indexById[id] : null;
-                      
+
                       final babyTag = (ix != null)
                           ? FoodPolicyCore.babySuitabilityLabel(
                               ix: ix,
@@ -329,7 +331,6 @@ class _CollectionPageState extends State<CollectionPage> {
 
                       String? allergyStatus;
                       if (ix != null) {
-                        // ✅ Pass found data to logic
                         allergyStatus = _calculateAllergyStatus(r, ix.allergies, _swapTextOf(r));
                       }
 
@@ -340,14 +341,13 @@ class _CollectionPageState extends State<CollectionPage> {
                         onTap: id == null
                             ? null
                             : () => Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => RecipeDetailScreen(id: id),
-                                  ),
+                                  MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: id)),
                                 ),
                         tags: ix?.suitable ?? [],
                         ageWarning: babyTag,
                         childNames: childNames,
-                        allergyStatus: allergyStatus, 
+                        householdNames: householdNames,
+                        allergyStatus: allergyStatus,
                       );
                     },
                   ),

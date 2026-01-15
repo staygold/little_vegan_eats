@@ -40,9 +40,17 @@ class FamilyProfileRepository {
 
   Stream<FamilyProfile> watchFamilyProfile() => _sharedFamilyStream;
 
+  // ------------------------------------------------------------
+  // ✅ NEW: Supports BOTH schemas
+  // - New: parent: {name, email}
+  // - Old: parentName / parentEmail
+  // Ensures at least 1 adult exists in the in-memory profile
+  // ------------------------------------------------------------
   FamilyProfile _parseFamily(Map<String, dynamic> data) {
-    final adultsRaw = (data['adults'] is List) ? data['adults'] as List : const [];
-    final kidsRaw = (data['children'] is List) ? data['children'] as List : const [];
+    final adultsRaw =
+        (data['adults'] is List) ? data['adults'] as List : const [];
+    final kidsRaw =
+        (data['children'] is List) ? data['children'] as List : const [];
 
     final adults = adultsRaw
         .whereType<Map>()
@@ -54,7 +62,41 @@ class FamilyProfileRepository {
         .map((m) => _parsePerson(Map<String, dynamic>.from(m), forceChild: true))
         .toList();
 
+    // ✅ If adults missing, synthesize an Adult 1 from parent.name
+    if (adults.isEmpty) {
+      final parentName = _readParentName(data);
+      if (parentName.isNotEmpty) {
+        adults.add(ProfilePerson(
+          id: 'adult_1',
+          type: PersonType.adult,
+          name: parentName,
+          hasAllergies: false,
+          allergies: const <String>[],
+          dobMonth: null,
+          dobYear: null,
+          dob: null,
+        ));
+      }
+    }
+
     return FamilyProfile(adults: adults, children: children);
+  }
+
+  String _readParentName(Map<String, dynamic> data) {
+    // new: parent.name
+    final parent = data['parent'];
+    if (parent is Map && parent['name'] is String) {
+      final n = (parent['name'] as String).trim();
+      if (n.isNotEmpty) return n;
+    }
+
+    // legacy: parentName
+    if (data['parentName'] is String) {
+      final n = (data['parentName'] as String).trim();
+      if (n.isNotEmpty) return n;
+    }
+
+    return '';
   }
 
   ProfilePerson _parsePerson(
@@ -143,12 +185,18 @@ class FamilyProfileRepository {
     dynamic raw;
 
     // 1) common alternate keys
-    raw = m['allergy_keys'] ?? m['allergyKeys'] ?? m['allergies'] ?? m['allergens'];
+    raw = m['allergy_keys'] ??
+        m['allergyKeys'] ??
+        m['allergies'] ??
+        m['allergens'];
 
     // 2) nested dietary fallback
     if (raw == null && m['dietary'] is Map) {
       final d = Map<String, dynamic>.from(m['dietary'] as Map);
-      raw = d['allergies'] ?? d['allergy_keys'] ?? d['allergyKeys'] ?? d['allergens'];
+      raw = d['allergies'] ??
+          d['allergy_keys'] ??
+          d['allergyKeys'] ??
+          d['allergens'];
     }
 
     // 3) if allergies is a Map, try items inside it
@@ -193,8 +241,11 @@ class FamilyProfileRepository {
     return out.toSet().toList()..sort();
   }
 
+  // Kept (not used in Home/Profile right now, but used elsewhere in your app)
   AllergiesSelection _parseSelection(Map<String, dynamic> data) {
-    final raw = (data['allergiesSelection'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final raw =
+        (data['allergiesSelection'] as Map?)?.cast<String, dynamic>() ??
+            const {};
 
     final mode = SuitabilityMode.values.firstWhere(
       (m) => m.name == (raw['mode'] ?? 'wholeFamily'),
@@ -202,7 +253,8 @@ class FamilyProfileRepository {
     );
 
     final ids =
-        (raw['personIds'] as List?)?.map((e) => e.toString()).toSet() ?? <String>{};
+        (raw['personIds'] as List?)?.map((e) => e.toString()).toSet() ??
+            <String>{};
 
     return AllergiesSelection(
       enabled: raw['enabled'] == true,

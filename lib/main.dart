@@ -1,7 +1,12 @@
 // lib/main.dart
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
+
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'firebase_options.dart';
@@ -10,30 +15,29 @@ import 'app/app_shell.dart';
 import 'meal_plan/meal_plan_screen.dart';
 import 'recipes/recipes_bootstrap_gate.dart';
 
-// ✅ GLOBAL: clamp scroll (no bounce / no pull-down reveal) + no glow (+ optional no scrollbar)
+// Global scroll behaviour
 import 'app/no_bounce_scroll_behavior.dart';
 
-// ✅ USE YOUR REAL APP THEME (includes SnackBarTheme, button themes, etc.)
+// App theme
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ✅ Status bar: let UI draw behind it, make icons white (matches your hero screens)
+  // Status bar styling
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light, // Android icons
-      statusBarBrightness: Brightness.dark, // iOS: dark => light icons
+      statusBarIconBrightness: Brightness.light,
+      statusBarBrightness: Brightness.dark,
     ),
   );
 
-  // ✅ IMPORTANT: don't block first frame with Firebase/Hive
+  // Do NOT block first frame
   runApp(const MyApp());
 }
 
-/// Boots Firebase + Hive AFTER the first frame so you don't get the white screen
-/// during debug / wireless deploy.
+/// Boots Firebase + Hive AFTER first frame
 class _AppBootstrap extends StatefulWidget {
   const _AppBootstrap({required this.child});
   final Widget child;
@@ -50,17 +54,49 @@ class _AppBootstrapState extends State<_AppBootstrap> {
   void initState() {
     super.initState();
 
-    // Run AFTER first paint so the app renders immediately.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       try {
+        // -------------------------------
+        // Firebase
+        // -------------------------------
         await Firebase.initializeApp(
           options: DefaultFirebaseOptions.currentPlatform,
         );
+
+        // -------------------------------
+        // Crashlytics
+        // -------------------------------
+
+        // 🔧 ENABLE while testing (you can change this later)
+        await FirebaseCrashlytics.instance
+    .setCrashlyticsCollectionEnabled(true);
+
+        // Flutter framework errors (non-fatal unless framework aborts)
+        FlutterError.onError =
+            FirebaseCrashlytics.instance.recordFlutterError;
+
+        // Async / platform errors (fatal)
+        PlatformDispatcher.instance.onError = (error, stack) {
+          FirebaseCrashlytics.instance.recordError(
+            error,
+            stack,
+            fatal: true,
+          );
+          return true;
+        };
+
+        // -------------------------------
+        // Hive
+        // -------------------------------
         await Hive.initFlutter();
 
         if (!mounted) return;
         setState(() => _ready = true);
-      } catch (e) {
+      } catch (e, st) {
+        // Capture startup errors too
+        await FirebaseCrashlytics.instance
+            .recordError(e, st, fatal: true);
+
         if (!mounted) return;
         setState(() => _error = e);
       }
@@ -111,19 +147,19 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
 
-      // ✅ This is now the ONLY theme source of truth (SnackBars included)
+      // Single theme source of truth
       theme: buildAppTheme(),
 
-      // ✅ GLOBAL: no bounce / no pull-down reveal + no glow
+      // Global scroll behaviour
       scrollBehavior: const NoBounceScrollBehavior(),
 
-      // ✅ Boot Firebase/Hive AFTER first frame, then show AuthGate
+      // Firebase/Hive bootstrapped after first frame
       home: const _AppBootstrap(child: AuthGate()),
 
-      // ✅ keep your routes intact (optional, but harmless)
       routes: {
         '/app': (_) => const AppShell(),
-        '/meal-plan': (_) => RecipesBootstrapGate(child: MealPlanScreen()),
+        '/meal-plan': (_) =>
+            RecipesBootstrapGate(child: MealPlanScreen()),
       },
     );
   }

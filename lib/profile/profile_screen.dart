@@ -12,6 +12,7 @@ import '../meal_plan/core/meal_plan_review_service.dart';
 import '../theme/app_theme.dart';
 import 'adult_profile_screen.dart';
 import 'child_profile_screen.dart';
+import 'account_details_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -24,7 +25,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _ensuredAdult1 = false;
   bool _hydratingChildKeys = false;
 
+  // ✅ run ensures once per user-doc load to avoid scroll reset loops
+  bool _didInitialEnsure = false;
+
+  final ScrollController _scrollController = ScrollController();
+
   static const String _welcomeRoute = '/';
+
+  // Email verification UX
+  bool _emailVerified = true;
+  bool _sendingVerify = false;
 
   void _goToWelcome() {
     if (!mounted) return;
@@ -34,8 +44,81 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  @override
+  void initState() {
+    super.initState();
+    _syncEmailVerified();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  // -----------------------
+  // ✅ unified read
+  // -----------------------
+  String _readParentName(Map<String, dynamic> data) {
+    final parent = data['parent'];
+    if (parent is Map && parent['name'] is String) {
+      final n = (parent['name'] as String).trim();
+      if (n.isNotEmpty) return n;
+    }
+
+    if (data['parentName'] is String) {
+      final n = (data['parentName'] as String).trim();
+      if (n.isNotEmpty) return n;
+    }
+
+    return '';
+  }
+
+  Future<void> _syncEmailVerified() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    // Reload once to get freshest emailVerified value
+    try {
+      await user.reload();
+    } catch (_) {}
+
+    final refreshed = FirebaseAuth.instance.currentUser;
+    if (!mounted) return;
+
+    setState(() {
+      _emailVerified = (refreshed?.emailVerified ?? true);
+    });
+  }
+
+  Future<void> _resendVerificationEmail() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    setState(() => _sendingVerify = true);
+    try {
+      await user.sendEmailVerification();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Verification email sent')),
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message ?? e.code)),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not send verification email')),
+      );
+    } finally {
+      if (mounted) setState(() => _sendingVerify = false);
+    }
+  }
+
   // --------------------------------------------------
-  // Ensure Adult 1 from onboarding parentName
+  // Ensure Adult 1 from parent.name (new) + parentName (legacy)
   // --------------------------------------------------
   Future<void> _ensureAdult1(
     DocumentReference<Map<String, dynamic>> docRef,
@@ -49,10 +132,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
 
-    final parentName = (data['parentName'] is String)
-        ? (data['parentName'] as String).trim()
-        : '';
-
+    final parentName = _readParentName(data);
     if (parentName.isEmpty) {
       _ensuredAdult1 = true;
       return;
@@ -112,6 +192,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } finally {
       _hydratingChildKeys = false;
     }
+  }
+
+  // --------------------------------------------------
+  // Run all ensure/migration steps ONCE (no build callbacks)
+  // --------------------------------------------------
+  Future<void> _runInitialEnsures(
+    DocumentReference<Map<String, dynamic>> docRef,
+    Map<String, dynamic> data,
+  ) async {
+    if (_didInitialEnsure) return;
+    _didInitialEnsure = true;
+
+    await _ensureAdult1(docRef, data);
+
+    final children = (data['children'] as List?) ?? [];
+    await _ensureChildKeys(docRef, children);
   }
 
   // --------------------------------------------------
@@ -182,7 +278,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final updated = [...children];
     final childKey = FirebaseFirestore.instance.collection('_').doc().id;
 
-    // ✅ NEW: store month/year (null initially), not full DOB
+    // ✅ store month/year (null initially), not full DOB
     updated.add({
       'childKey': childKey,
       'name': '',
@@ -380,7 +476,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.brandDark,
           foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
         child: Text(
           label,
@@ -404,9 +501,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
         onPressed: onTap,
         style: OutlinedButton.styleFrom(
           foregroundColor: AppColors.brandDark,
-          side:
-              BorderSide(color: AppColors.brandDark.withOpacity(0.35), width: 2),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          side: BorderSide(
+            color: AppColors.brandDark.withOpacity(0.35),
+            width: 2,
+          ),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
         child: Text(
           label,
@@ -430,6 +530,73 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Widget _emailVerifyBanner(BuildContext context) {
+    if (_emailVerified) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Material(
+        color: Colors.white.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.mark_email_unread_outlined, color: Colors.white),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Please verify your email to secure your account.\nCheck your inbox, then tap “I’ve verified”.',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    height: 1.2,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Column(
+                children: [
+                  TextButton(
+                    onPressed: _sendingVerify ? null : _resendVerificationEmail,
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white,
+                    ),
+                    child: _sendingVerify
+                        ? const SizedBox(
+                            height: 16,
+                            width: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Resend'),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      await _syncEmailVerified();
+                      if (!mounted) return;
+                      if (_emailVerified) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Email verified')),
+                        );
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Not verified yet')),
+                        );
+                      }
+                    },
+                    style: TextButton.styleFrom(foregroundColor: Colors.white),
+                    child: const Text("I've verified"),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     const panelBg = Color(0xFFECF3F4);
@@ -446,7 +613,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, authSnap) {
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
 
         final user = authSnap.data;
@@ -455,6 +624,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
           WidgetsBinding.instance.addPostFrameCallback((_) => _goToWelcome());
           return const SizedBox.shrink();
         }
+
+        // Keep local state aligned with auth changes (no setState here)
+        _emailVerified = user.emailVerified;
+
+        // ✅ reset ensures if a different user signs in
+        // (rare, but prevents stale flags if you test multiple accounts)
+        // ignore: unrelated_type_equality_checks
+        // (no need to store uid; this screen gets rebuilt via auth gate anyway)
 
         final docRef =
             FirebaseFirestore.instance.collection('users').doc(user.uid);
@@ -480,18 +657,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 return const Center(child: Text('Profile not ready yet'));
               }
 
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                _ensureAdult1(docRef, data);
-              });
+              // ✅ run migrations ONCE, not via post-frame callback
+              _runInitialEnsures(docRef, data);
 
               final adults = (data['adults'] as List?) ?? [];
               final children = (data['children'] as List?) ?? [];
 
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                _ensureChildKeys(docRef, children);
-              });
+              final fromAdults = _firstNameFromAdults(adults);
+              final fromParent = _readParentName(data)
+                  .split(RegExp(r'\s+'))
+                  .where((p) => p.isNotEmpty)
+                  .toList();
+              final headerName = fromAdults.isNotEmpty
+                  ? fromAdults
+                  : (fromParent.isNotEmpty ? fromParent.first : '');
 
-              final headerName = _firstNameFromAdults(adults);
               final email = (user.email ?? '').trim();
 
               final visibleAdults = adults
@@ -509,6 +689,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   .toList();
 
               return ListView(
+                controller: _scrollController,
                 padding: EdgeInsets.zero,
                 children: [
                   Container(
@@ -528,7 +709,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   .copyWith(
                                 color: Colors.white,
                                 fontWeight: FontWeight.w900,
-                                fontVariations: const [FontVariation('wght', 900)],
+                                fontVariations: const [
+                                  FontVariation('wght', 900)
+                                ],
                                 letterSpacing: 0.6,
                               ),
                             ),
@@ -543,17 +726,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
+                            _emailVerifyBanner(context),
                             const SizedBox(height: 16),
                             SizedBox(
                               height: 52,
                               width: double.infinity,
                               child: OutlinedButton(
-                                onPressed: () {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Account details (TODO)'),
+                                onPressed: () async {
+                                  await Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (_) =>
+                                          const AccountDetailsScreen(),
                                     ),
                                   );
+                                  await _syncEmailVerified();
                                 },
                                 style: OutlinedButton.styleFrom(
                                   foregroundColor: Colors.white,

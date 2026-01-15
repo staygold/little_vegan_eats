@@ -1,4 +1,3 @@
-// lib/meal_plan/builder/meal_plan_builder_service.dart
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -13,7 +12,7 @@ import '../core/meal_plan_log.dart' as mplog;
 // ✅ Debug toggle
 // -------------------------------------------------------
 class MealPlanDebug {
-  static bool enabled = true; 
+  static bool enabled = true;
   static int sampleIds = 6;
 
   static void i(String msg, {String? key}) {
@@ -42,7 +41,7 @@ class MealPlanDebug {
 // -------------------------------------------------------
 class _LeftoverBatch {
   final int recipeId;
-  final String audience; 
+  final String audience;
   final DateTime cookedOn;
   final DateTime expiresOn;
   int remainingItems;
@@ -90,6 +89,12 @@ class MealPlanBuilderService {
 
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
   DateTime _addDays(DateTime d, int days) => d.add(Duration(days: days));
+
+  int _daysBetween(DateTime a, DateTime b) {
+    final da = _dateOnly(a);
+    final db = _dateOnly(b);
+    return db.difference(da).inDays;
+  }
 
   List<String> _buildScheduledDates({
     required String startDateKey,
@@ -141,8 +146,7 @@ class MealPlanBuilderService {
     final lunch = _normalizeAudience(inMap['lunch'], fallback: _audFamily);
     final dinner = _normalizeAudience(inMap['dinner'], fallback: _audFamily);
 
-    final snackFallback =
-        _normalizeAudience(inMap['snack'], fallback: _audKids);
+    final snackFallback = _normalizeAudience(inMap['snack'], fallback: _audKids);
     final snack1 = _normalizeAudience(inMap['snack1'], fallback: snackFallback);
     final snack2 = _normalizeAudience(inMap['snack2'], fallback: snackFallback);
 
@@ -157,7 +161,7 @@ class MealPlanBuilderService {
   }
 
   // -------------------------------------------------------
-  // Batch cooking reuse tracking
+  // Batch cooking reuse tracking (build-run memory)
   // -------------------------------------------------------
   Map<int, DateTime> _firstUsedDates = {};
 
@@ -303,12 +307,14 @@ class MealPlanBuilderService {
       'source': 'leftover',
       'audience': audience,
       'leftover': true,
+      'badge': 'LEFTOVER', // ✅ UI highlight
       'leftoverFromDay': _toDateKey(batch.cookedOn),
       'itemsUsed': itemsNeeded,
     };
   }
 
-  void _createLeftoversIfAny({
+  /// Creates leftovers ledger rows and returns whether leftovers were actually created.
+  bool _createLeftoversIfAny({
     required int recipeId,
     required String audience,
     required DateTime servingDate,
@@ -317,7 +323,7 @@ class MealPlanBuilderService {
     required int storageDays,
   }) {
     final remaining = max(0, itemsMade - itemsUsed);
-    if (remaining <= 0) return;
+    if (remaining <= 0) return false;
 
     final cooked = _dateOnly(servingDate);
     final expires = _addDays(cooked, storageDays);
@@ -337,6 +343,8 @@ class MealPlanBuilderService {
       'made=$itemsMade used=$itemsUsed left=$remaining expires=${_toDateKey(expires)}',
       key: 'leftoverCreate:$recipeId:$audience:${_toDateKey(cooked)}',
     );
+
+    return true;
   }
 
   // -------------------------------------------------------
@@ -377,8 +385,9 @@ class MealPlanBuilderService {
   // ✅ Warning helpers
   // -------------------------------------------------------
   String _childKeyFromMap(Map<String, dynamic> c) {
-    final v =
-        (c['childKey'] ?? c['key'] ?? c['id'] ?? c['uid'] ?? '').toString().trim();
+    final v = (c['childKey'] ?? c['key'] ?? c['id'] ?? c['uid'] ?? '')
+        .toString()
+        .trim();
     return v;
   }
 
@@ -411,69 +420,56 @@ class MealPlanBuilderService {
   }) {
     final out = <Map<String, dynamic>>[];
 
-    // ------------------------------------
-    // 1. ALLERGY SWAP CHECK
-    // ------------------------------------
-    // Since the recipe was picked, we know it's either safe OR needs swaps.
-    // If it needs swaps, the Controller will tell us via the label.
+    // 1) Allergy swap
     final swapLabel = controller.allergySubtitleForRecipeId(recipeId);
-    
     if (swapLabel != null && swapLabel.toLowerCase().contains('swap')) {
       out.add({
         'type': 'allergy_swap',
         'slot': slotKey,
-        'message': swapLabel, // e.g. "Needs swap (Dairy)"
+        'message': swapLabel,
         'isSwap': true,
-        // The UI will see this warning and suppress "Safe for whole family"
       });
     }
 
-    // ------------------------------------
-    // 2. AGE SUITABILITY CHECKS (Existing)
-    // ------------------------------------
+    // 2) Age suitability
     if (children.isEmpty) return out;
 
     final ix = controller.indexForId(recipeId);
-    if (ix == null) {
-      return out;
-    }
+    if (ix == null) return out;
 
     final minAge = ix.minAgeMonths;
     final normAudience = audience.trim().toLowerCase();
-    
-    // Missing Data Check
+
     if (minAge == null || minAge <= 0) {
       final youngest = MealPlanAgeEngine.youngestChild(children, servingDate);
       if (youngest != null) {
         final name = _childNameFromMap(youngest);
         out.add(_createWarningMap(
-          slotKey, 
-          youngest, 
-          0, 
+          slotKey,
+          youngest,
+          0,
           messageOverride: 'Check suitability for $name (no age tag)',
         ));
       }
       return out;
     }
 
-    // Age Logic
     if (normAudience == _audKids) {
       final youngest = MealPlanAgeEngine.youngestChild(children, servingDate);
       if (youngest != null) {
-        final target = MealPlanAgeEngine.targetChildForKidsAudience(children, servingDate);
+        final target =
+            MealPlanAgeEngine.targetChildForKidsAudience(children, servingDate);
         final youngestKey = _childKeyFromMap(youngest);
         final targetKey = target != null ? _childKeyFromMap(target) : '';
 
-        // Only warn if youngest is NOT the target we picked for
         if (youngestKey != targetKey) {
           final age = MealPlanAgeEngine.childAgeMonths(youngest, servingDate);
           if (age != null && minAge > age) {
-             out.add(_createWarningMap(slotKey, youngest, minAge));
+            out.add(_createWarningMap(slotKey, youngest, minAge));
           }
         }
       }
     } else {
-      // Family
       for (final child in children) {
         final age = MealPlanAgeEngine.childAgeMonths(child, servingDate);
         if (age != null && minAge > age) {
@@ -486,11 +482,11 @@ class MealPlanBuilderService {
   }
 
   Map<String, dynamic> _createWarningMap(
-    String slot, 
-    Map<String, dynamic> child, 
-    int minAge, 
-    {String? messageOverride}
-  ) {
+    String slot,
+    Map<String, dynamic> child,
+    int minAge, {
+    String? messageOverride,
+  }) {
     final name = _childNameFromMap(child);
     return {
       'type': 'not_suitable_for_child',
@@ -498,8 +494,44 @@ class MealPlanBuilderService {
       'childKey': _childKeyFromMap(child),
       'childName': name,
       'minAgeMonths': minAge,
-      'message': messageOverride ?? 'Not suitable for $name yet', 
+      'message': messageOverride ?? 'Not suitable for $name yet',
     };
+  }
+
+  // -------------------------------------------------------
+  // ✅ Variety / “real family cooking” policy
+  // -------------------------------------------------------
+  final Set<int> _usedOnCurrentDay = <int>{};
+  final Map<int, int> _leftoverUsesToday = <int, int>{};
+
+  static const int _urgentExpiryDays = 1;
+  static const double _sameDayLeftoverRepeatChance = 0.18;
+  static const int _maxLeftoverUsesPerDayPerRecipe = 2;
+
+  void _resetDayVarietyState() {
+    _usedOnCurrentDay.clear();
+    _leftoverUsesToday.clear();
+  }
+
+  int _leftoverUsesCount(int recipeId) => _leftoverUsesToday[recipeId] ?? 0;
+
+  void _noteLeftoverUse(int recipeId) {
+    _leftoverUsesToday[recipeId] = _leftoverUsesCount(recipeId) + 1;
+  }
+
+  bool _canRepeatLeftoverToday({
+    required Random random,
+    required int recipeId,
+    required DateTime servingDate,
+    required DateTime expiresOn,
+  }) {
+    if (_leftoverUsesCount(recipeId) >= _maxLeftoverUsesPerDayPerRecipe) {
+      return false;
+    }
+
+    final daysToExpiry = _daysBetween(servingDate, expiresOn);
+    if (daysToExpiry <= _urgentExpiryDays) return true;
+    return random.nextDouble() < _sameDayLeftoverRepeatChance;
   }
 
   // -------------------------------------------------------
@@ -514,8 +546,7 @@ class MealPlanBuilderService {
     required List<Map<String, dynamic>> childrenSSOT,
     required int adultCount,
     required int kidCount,
-    int babyThresholdMonths =
-        MealPlanAgeEngine.defaultBabyThresholdMonths,
+    int babyThresholdMonths = MealPlanAgeEngine.defaultBabyThresholdMonths,
   }) {
     final normAudience = audience.trim().toLowerCase();
 
@@ -538,9 +569,51 @@ class MealPlanBuilderService {
       };
     }
 
+    // ---- DEBUG: how many candidates can even do leftovers? ----
+int storageCapable = 0;
+int itemMode = 0;
+
+for (final id in candidates) {
+  final full = _findRecipeById(availableRecipes, id);
+  if (full == null) continue;
+
+  final isItem = _extractServingMode(full) == _servingModeItem;
+  if (isItem) itemMode++;
+
+  final sd = controller.extractStorageDays(full) ?? 0;
+  if (isItem && sd > 0) storageCapable++;
+}
+
+MealPlanDebug.i(
+  'STORAGE_CANDIDATES slot=$slot day=${_toDateKey(servingDate)} '
+  'aud=$normAudience candidates=${candidates.length} itemMode=$itemMode storageCapable=$storageCapable',
+  key: 'storageCands:$slot:${_toDateKey(servingDate)}',
+);
+
+
+int printed = 0;
+for (final id in candidates) {
+  if (printed >= 5) break;
+  final full = _findRecipeById(availableRecipes, id);
+  if (full == null) continue;
+
+  final mode = _extractServingMode(full);
+  final sd = controller.extractStorageDays(full) ?? 0;
+
+  MealPlanDebug.d(
+    'STORAGE_SAMPLE id=$id mode=$mode storageDays=$sd',
+    key: 'storageSample:$id',
+  );
+  printed++;
+}
+
+    // --------------------------------------------------
+    // 1. Baby / Youngest Logic
+    // --------------------------------------------------
     if (normAudience == _audKids && childrenSSOT.length > 1) {
       final youngest = MealPlanAgeEngine.youngestChild(childrenSSOT, servingDate);
-      final target = MealPlanAgeEngine.targetChildForKidsAudience(childrenSSOT, servingDate);
+      final target =
+          MealPlanAgeEngine.targetChildForKidsAudience(childrenSSOT, servingDate);
       final youngestKey = youngest != null ? _childKeyFromMap(youngest) : '';
       final targetKey = target != null ? _childKeyFromMap(target) : '';
 
@@ -556,20 +629,125 @@ class MealPlanBuilderService {
           }).toList();
 
           if (safeForBaby.isNotEmpty) {
-             candidates = safeForBaby;
+            candidates = safeForBaby;
           }
         }
       }
     }
 
-    final pickedId = candidates[random.nextInt(candidates.length)];
+    // --------------------------------------------------
+    // 2. Precompute "storage-capable" recipes for this slot
+    //    (Your request: prioritize the few recipes that have storage details)
+    // --------------------------------------------------
+    final Map<int, bool> hasStorageById = <int, bool>{};
+
+    for (final id in candidates) {
+      final full = _findRecipeById(availableRecipes, id);
+      if (full == null) continue;
+      if (_extractServingMode(full) != _servingModeItem) continue;
+
+      final storageDays = controller.extractStorageDays(full) ?? 0;
+      if (storageDays > 0) {
+        hasStorageById[id] = true;
+      }
+    }
+
+    // --------------------------------------------------
+    // 3. Smarter pick: score candidates (variety + leftovers + storage-capable)
+    // --------------------------------------------------
+    int pickedId = -1;
+    bool pickedFromLeftoverIntent = false;
+
+    // Sort leftovers by expiry (eat soonest first)
+    _leftovers.sort((a, b) => a.expiresOn.compareTo(b.expiresOn));
+
+    final Map<int, _LeftoverBatch> usableLeftoverByRecipe = <int, _LeftoverBatch>{};
+
+    for (final batch in _leftovers) {
+      if (batch.audience != normAudience) continue;
+      if (batch.remainingItems <= 0) continue;
+      if (_dateOnly(servingDate).isAfter(_dateOnly(batch.expiresOn))) continue;
+      if (!candidates.contains(batch.recipeId)) continue;
+
+      usableLeftoverByRecipe.putIfAbsent(batch.recipeId, () => batch);
+    }
+
+    double bestScore = double.infinity;
+
+    for (final id in candidates) {
+      final alreadyUsedToday = _usedOnCurrentDay.contains(id);
+      final leftoverBatch = usableLeftoverByRecipe[id];
+      final storageCapable = hasStorageById[id] == true;
+
+      double score = random.nextDouble() * 0.5;
+
+      // Same-day repeat penalty (strong)
+      if (alreadyUsedToday) score += 500.0;
+
+      // Penalize tight reuse across days
+      final first = _firstUsedDates[id];
+      if (first != null) {
+        final daysSinceFirst = _daysBetween(first, servingDate);
+        if (daysSinceFirst <= 1) score += 40.0;
+        if (daysSinceFirst <= 2) score += 18.0;
+      }
+
+      // ✅ Storage-capable preference
+      // Small bias so your handful of "storageDays" recipes actually show up.
+      // (Won't override leftovers or hard constraints.)
+      if (storageCapable && !alreadyUsedToday) {
+        score -= 18.0;
+      }
+
+      // Leftovers preference
+      if (leftoverBatch != null) {
+        final daysToExpiry = _daysBetween(servingDate, leftoverBatch.expiresOn)
+            .clamp(-999, 999);
+
+        if (!alreadyUsedToday) {
+          score -= 120.0;
+          score += (daysToExpiry * 3.0);
+        } else {
+          final allowRepeat = _canRepeatLeftoverToday(
+            random: random,
+            recipeId: id,
+            servingDate: servingDate,
+            expiresOn: leftoverBatch.expiresOn,
+          );
+
+          if (allowRepeat) {
+            score -= 35.0;
+            score += (daysToExpiry * 2.5);
+          } else {
+            score += 200.0;
+          }
+        }
+      }
+
+      if (score < bestScore) {
+        bestScore = score;
+        pickedId = id;
+        pickedFromLeftoverIntent = leftoverBatch != null;
+      }
+    }
+
+    if (pickedId == -1) {
+      pickedId = candidates[random.nextInt(candidates.length)];
+      pickedFromLeftoverIntent = false;
+    }
+
     _noteFirstUseIfMissing(pickedId, servingDate);
 
+    // --------------------------------------------------
+    // 4. Build entry (and consume/create leftovers)
+    // --------------------------------------------------
     Map<String, dynamic> entry;
 
     final full = _findRecipeById(availableRecipes, pickedId);
+
     if (full != null && _extractServingMode(full) == _servingModeItem) {
       final storageDays = controller.extractStorageDays(full) ?? 0;
+
       if (storageDays > 0) {
         final itemsNeeded = _itemsNeededForSlotDay(
           recipe: full,
@@ -587,9 +765,11 @@ class MealPlanBuilderService {
 
         if (leftoverEntry != null) {
           entry = leftoverEntry;
+          _noteLeftoverUse(pickedId);
         } else {
           final made = _itemsMadeBase(full);
-          _createLeftoversIfAny(
+
+          final createdLeftovers = _createLeftoversIfAny(
             recipeId: pickedId,
             audience: normAudience,
             servingDate: servingDate,
@@ -606,23 +786,39 @@ class MealPlanBuilderService {
             'itemsMade': made,
             'itemsUsed': itemsNeeded,
             'storageDays': storageDays,
+            'freshCook': true,
+            if (createdLeftovers) 'badge': 'BATCH', // ✅ UI highlight
           };
         }
+
+        _usedOnCurrentDay.add(pickedId);
+
+        if (pickedFromLeftoverIntent) {
+          MealPlanDebug.d(
+            'PICK intent=leftover slot=$slot day=${_toDateKey(servingDate)} recipe=$pickedId '
+            'usedToday=${_leftoverUsesCount(pickedId)}',
+            key: 'pickIntentLeftover:$pickedId:$slot:${_toDateKey(servingDate)}',
+          );
+        }
       } else {
+        // item-mode but no storageDays => normal
         entry = <String, dynamic>{
           'type': 'recipe',
           'recipeId': pickedId,
           'source': 'auto-builder',
           'audience': normAudience,
         };
+        _usedOnCurrentDay.add(pickedId);
       }
     } else {
+      // non-item serving mode => normal
       entry = <String, dynamic>{
         'type': 'recipe',
         'recipeId': pickedId,
         'source': 'auto-builder',
         'audience': normAudience,
       };
+      _usedOnCurrentDay.add(pickedId);
     }
 
     final warnings = _buildWarningsForPick(
@@ -651,6 +847,8 @@ class MealPlanBuilderService {
     required int kidCount,
     int babyThresholdMonths = MealPlanAgeEngine.defaultBabyThresholdMonths,
   }) {
+    _resetDayVarietyState();
+
     final slots = <String, dynamic>{};
 
     final aBreakfast = mealAudiences['breakfast'] ?? _audFamily;
@@ -758,8 +956,7 @@ class MealPlanBuilderService {
     final adultCount = _adultCountSSOT();
     final kidCount = childrenSSOT.length;
 
-    final oldSet =
-        oldScheduledDates.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
+    final oldSet = oldScheduledDates.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
     final todayKey = MealPlanKeys.todayKey();
 
     final added = <String>[];
@@ -789,8 +986,11 @@ class MealPlanBuilderService {
     int created = 0;
 
     for (final dateKey in added) {
-      final docRef =
-          repo.programDayDoc(uid: controller.uid, programId: programId, dateKey: dateKey);
+      final docRef = repo.programDayDoc(
+        uid: controller.uid,
+        programId: programId,
+        dateKey: dateKey,
+      );
 
       final snap = await docRef.get();
       if (snap.exists) continue;
@@ -932,8 +1132,7 @@ class MealPlanBuilderService {
     final kidCount = childrenSSOT.length;
 
     final cleanTitle = title.trim().isEmpty ? 'My Plan' : title.trim();
-    final cleanWeekdays =
-        weekdays.where((d) => d >= 1 && d <= 7).toSet().toList()..sort();
+    final cleanWeekdays = weekdays.where((d) => d >= 1 && d <= 7).toSet().toList()..sort();
     if (cleanWeekdays.isEmpty) throw Exception('Please select at least one weekday.');
 
     final startDateKey = startDayKey.trim();

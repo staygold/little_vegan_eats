@@ -888,10 +888,14 @@ class _RecipeListScreenState extends State<RecipeListScreen> {
 
                   final ix = (id != null) ? _indexById[id] : null;
 
-                  String? allergyStatus;
-                  if (ix != null) {
-                    allergyStatus = _calculateAllergyStatus(ix, r);
-                  }
+                 final String? allergyStatus = (ix == null)
+    ? null
+    : _policy.allergyStatusLabel(
+        ix: ix,
+        item: r,
+        family: _family,
+        selection: _allergies,
+      );
 
                   final babyTag = (ix != null)
                       ? FoodPolicyCore.babySuitabilityLabel(
