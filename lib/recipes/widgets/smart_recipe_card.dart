@@ -119,16 +119,14 @@ class SmartRecipeCard extends StatelessWidget {
       badge = mp ?? fav;
     }
 
-    final Widget trailing = actions.isNotEmpty
-        ? Row(mainAxisSize: MainAxisSize.min, children: actions)
-        : const Icon(Icons.chevron_right, color: Colors.grey);
+    
 
     return RecipeCard(
       title: title,
       imageUrl: imageUrl,
       onTap: onTap,
       badge: badge,
-      trailing: trailing,
+     
       subtitleWidget: RecipeSuitabilityDisplay(
         tags: tags,
         allergyStatus: allergyStatus,

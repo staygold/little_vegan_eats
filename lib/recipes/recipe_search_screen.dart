@@ -1,14 +1,25 @@
 // lib/recipes/recipe_search_screen.dart
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // ✅ for status bar style
 
-import '../theme/app_theme.dart';
 import '../app/sub_header_bar.dart';
 import '../shared/search_pill.dart';
+import '../theme/app_theme.dart';
+
+import '../utils/text.dart';
 
 import 'recipe_detail_screen.dart';
-import 'widgets/recipe_card.dart';
+import 'widgets/smart_recipe_card.dart';
+
+import 'family_profile.dart';
+import 'family_profile_repository.dart';
+import 'household_food_policy.dart';
+import 'food_policy_core.dart';
+import 'recipe_index.dart';
+import 'recipe_index_builder.dart';
+import 'allergy_engine.dart';
 
 class RecipeSearchScreen extends StatefulWidget {
   const RecipeSearchScreen({
@@ -38,12 +49,23 @@ class _RecipeSearchScreenState extends State<RecipeSearchScreen> {
   // In-memory only
   final List<String> _recentSearches = <String>[];
 
+  // ✅ Household + index (match Collection/Favourites style)
+  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
+  late final HouseholdFoodPolicy _policy = HouseholdFoodPolicy(familyRepo: _familyRepo);
+  StreamSubscription<FamilyProfile>? _familySub;
+  FamilyProfile _family = const FamilyProfile(adults: [], children: []);
+
+  final Map<int, RecipeIndex> _indexById = {};
+
   @override
   void initState() {
     super.initState();
 
     _results = const [];
     _hasSearched = false;
+
+    _buildIndex();
+    _listenToHousehold();
 
     // ensure clear icon updates as you type (SearchPill relies on controller.text)
     _controller.addListener(() {
@@ -59,14 +81,172 @@ class _RecipeSearchScreenState extends State<RecipeSearchScreen> {
   @override
   void dispose() {
     _debounce?.cancel();
+    _familySub?.cancel();
     _controller.dispose();
     _focus.dispose();
     super.dispose();
   }
 
-  // ----------------------------
-  // DATA HELPERS
-  // ----------------------------
+  void _listenToHousehold() {
+    _familySub = _familyRepo.watchFamilyProfile().listen((fam) {
+      if (!mounted) return;
+      setState(() => _family = fam);
+    });
+  }
+
+  void _buildIndex() {
+    _indexById.clear();
+    final normalised = <Map<String, dynamic>>[];
+    for (final r in widget.recipes) {
+      final m = _normaliseForIndex(r);
+      if (m.isNotEmpty) normalised.add(m);
+    }
+    _indexById.addAll(RecipeIndexBuilder.buildById(normalised));
+  }
+
+  List<String> _householdNames() {
+    return _family.allPeople
+        .map((p) => (p.name ?? '').trim())
+        .where((n) => n.isNotEmpty)
+        .toList();
+  }
+
+  // ----------------------------------------------------------------------
+  // ALLERGY STATUS LABEL (matches Collection)
+  // ----------------------------------------------------------------------
+  String? _calculateAllergyStatus(
+    Map<String, dynamic> recipe,
+    List<String> recipeTags,
+    String swapText,
+  ) {
+    final blockedNames = <String>[];
+    final swapNames = <String>[];
+
+    final allergyPeople = _family.allPeople.where((p) => p.allergies.isNotEmpty).toList();
+
+    for (final person in allergyPeople) {
+      final result = AllergyEngine.evaluate(
+        recipeAllergyTags: recipeTags,
+        swapFieldText: swapText,
+        userAllergies: person.allergies,
+      );
+
+      if (result.status == AllergyStatus.notSuitable) {
+        blockedNames.add(person.name);
+      } else if (result.status == AllergyStatus.swapRequired) {
+        swapNames.add(person.name);
+      }
+    }
+
+    if (blockedNames.isNotEmpty) {
+      final unique = blockedNames
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toSet()
+          .toList();
+      if (unique.length == 1) return "Not suitable for ${unique.first}";
+      return "Not suitable for ${unique.length} people";
+    }
+
+    if (swapNames.isNotEmpty) {
+      final unique = swapNames.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet().toList();
+      if (unique.length == 1) return "Needs swap for ${unique.first}";
+      return "Needs swap for ${unique.length} people";
+    }
+
+    if (allergyPeople.isNotEmpty) {
+      if (allergyPeople.length == 1) {
+        final n = (allergyPeople.first.name ?? '').trim();
+        if (n.isNotEmpty) return "Safe for $n";
+        return "Safe";
+      }
+      return "Safe for whole family";
+    }
+
+    return null;
+  }
+
+  // ----------------------------------------------------------------------
+  // DATA NORMALIZATION + HELPERS (keep aligned with other pages)
+  // ----------------------------------------------------------------------
+
+  Map<String, dynamic> _normaliseForIndex(Map<String, dynamic> r) {
+    final id = _toInt(r['id']);
+    if (id == null) return const {};
+    return <String, dynamic>{
+      'id': id,
+      'title': _titleOf(r),
+      'ingredients': '',
+      'wprm_course': _termsFromField(r, 'wprm_course'),
+      'wprm_collections': _termsFromField(r, 'wprm_collections'),
+      'wprm_cuisine': _termsFromField(r, 'wprm_cuisine'),
+      'wprm_suitable_for': _termsFromField(r, 'wprm_suitable_for'),
+      'wprm_nutrition_tag': _termsFromField(r, 'wprm_nutrition_tag'),
+      'recipe': r['recipe'],
+      'meta': r['meta'],
+      'ingredient_swaps': _swapTextOf(r),
+      'wprm_allergies': _allergyTagsOf(r),
+    };
+  }
+
+  String _swapTextOf(Map<String, dynamic> r) {
+    String? tryGet(dynamic val) {
+      if (val != null && val.toString().trim().isNotEmpty) return val.toString();
+      return null;
+    }
+
+    var found = tryGet(r['ingredient_swaps']) ?? tryGet(r['swap_text']);
+    if (found != null) return stripHtml(found).trim();
+
+    if (r['meta'] is Map) {
+      final m = r['meta'];
+      found = tryGet(m['ingredient_swaps']) ?? tryGet(m['wprm_ingredient_swaps']);
+      if (found != null) return stripHtml(found).trim();
+    }
+
+    final recipe = r['recipe'];
+    if (recipe is Map) {
+      found = tryGet(recipe['ingredient_swaps']) ?? tryGet(recipe['swap_text']);
+      if (found != null) return stripHtml(found).trim();
+
+      if (recipe['custom_fields'] is Map) {
+        final cf = recipe['custom_fields'];
+        found = tryGet(cf['ingredient_swaps']);
+        if (found != null) return stripHtml(found).trim();
+      }
+    }
+
+    return '';
+  }
+
+  List<String> _allergyTagsOf(Map<String, dynamic> r) {
+    try {
+      final recipe = r['recipe'];
+      if (recipe is Map && recipe['tags'] is Map) {
+        final tags = recipe['tags'] as Map;
+        final a = tags['allergies'];
+        if (a is List) {
+          return a.map((e) => (e is Map ? e['name'] : e).toString()).toList();
+        }
+      }
+    } catch (_) {}
+    return _termsFromField(r, 'wprm_allergies');
+  }
+
+  List<String> _termsFromField(Map<String, dynamic> r, String field) {
+    final v = r[field];
+    if (v is List) return v.map((e) => e.toString().trim()).toList();
+    if (v is String && v.isNotEmpty) return [v];
+    return const [];
+  }
+
+  int? _toInt(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v.trim());
+    return int.tryParse(v.toString().trim());
+  }
 
   String _titleOf(Map<String, dynamic> r) {
     final t = r['title'];
@@ -80,12 +260,6 @@ class _RecipeSearchScreenState extends State<RecipeSearchScreen> {
     return s.isEmpty ? 'Untitled' : s;
   }
 
-  int? _idOf(Map<String, dynamic> r) {
-    final raw = r['id'];
-    if (raw is int) return raw;
-    return int.tryParse('$raw');
-  }
-
   String? _thumbOf(Map<String, dynamic> r) {
     final recipe = r['recipe'];
     if (recipe is Map<String, dynamic>) {
@@ -95,6 +269,7 @@ class _RecipeSearchScreenState extends State<RecipeSearchScreen> {
     return null;
   }
 
+  // (kept because it’s used for keyword search below)
   String? _subtitleOf(Map<String, dynamic> r) {
     final recipe = r['recipe'];
     if (recipe is Map) {
@@ -190,6 +365,10 @@ class _RecipeSearchScreenState extends State<RecipeSearchScreen> {
           }
         }
 
+        // include subtitle/course as a searchable term too (cheap win)
+        final sub = _subtitleOf(r);
+        if (sub != null && sub.trim().isNotEmpty) keywords.add(sub.trim());
+
         if (keywords.join(' ').toLowerCase().contains(q)) return true;
       }
 
@@ -198,7 +377,7 @@ class _RecipeSearchScreenState extends State<RecipeSearchScreen> {
   }
 
   void _openRecipe(Map<String, dynamic> r) {
-    final id = _idOf(r);
+    final id = _toInt(r['id']);
     if (id == null) return;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => RecipeDetailScreen(id: id)),
@@ -266,6 +445,11 @@ class _RecipeSearchScreenState extends State<RecipeSearchScreen> {
     final showEmptyState = _query.isEmpty && !_hasSearched;
     final showNoResults = _query.isNotEmpty && _hasSearched && _results.isEmpty;
 
+    final youngestChild = _policy.youngestChild(_family);
+    final youngestMonths = _policy.youngestChildAgeMonths(_family);
+    final childNames = _family.children.map((c) => c.name).toList();
+    final householdNames = _householdNames();
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       // ✅ Force this screen to use DARK status bar icons
       value: SystemUiOverlayStyle.dark.copyWith(
@@ -297,52 +481,59 @@ class _RecipeSearchScreenState extends State<RecipeSearchScreen> {
               Expanded(
                 child: showEmptyState
                     ? SingleChildScrollView(
-                        keyboardDismissBehavior:
-                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                         child: _buildEmptySuggestions(context),
                       )
                     : showNoResults
                         ? Center(
                             child: Text(
                               'No results',
-                              style: (theme.textTheme.titleMedium ??
-                                      const TextStyle())
-                                  .copyWith(
+                              style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
                                 color: Colors.black.withOpacity(0.55),
                               ),
                             ),
                           )
                         : ListView.separated(
-                            keyboardDismissBehavior:
-                                ScrollViewKeyboardDismissBehavior.onDrag,
+                            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                             padding: const EdgeInsets.fromLTRB(16, 8, 16, 18),
                             itemCount: _results.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(height: 12),
+                            separatorBuilder: (_, __) => const SizedBox(height: 10),
                             itemBuilder: (context, i) {
                               final r = _results[i];
-                              final id = _idOf(r);
+                              final id = _toInt(r['id']);
+                              final title = _titleOf(r);
+                              final thumb = _thumbOf(r);
+                              final isFav = id != null && widget.favoriteIds.contains(id);
 
-                              return RecipeCard(
-                                title: _titleOf(r),
-                                subtitle: _subtitleOf(r),
-                                imageUrl: _thumbOf(r),
-                                onTap: () => _openRecipe(r),
-                                badge: (id != null &&
-                                        widget.favoriteIds.contains(id))
-                                    ? Container(
-                                        padding: const EdgeInsets.all(6),
-                                        decoration: BoxDecoration(
-                                          color: Colors.white.withOpacity(0.92),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(
-                                          Icons.star_rounded,
-                                          size: 16,
-                                          color: Colors.amber,
-                                        ),
-                                      )
-                                    : null,
+                              final ix = (id != null) ? _indexById[id] : null;
+
+                              final babyTag = (ix != null)
+                                  ? FoodPolicyCore.babySuitabilityLabel(
+                                      ix: ix,
+                                      youngestChild: youngestChild,
+                                      youngestMonths: youngestMonths,
+                                    )
+                                  : null;
+
+                              String? allergyStatus;
+                              if (ix != null) {
+                                allergyStatus = _calculateAllergyStatus(
+                                  r,
+                                  ix.allergies,
+                                  _swapTextOf(r),
+                                );
+                              }
+
+                              return SmartRecipeCard(
+                                title: title,
+                                imageUrl: thumb,
+                                isFavorite: isFav,
+                                onTap: id == null ? null : () => _openRecipe(r),
+                                tags: ix?.suitable ?? const [],
+                                ageWarning: babyTag,
+                                childNames: childNames,
+                                householdNames: householdNames,
+                                allergyStatus: allergyStatus,
                               );
                             },
                           ),
@@ -380,8 +571,7 @@ class _RecentRow extends StatelessWidget {
         contentPadding: const EdgeInsets.symmetric(horizontal: 14),
         title: Text(
           text,
-          style: (Theme.of(context).textTheme.bodyLarge ?? const TextStyle())
-              .copyWith(
+          style: (Theme.of(context).textTheme.bodyLarge ?? const TextStyle()).copyWith(
             fontWeight: FontWeight.w800,
             color: AppColors.textPrimary,
           ),

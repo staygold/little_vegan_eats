@@ -20,11 +20,7 @@ import 'favorites_screen.dart';
 import 'course_page.dart';
 
 import 'recipe_detail_screen.dart';
-
-// ✅ latest page
 import 'latest_recipes_page.dart';
-
-// ✅ popular page (same pattern as Home)
 import 'popular_recipes_page.dart';
 
 class RecipeHubScreen extends StatefulWidget {
@@ -312,7 +308,6 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
     );
   }
 
-  // ✅ Latest (top 20)
   void _openLatest() {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -326,7 +321,6 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
     );
   }
 
-  // ✅ Popular (same as Home)
   void _openPopular() {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -346,6 +340,11 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
   Widget build(BuildContext context) {
     const railBg = Color(0xFFECF3F4);
     const iconBoxBg = Color(0xFFD9E6E5);
+
+    const topRadius = BorderRadius.only(
+      topLeft: Radius.circular(20),
+      topRight: Radius.circular(20),
+    );
 
     if (_recipesLoading) {
       return const Scaffold(
@@ -389,7 +388,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
               QuickActionItem(
                 label: 'Popular',
                 asset: 'assets/images/icons/popular.svg',
-                onTap: _openPopular, // ✅ now wired to PopularRecipesPage
+                onTap: _openPopular,
               ),
               QuickActionItem(
                 label: 'Mains',
@@ -402,7 +401,7 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
               ),
               QuickActionItem(
                 label: 'Snacks',
-                asset: 'assets/images/icons/snacks.svg',
+                asset: 'assets/images/icons/mains.svg',
                 onTap: () => _openCourse(
                   'snacks',
                   'Snacks',
@@ -412,197 +411,209 @@ class _RecipeHubScreenState extends State<RecipeHubScreen> {
             ],
           ),
 
+          // ✅ This is the missing piece vs your current RecipeHubScreen:
+          // dark backdrop + rounded grey sheet, same as HomeScreen.
           Container(
-            color: railBg,
-            padding: const EdgeInsets.only(top: 6, bottom: 22),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // --------------------
-                // YOUR FAVOURITES
-                // --------------------
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 18, 4, 10),
-                  child: Row(
-                    children: [
-                      Expanded(child: Text('YOUR FAVOURITES', style: titleStyle)),
-                      TextButton(
-                        onPressed: _openViewAllFavourites,
-                        child: Text(
-                          'VIEW ALL',
-                          style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
-                            color: AppColors.brandDark,
-                            fontWeight: FontWeight.w700,
-                            fontVariations: const [FontVariation('wght', 700)],
-                            letterSpacing: 0.2,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                if (_loadingFavs)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 18),
-                    child: Center(
-                      child: SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    ),
-                  )
-                else if (favs.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 16),
-                    child: _EmptyStateCard(
-                      text: 'Your favourites will show here.\nTap the ⭐ on any recipe to save it.',
-                    ),
-                  )
-                else
-                  SizedBox(
-                    height: favRailH,
-                    child: ListView.separated(
-                      padding: const EdgeInsets.only(left: 16, right: 12),
-                      scrollDirection: Axis.horizontal,
-                      physics: const BouncingScrollPhysics(),
-                      itemCount: favs.length.clamp(0, 12),
-                      separatorBuilder: (_, __) => const SizedBox(width: 12),
-                      itemBuilder: (context, i) {
-                        final r = favs[i];
-                        final id = _recipeId(r['id']);
-                        final title = _titleOf(r);
-
-                        final baseUrl = _bestImageUrl(r);
-                        final imgUrl = baseUrl == null
-                            ? null
-                            : upscaleJetpackImage(baseUrl, w: requestW, h: requestH);
-
-                        final isFav = id != null && _favoriteIds.contains(id);
-
-                        return SizedBox(
-                          width: favCardW,
-                          height: favRailH,
-                          child: Material(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(12),
-                            clipBehavior: Clip.antiAlias,
-                            child: InkWell(
-                              onTap: id == null ? null : () => _openRecipe(r),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Expanded(
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        if (imgUrl == null)
-                                          const Center(child: Icon(Icons.restaurant_menu))
-                                        else
-                                          Image.network(
-                                            imgUrl,
-                                            fit: BoxFit.cover,
-                                            filterQuality: FilterQuality.high,
-                                            cacheWidth: cacheW,
-                                            cacheHeight: cacheH,
-                                            gaplessPlayback: true,
-                                            errorBuilder: (_, __, ___) =>
-                                                const Center(child: Icon(Icons.restaurant_menu)),
-                                          ),
-                                        if (isFav)
-                                          const Positioned(
-                                            right: 10,
-                                            top: 10,
-                                            child: Icon(Icons.star_rounded, color: Colors.amber),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                  SizedBox(
-                                    height: favTitleBlockH,
-                                    child: Padding(
-                                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-                                      child: Align(
-                                        alignment: Alignment.topLeft,
-                                        child: Text(
-                                          title,
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: cardTextStyle,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
+            color: AppColors.brandDark,
+            padding: const EdgeInsets.only(top: 12),
+            child: Material(
+              color: railBg,
+              shape: const RoundedRectangleBorder(borderRadius: topRadius),
+              clipBehavior: Clip.antiAlias,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 6, bottom: 22),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // --------------------
+                    // YOUR FAVOURITES
+                    // --------------------
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 18, 4, 10),
+                      child: Row(
+                        children: [
+                          Expanded(child: Text('YOUR FAVOURITES', style: titleStyle)),
+                          TextButton(
+                            onPressed: _openViewAllFavourites,
+                            child: Text(
+                              'VIEW ALL',
+                              style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+                                color: AppColors.brandDark,
+                                fontWeight: FontWeight.w700,
+                                fontVariations: const [FontVariation('wght', 700)],
+                                letterSpacing: 0.2,
                               ),
                             ),
                           ),
-                        );
-                      },
+                        ],
+                      ),
                     ),
-                  ),
 
-                const SizedBox(height: 18),
-
-                // --------------------
-                // BROWSE BY COURSE
-                // --------------------
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
-                  child: Text('BROWSE BY COURSE', style: titleStyle),
-                ),
-
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Column(
-                    children: [
-                      ...RecipeHubScreen._courses.map(
-                        (c) => Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: _CourseCard(
-                            title: c.title.toUpperCase(),
-                            subtitle: c.subtitle,
-                            iconAsset: c.iconAsset,
-                            iconBoxBg: iconBoxBg,
-                            onTap: () => _openCourse(c.slug, c.title, c.subtitle),
+                    if (_loadingFavs)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 18),
+                        child: Center(
+                          child: SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 16),
-
+                      )
+                    else if (favs.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16),
+                        child: _EmptyStateCard(
+                          text: 'Your favourites will show here.\nTap the ⭐ on any recipe to save it.',
+                        ),
+                      )
+                    else
                       SizedBox(
-                        width: double.infinity,
-                        height: 56,
-                        child: ElevatedButton(
-                          onPressed: _openViewAllRecipes,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.brandDark,
-                            foregroundColor: Colors.white,
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          child: Text(
-                            'VIEW ALL RECIPES',
-                            style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w800,
-                              fontSize: 14,
-                              letterSpacing: 1.2,
-                            ),
-                          ),
+                        height: favRailH,
+                        child: ListView.separated(
+                          padding: const EdgeInsets.only(left: 16, right: 12),
+                          scrollDirection: Axis.horizontal,
+                          physics: const BouncingScrollPhysics(),
+                          itemCount: favs.length.clamp(0, 12),
+                          separatorBuilder: (_, __) => const SizedBox(width: 12),
+                          itemBuilder: (context, i) {
+                            final r = favs[i];
+                            final id = _recipeId(r['id']);
+                            final title = _titleOf(r);
+
+                            final baseUrl = _bestImageUrl(r);
+                            final imgUrl = baseUrl == null
+                                ? null
+                                : upscaleJetpackImage(baseUrl, w: requestW, h: requestH);
+
+                            final isFav = id != null && _favoriteIds.contains(id);
+
+                            return SizedBox(
+                              width: favCardW,
+                              height: favRailH,
+                              child: Material(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                clipBehavior: Clip.antiAlias,
+                                child: InkWell(
+                                  onTap: id == null ? null : () => _openRecipe(r),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: Stack(
+                                          fit: StackFit.expand,
+                                          children: [
+                                            if (imgUrl == null)
+                                              const Center(child: Icon(Icons.restaurant_menu))
+                                            else
+                                              Image.network(
+                                                imgUrl,
+                                                fit: BoxFit.cover,
+                                                filterQuality: FilterQuality.high,
+                                                cacheWidth: cacheW,
+                                                cacheHeight: cacheH,
+                                                gaplessPlayback: true,
+                                                errorBuilder: (_, __, ___) =>
+                                                    const Center(child: Icon(Icons.restaurant_menu)),
+                                              ),
+                                            if (isFav)
+                                              const Positioned(
+                                                right: 10,
+                                                top: 10,
+                                                child: Icon(Icons.star_rounded, color: Colors.amber),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                      SizedBox(
+                                        height: favTitleBlockH,
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                                          child: Align(
+                                            alignment: Alignment.topLeft,
+                                            child: Text(
+                                              title,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: cardTextStyle,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       ),
-                    ],
-                  ),
-                ),
 
-                const SizedBox(height: 10),
-              ],
+                    const SizedBox(height: 18),
+
+                    // --------------------
+                    // BROWSE BY COURSE
+                    // --------------------
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+                      child: Text('BROWSE BY COURSE', style: titleStyle),
+                    ),
+
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Column(
+                        children: [
+                          ...RecipeHubScreen._courses.map(
+                            (c) => Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: _CourseCard(
+                                title: c.title.toUpperCase(),
+                                subtitle: c.subtitle,
+                                iconAsset: c.iconAsset,
+                                iconBoxBg: iconBoxBg,
+                                onTap: () => _openCourse(c.slug, c.title, c.subtitle),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+
+                          SizedBox(
+                            width: double.infinity,
+                            height: 56,
+                            child: ElevatedButton(
+                              onPressed: _openViewAllRecipes,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.brandDark,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                              child: Text(
+                                'VIEW ALL RECIPES',
+                                style: (theme.textTheme.titleMedium ?? const TextStyle()).copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 14,
+                                  letterSpacing: 1.2,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 10),
+                  ],
+                ),
+              ),
             ),
           ),
+
+          const SizedBox(height: 12),
         ],
       ),
     );
