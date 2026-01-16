@@ -1059,11 +1059,11 @@ class _HomeDynamicScaffoldState extends State<_HomeDynamicScaffold> {
     // ✅ IMPORTANT: never auto-select snacks
     String nextSlot = 'breakfast';
 
-    if (h >= 4 && h < 11) {
+    if (h >= 4 && h < 10) {
       nextSlot = 'breakfast';
-    } else if (h >= 11 && h < 15) {
+    } else if (h >= 10 && h < 14) {
       nextSlot = 'lunch';
-    } else if (h >= 15 && h < 20) {
+    } else if (h >= 14 && h < 20) {
       nextSlot = 'dinner';
     } else {
       // After 8pm

@@ -4,18 +4,23 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../lists/shopping_repo.dart';
+// ✅ FIXED: Using the file name from your screenshot
+import '../../lists/shopping_list_detail_screen.dart'; 
+
 import '../../recipes/family_profile_repository.dart';
 import '../../recipes/recipe_repository.dart';
 import '../../recipes/serving_engine.dart';
-import '../../utils/text.dart'; // ✅ stripHtml parity with RecipeDetailScreen
+import '../../utils/text.dart';
 import '../core/meal_plan_keys.dart';
 import '../core/meal_plan_slots.dart';
+import '../core/meal_plan_repository.dart';
 import '../../app/sub_header_bar.dart';
 import '../../recipes/family_profile.dart';
-
+import '../../recipes/recipe_detail_screen.dart';
 
 class _S {
   static const Color bg = Color(0xFFECF3F4);
@@ -85,45 +90,74 @@ class MealPlanShoppingSheet extends StatefulWidget {
 }
 
 class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
-  // Step 0 = select meals, Step 1 = select list
+  // ---------------------------------------------------------------------------
+  // Debug
+  // ---------------------------------------------------------------------------
+
+  static const bool _debugShop = true;
+
+  void _dlog(String msg) {
+    if (!_debugShop) return;
+    // ignore: avoid_print
+    print('SHOP DEBUG → $msg');
+  }
+
+  bool _isKeyInAllowedHorizon(String key) {
+    final parts = key.split('|');
+    if (parts.isEmpty) return false;
+    final dayKey = parts.first.trim();
+    return _allowedDayKeys.contains(dayKey);
+  }
+
+  // Step 0 = horizon, Step 1 = select meals, Step 2 = select list
   int _step = 0;
   final PageController _pageCtrl = PageController();
-
-
 
   // Plan selection
   final Set<String> _selectedKeys = {};
   final Map<String, int> _slotToRecipeId = {};
   late Map<int, String> _titles;
 
-  // Family profile repo (defaults only)
-  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
+  // Local mutable plan data
+  late Map<String, dynamic> _currentPlanData;
 
-  // Family profile defaults (used ONLY to seed shared cards)
+  // Track fetched days
+  final Set<String> _fetchedDayKeys = {};
+  bool _isFetchingMoreData = false;
+
+  // Day grouping map (dayKey -> keys in that day)
+  final Map<String, List<String>> _keysByDay = {};
+  final List<String> _allDayKeysSorted = [];
+
+  // Horizon config
+  int _daysAhead = 5; // default
+  late DateTime _anchorDate; // Start date for horizon
+  late Set<String> _allowedDayKeys; // within horizon
+  List<String> _horizonDayKeysSorted = [];
+
+  // Track which day page we are reviewing in Step 1
+  int _reviewPageIndex = 0;
+
+  static const bool _backfillPastPlannedDays = true;
+
+  // Family profile repo
+  final FamilyProfileRepository _familyRepo = FamilyProfileRepository();
   int _profileAdults = 2;
   int _profileKids = 1;
   StreamSubscription<FamilyProfile>? _familySub;
 
-
-  // Per-card state (shared recipes)
   final Map<String, int> _adultsByKey = {};
   final Map<String, int> _kidsByKey = {};
   final Set<String> _touchedPeopleKeys = {};
-
-  // Per-card state (item recipes)
   final Map<String, int> _batchByKey = {};
 
-  // Recipe mode + metadata cache
   final Map<int, bool> _isItemModeById = {};
-  final Map<int, int> _baseServingsById = {}; // "adult portions" (base servings count)
+  final Map<int, int> _baseServingsById = {};
   final Map<int, int?> _itemsPerPersonById = {};
   final Map<int, String> _itemLabelById = {};
-  final Map<int, int> _itemsMadeById = {}; // baseServings * ipp (items mode only)
-
-  // ✅ full recipe map cache (used for exact serving advice line + multiplier)
+  final Map<int, int> _itemsMadeById = {};
   final Map<int, Map<String, dynamic>> _recipeMapById = {};
 
-  // List picker state
   final _listNameCtrl = TextEditingController();
   bool _isLoading = false;
 
@@ -131,9 +165,44 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
   void initState() {
     super.initState();
     _titles = Map.from(widget.knownTitles);
+
+    // Deep copy planData to allow safe merging
+    _currentPlanData = Map<String, dynamic>.from(widget.planData);
+    if (_currentPlanData['days'] is Map) {
+      _currentPlanData['days'] =
+          Map<String, dynamic>.from(_currentPlanData['days']);
+    } else {
+      _currentPlanData['days'] = <String, dynamic>{};
+    }
+
+    // Mark passed data as fetched so we don't re-fetch it unnecessarily
+    final type = (_currentPlanData['type'] ?? 'week').toString();
+    if (type == 'week') {
+      final days = _currentPlanData['days'] as Map;
+      _fetchedDayKeys.addAll(days.keys.map((k) => k.toString()));
+    } else if (type == 'day') {
+      String? key;
+      if (_currentPlanData.containsKey('dateKey')) {
+        key = _currentPlanData['dateKey'];
+      } else if (_currentPlanData.containsKey('dayKey')) {
+        key = _currentPlanData['dayKey'];
+      } else {
+        key = MealPlanKeys.todayKey();
+      }
+      _fetchedDayKeys.add(key!);
+    }
+
+    // Anchor Date is strictly TODAY.
+    _anchorDate = _dateOnly(DateTime.now());
+
+    _dlog("Anchor Date set to: $_anchorDate");
+
     _parsePlan();
     _wireFamilyProfile();
     _primeRecipeMetaCache();
+
+    _buildDayIndex();
+    _applyHorizon(daysAhead: _daysAhead, jumpToReview: false);
   }
 
   @override
@@ -144,102 +213,381 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     super.dispose();
   }
 
-  // ---------------------------------------------------------------------------
-  // Family profile (defaults only; NOT global UI)
-  // ---------------------------------------------------------------------------
-
   void _wireFamilyProfile() {
-  _familySub?.cancel();
+    _familySub?.cancel();
 
-  _familySub = _familyRepo.watchFamilyProfile().listen((family) {
-    final adultCount = family.adults
-        .where((p) => p.name.trim().isNotEmpty)
-        .length;
+    _familySub = _familyRepo.watchFamilyProfile().listen((family) {
+      final adultCount =
+          family.adults.where((p) => p.name.trim().isNotEmpty).length;
 
-    final kidCount = family.children
-        .where((p) => p.name.trim().isNotEmpty)
-        .length;
+      final kidCount =
+          family.children.where((p) => p.name.trim().isNotEmpty).length;
 
-    final nextAdults = adultCount > 0 ? adultCount : 1;
-    final nextKids = kidCount;
+      final nextAdults = adultCount > 0 ? adultCount : 1;
+      final nextKids = kidCount;
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    setState(() {
-      _profileAdults = nextAdults;
-      _profileKids = nextKids;
+      setState(() {
+        _profileAdults = nextAdults;
+        _profileKids = nextKids;
 
-      // Apply defaults to any shared-recipe cards the user hasn't touched yet
-      for (final key in _slotToRecipeId.keys) {
-        final rid = _slotToRecipeId[key];
-        if (rid == null) continue;
-        final isItem = _isItemModeById[rid] == true;
-        if (isItem) continue;
+        for (final key in _slotToRecipeId.keys) {
+          final rid = _slotToRecipeId[key];
+          if (rid == null) continue;
+          final isItem = _isItemModeById[rid] == true;
+          if (isItem) continue;
 
-        if (!_touchedPeopleKeys.contains(key)) {
-          _adultsByKey[key] = _adultsByKey[key] ?? _profileAdults;
-          _kidsByKey[key] = _kidsByKey[key] ?? _profileKids;
+          if (!_touchedPeopleKeys.contains(key)) {
+            _adultsByKey[key] = _adultsByKey[key] ?? _profileAdults;
+            _kidsByKey[key] = _kidsByKey[key] ?? _profileKids;
+          }
         }
-      }
+      });
+    }, onError: (e) {
+      _dlog('familyProfile watch error=$e');
+      if (!mounted) return;
+      setState(() {
+        _profileAdults = 2;
+        _profileKids = 1;
+      });
     });
-  }, onError: (_) {
-    if (!mounted) return;
-    setState(() {
-      _profileAdults = 2;
-      _profileKids = 1;
-    });
-  });
-}
+  }
 
   // ---------------------------------------------------------------------------
   // Plan parsing
   // ---------------------------------------------------------------------------
 
   void _parsePlan() {
-    final type = widget.planData['type'] ?? 'week';
+    _slotToRecipeId.clear();
+
+    bool isRecipeEntry(dynamic entry) {
+      if (entry is! Map) return false;
+      return entry['kind'] == 'recipe' ||
+          entry.containsKey('recipeId') ||
+          entry.containsKey('id');
+    }
+
+    int? recipeIdFrom(dynamic entry) {
+      if (entry is! Map) return null;
+      final rawId = entry['recipeId'] ?? entry['id'];
+      if (rawId == null) return null;
+      return int.tryParse(rawId.toString());
+    }
 
     void processDay(String dayKey, Map dayData) {
-      for (final slot in MealPlanSlots.order) {
-        final entry = dayData[slot];
-        if (entry is Map &&
-            (entry['kind'] == 'recipe' || entry.containsKey('recipeId'))) {
-          final rawId = entry['recipeId'] ?? entry['id'];
-          final rid = int.tryParse(rawId.toString());
-          if (rid == null) continue;
+      // Handle nested 'slots' from Firestore documents
+      Map targetMap = dayData;
+      if (dayData.containsKey('slots') && dayData['slots'] is Map) {
+        targetMap = dayData['slots'];
+      }
 
-          final key = '$dayKey|$slot';
-          _slotToRecipeId[key] = rid;
+      final slots = targetMap.keys
+          .map((k) => k.toString())
+          .where((slot) => isRecipeEntry(targetMap[slot]))
+          .toList();
 
-          // Default selected
+      slots.sort((a, b) {
+        final pa = _slotScore(a);
+        final pb = _slotScore(b);
+        if (pa != pb) return pa.compareTo(pb);
+        return a.compareTo(b);
+      });
+
+      for (final slot in slots) {
+        final entry = targetMap[slot];
+        final rid = recipeIdFrom(entry);
+        if (rid == null) continue;
+
+        final key = '$dayKey|$slot';
+        _slotToRecipeId[key] = rid;
+
+        // Auto-select if new
+        if (!_selectedKeys.contains(key)) {
           _selectedKeys.add(key);
-
-          // Title placeholder if needed
-          _titles.putIfAbsent(rid, () => 'Recipe #$rid');
-
-          // Defaults
-          _batchByKey[key] = 1;
         }
+
+        _titles.putIfAbsent(rid, () => 'Recipe #$rid');
+        _batchByKey[key] = _batchByKey[key] ?? 1;
       }
     }
 
-    if (type == 'day') {
-      final day = widget.planData['day'];
-      if (day is Map) processDay('Today', day);
-    } else {
-      final days = widget.planData['days'];
-      if (days is Map) {
-        final keys = days.keys.toList()..sort();
-        for (final k in keys) {
-          if (days[k] is Map) processDay(k.toString(), days[k]);
-        }
+    // 1. Process 'days' map
+    final days = _currentPlanData['days'];
+    if (days is Map) {
+      final keys = days.keys.map((k) => k.toString()).toList()..sort();
+      for (final k in keys) {
+        final d = days[k];
+        if (d is Map) processDay(k, Map.from(d));
       }
     }
+
+    // 2. Process 'day' map
+    final singleDay = _currentPlanData['day'];
+    if (singleDay is Map) {
+      String dayKey = MealPlanKeys.todayKey();
+      if (_currentPlanData.containsKey('dateKey')) {
+        dayKey = _currentPlanData['dateKey'].toString();
+      } else if (_currentPlanData.containsKey('dayKey')) {
+        dayKey = _currentPlanData['dayKey'].toString();
+      }
+
+      bool alreadyProcessed = false;
+      for (var existingKey in _slotToRecipeId.keys) {
+        if (existingKey.startsWith('$dayKey|')) {
+          alreadyProcessed = true;
+          break;
+        }
+      }
+
+      if (!alreadyProcessed) {
+        processDay(dayKey, Map.from(singleDay));
+      }
+    }
+
+    _dlog('parsePlan slotToRecipeId count=${_slotToRecipeId.length}');
+  }
+
+  void _buildDayIndex() {
+    _keysByDay.clear();
+
+    for (final key in _slotToRecipeId.keys) {
+      final parts = key.split('|');
+      if (parts.isEmpty) continue;
+      final dayKey = parts.first.trim();
+      if (dayKey.isEmpty) continue;
+      _keysByDay.putIfAbsent(dayKey, () => []).add(key);
+    }
+
+    for (final dayKey in _keysByDay.keys) {
+      _keysByDay[dayKey]!.sort((a, b) {
+        final sa = a.split('|').last;
+        final sb = b.split('|').last;
+        final pa = _slotScore(sa);
+        final pb = _slotScore(sb);
+        if (pa != pb) return pa.compareTo(pb);
+        return sa.compareTo(sb);
+      });
+    }
+
+    _allDayKeysSorted
+      ..clear()
+      ..addAll(_keysByDay.keys);
+
+    _allDayKeysSorted.sort((a, b) {
+      final da = MealPlanKeys.parseDayKey(a);
+      final db = MealPlanKeys.parseDayKey(b);
+      if (da != null && db != null) return da.compareTo(db);
+      if (da != null) return -1;
+      if (db != null) return 1;
+      return a.compareTo(b);
+    });
   }
 
   // ---------------------------------------------------------------------------
-  // Recipe meta helpers (mirrors RecipeDetailScreen tag reading)
+  // Horizon selection
   // ---------------------------------------------------------------------------
 
+  void _applyHorizon({required int daysAhead, required bool jumpToReview}) {
+    _checkAndFetchMissingDays(daysAhead);
+
+    final nextDaysAhead = daysAhead.clamp(1, 14);
+    final start = _anchorDate;
+    final end = _anchorDate.add(Duration(days: nextDaysAhead - 1));
+
+    _dlog('applyHorizon daysAhead=$nextDaysAhead start=$start end=$end');
+
+    final allowed = <String>{};
+    final futureAllowed = <String>[];
+    final pastEligible = <String>[];
+
+    for (final dayKey in _allDayKeysSorted) {
+      final dt = MealPlanKeys.parseDayKey(dayKey);
+      if (dt == null) {
+        allowed.add(dayKey);
+        continue;
+      }
+
+      final d = _dateOnly(dt.toLocal());
+      if (!d.isBefore(start) && !d.isAfter(end)) {
+        allowed.add(dayKey);
+        futureAllowed.add(dayKey);
+      } else if (d.isBefore(start)) {
+        pastEligible.add(dayKey);
+      }
+    }
+
+    // Guard against empty list to prevent crash
+    if (_backfillPastPlannedDays && _allDayKeysSorted.isNotEmpty) {
+      final targetPlannedDays =
+          nextDaysAhead.clamp(1, _allDayKeysSorted.length);
+      final already = allowed.length;
+      final need = (targetPlannedDays - already).clamp(0, 999);
+
+      if (need > 0 && pastEligible.isNotEmpty) {
+        final take = need.clamp(0, pastEligible.length);
+        final backfill = pastEligible.reversed.take(take).toList().reversed;
+        for (final d in backfill) {
+          allowed.add(d);
+        }
+      }
+    }
+
+    final horizonDays = _allDayKeysSorted.where(allowed.contains).toList();
+
+    final nextSelected = <String>{};
+    for (final dayKey in horizonDays) {
+      nextSelected.addAll(_keysByDay[dayKey] ?? const <String>[]);
+    }
+
+    setState(() {
+      _daysAhead = nextDaysAhead;
+      _allowedDayKeys = allowed;
+      _horizonDayKeysSorted = horizonDays;
+      _reviewPageIndex = 0;
+
+      _selectedKeys.addAll(nextSelected);
+      _selectedKeys.retainWhere((k) => allowed.contains(k.split('|').first));
+    });
+
+    if (jumpToReview) _goToStep1Review();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fetching Logic
+  // ---------------------------------------------------------------------------
+
+  String _formatDateKey(DateTime d) {
+    return "${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}";
+  }
+
+  Future<void> _checkAndFetchMissingDays(int daysAhead) async {
+    final requiredKeys = <String>[];
+    for (int i = 0; i < daysAhead; i++) {
+      requiredKeys.add(_formatDateKey(_anchorDate.add(Duration(days: i))));
+    }
+
+    final missing =
+        requiredKeys.where((k) => !_fetchedDayKeys.contains(k)).toList();
+    if (missing.isEmpty) return;
+
+    if (_isFetchingMoreData) return;
+
+    setState(() => _isFetchingMoreData = true);
+
+    try {
+      final startDate = _anchorDate;
+      final endDate = _anchorDate.add(Duration(days: daysAhead));
+
+      _dlog("Batch fetching from $_anchorDate to $endDate");
+
+      final newDaysData = await _fetchPlanBatch(startDate, endDate);
+
+      if (newDaysData.isNotEmpty) {
+        if (_currentPlanData['days'] is! Map) {
+          _currentPlanData['days'] = <String, dynamic>{};
+        }
+
+        final currentDaysMap = _currentPlanData['days'] as Map;
+
+        newDaysData.forEach((key, val) {
+          currentDaysMap[key] = val;
+          _fetchedDayKeys.add(key);
+        });
+
+        _parsePlan();
+        _buildDayIndex();
+
+        await _primeRecipeMetaCache();
+
+        if (mounted) {
+          _applyHorizon(daysAhead: daysAhead, jumpToReview: false);
+        }
+      } else {
+        _dlog("Fetched data was empty.");
+      }
+    } catch (e) {
+      _dlog('Error fetching more meal plans: $e');
+    } finally {
+      if (mounted) setState(() => _isFetchingMoreData = false);
+    }
+  }
+
+  Future<Map<String, dynamic>> _fetchPlanBatch(
+      DateTime start, DateTime end) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return {};
+
+    final out = <String, dynamic>{};
+    final repo = MealPlanRepository(FirebaseFirestore.instance);
+
+    final startKey = _formatDateKey(start);
+    final endKey = _formatDateKey(end);
+
+    try {
+      final programId = await repo.getActiveProgramId(uid: uid);
+      _dlog("Active Program ID: $programId");
+
+      final futures = <Future<QuerySnapshot<Map<String, dynamic>>>>[];
+
+      // 1. Legacy Days
+      // ignore: deprecated_member_use
+      futures.add(repo.programDaysColLegacy(uid: uid)
+          .where('dateKey', isGreaterThanOrEqualTo: startKey)
+          .where('dateKey', isLessThanOrEqualTo: endKey)
+          .get());
+
+      // 2. Active Program Days
+      if (programId != null) {
+        futures.add(repo
+            .programDaysColForProgram(uid: uid, programId: programId)
+            .where('dateKey', isGreaterThanOrEqualTo: startKey)
+            .where('dateKey', isLessThanOrEqualTo: endKey)
+            .get());
+      } else {
+        futures.add(Future.value(null));
+      }
+
+      // 3. Ad-hoc Days
+      futures.add(repo.adhocDaysCol(uid: uid)
+          .where('dateKey', isGreaterThanOrEqualTo: startKey)
+          .where('dateKey', isLessThanOrEqualTo: endKey)
+          .get());
+
+      final results = await Future.wait(futures);
+
+      void mergeSnapshot(QuerySnapshot<Map<String, dynamic>>? snap) {
+        if (snap == null) return;
+        for (final doc in snap.docs) {
+          final data = doc.data();
+          if (data['slots'] is Map && (data['slots'] as Map).isNotEmpty) {
+            final key = data['dayKey'] ?? data['dateKey'] ?? doc.id;
+            out[key.toString()] = data;
+          }
+        }
+      }
+
+      // A. Legacy
+      // ignore: unnecessary_cast
+      mergeSnapshot(results[0] as QuerySnapshot<Map<String, dynamic>>?);
+
+      // B. Program
+      if (results[1] != null) {
+        // ignore: unnecessary_cast
+        mergeSnapshot(results[1] as QuerySnapshot<Map<String, dynamic>>?);
+      }
+
+      // C. Ad-hoc
+      // ignore: unnecessary_cast
+      mergeSnapshot(results.last as QuerySnapshot<Map<String, dynamic>>?);
+    } catch (e) {
+      _dlog("Batch fetch error: $e");
+    }
+
+    return out;
+  }
+
+  // ... (All Helpers unchanged)
   String _termSlug(Map<String, dynamic>? recipe, String groupKey) {
     final tags = recipe?['tags'];
     if (tags is Map) {
@@ -345,12 +693,9 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
           _itemsPerPersonById[id] = ipp;
           _itemLabelById[id] = label;
           if (itemsMode) _itemsMadeById[id] = itemsMade;
-
-          // ✅ cache full recipe map for exact shared “You need…” line + multiplier
           _recipeMapById[id] = recipe;
         });
 
-        // Apply per-card defaults
         if (!mounted) return;
         setState(() {
           for (final key in _slotToRecipeId.keys) {
@@ -366,19 +711,16 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
             }
           }
         });
-      } catch (_) {
+      } catch (e) {
+        _dlog('primeRecipeMetaCache failed for id=$id err=$e');
         if (!mounted) return;
         setState(() {
           _baseServingsById[id] = 1;
-          _isItemModeById[id] = false; // assume shared
+          _isItemModeById[id] = false;
         });
       }
     }
   }
-
-  // ---------------------------------------------------------------------------
-  // ✅ Shared card subtitle: EXACT same logic as RecipeDetailScreen (via ServingEngine)
-  // ---------------------------------------------------------------------------
 
   String _sharedNeedsLine({
     required int recipeId,
@@ -392,18 +734,11 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
       final advice =
           buildServingAdvice(recipe: recipe, adults: adults, kids: kids);
       final line = advice.detailLine.trim();
-      return line.isNotEmpty
-          ? line
-          : 'You need the equivalent of ~0 adult portions';
+      return line.isNotEmpty ? line : 'You need the equivalent of ~0 adult portions';
     } catch (_) {
       return 'You need the equivalent of ~0 adult portions';
     }
   }
-
-  // ---------------------------------------------------------------------------
-  // ✅ Shared scaling: AUTO-APPLY RecipeDetailScreen "recommended" multiplier
-  // (NO update button; shopping sheet always uses the recommended multiplier)
-  // ---------------------------------------------------------------------------
 
   double _recommendedScaleForShared({
     required Map<String, dynamic> recipe,
@@ -462,10 +797,6 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
         : '${_fmtMultiplier(scale)} batch';
     return '$needs • Using $label';
   }
-
-  // ---------------------------------------------------------------------------
-  // ✅ EXACT ingredient scaling/parsing logic from RecipeDetailScreen
-  // ---------------------------------------------------------------------------
 
   bool _rowHasConverted2(Map row) {
     final converted = row['converted'];
@@ -617,23 +948,29 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     return out;
   }
 
-  // ---------------------------------------------------------------------------
-  // Add to list execution
-  // ---------------------------------------------------------------------------
-
   Future<void> _executeAdd({String? existingListId, String? newListName}) async {
     setState(() => _isLoading = true);
 
     try {
       String listId = existingListId ?? '';
+      // We'll use this name for navigation if it's a new list
+      String finalListName = newListName ?? 'Shopping List'; 
 
       if (newListName != null && newListName.trim().isNotEmpty) {
         final ref = await ShoppingRepo.instance.createList(newListName.trim());
         listId = ref.id;
+        finalListName = newListName.trim();
       }
+      
       if (listId.isEmpty) throw Exception('No list selected');
 
+      // If using an existing list, we try to grab the name from our titles map or repo
+      // But since we don't have it easily here, we will pass a generic fallback 
+      // or the known new name.
+      
       int addedRecipeCount = 0;
+
+      _dlog('executeAdd selectedKeys=${_selectedKeys.length}');
 
       for (final key in _selectedKeys) {
         final rid = _slotToRecipeId[key];
@@ -645,7 +982,6 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
             ? Map<String, dynamic>.from(raw['recipe'] as Map)
             : Map<String, dynamic>.from(raw);
 
-        // keep cache in sync
         _recipeMapById[rid] = recipe;
 
         final ingredientScale = _ingredientScaleForKey(key, rid);
@@ -667,11 +1003,22 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
       }
 
       if (!mounted) return;
-      Navigator.of(context).pop();
+      
+      // ✅ FIX: Added listName argument
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => ShoppingListDetailScreen(
+            listId: listId,
+            listName: finalListName, // Passing the name we know or a fallback
+          ),
+        ),
+      );
+      
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Added $addedRecipeCount recipes to shopping list')),
       );
     } catch (e) {
+      _dlog('executeAdd error=$e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e')),
@@ -681,12 +1028,7 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Navigation
-  // ---------------------------------------------------------------------------
-
-  void _goToStep2() {
-    if (_selectedKeys.isEmpty) return;
+  void _goToStep1Review() {
     setState(() => _step = 1);
     _pageCtrl.animateToPage(
       1,
@@ -695,74 +1037,43 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     );
   }
 
-  void _goBack() {
-    setState(() => _step = 0);
+  void _goToStep2List() {
+    if (_selectedKeys.isEmpty) return;
+    setState(() => _step = 2);
     _pageCtrl.animateToPage(
-      0,
+      2,
       duration: const Duration(milliseconds: 260),
       curve: Curves.easeOut,
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // ✅ Week tab helpers (match MealPlanScreen vibe)
-  // ---------------------------------------------------------------------------
-
-  String _weekdayLetter(DateTime dt) {
-    const l = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-    return l[dt.weekday - 1];
+  void _goBack() {
+    final next = (_step - 1).clamp(0, 2);
+    setState(() => _step = next);
+    _pageCtrl.animateToPage(
+      next,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOut,
+    );
   }
-
-  List<String> _orderedWeekDayKeys() {
-    // We only call this when planData.type == 'week'
-    final days = widget.planData['days'];
-    if (days is! Map) return const [];
-
-    final keys = days.keys.map((e) => e.toString()).toList();
-
-    keys.sort((a, b) {
-      final da = MealPlanKeys.parseDayKey(a);
-      final db = MealPlanKeys.parseDayKey(b);
-      if (da != null && db != null) return da.compareTo(db);
-      if (da != null) return -1;
-      if (db != null) return 1;
-      return a.compareTo(b);
-    });
-
-    return keys;
-  }
-
-  // ---------------------------------------------------------------------------
-  // UI
-  // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
-    final subtitle = (widget.planData['type'] == 'day') ? 'Today' : 'This week';
-
-    final bottomBar = (_step == 0)
-        ? SafeArea(
-            top: false,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-              decoration: BoxDecoration(
-                color: _S.bg,
-                border:
-                    Border(top: BorderSide(color: Colors.black.withOpacity(0.06))),
-              ),
-              child: SizedBox(
-                height: 52,
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed:
-                      _selectedKeys.isEmpty || _isLoading ? null : _goToStep2,
-                  style: ElevatedButton.styleFrom(shape: const StadiumBorder()),
-                  child: Text('Add ${_selectedKeys.length} recipes to shopping list'),
-                ),
-              ),
-            ),
-          )
-        : const SizedBox.shrink();
+    final bottomBar = SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+        decoration: BoxDecoration(
+          color: _S.bg,
+          border: Border(top: BorderSide(color: Colors.black.withOpacity(0.06))),
+        ),
+        child: SizedBox(
+          height: 52,
+          width: double.infinity,
+          child: _buildBottomButton(),
+        ),
+      ),
+    );
 
     return Scaffold(
       backgroundColor: _S.bg,
@@ -775,25 +1086,25 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
               children: [
                 Expanded(
                   child: Text(
-                    _step == 0 ? 'Select recipes ($subtitle)' : 'Select list',
+                    _step == 0
+                        ? 'Choose days'
+                        : _step == 1
+                            ? 'Select meals'
+                            : 'Select list',
                     style: _S.meta(context),
                   ),
                 ),
-                if (_step == 1)
-                  TextButton.icon(
-                    onPressed: _isLoading ? null : _goBack,
-                    icon: const Icon(Icons.arrow_back_rounded, size: 18),
-                    label: const Text('Back'),
-                  ),
+                // ✅ Removed "Back" button per request
               ],
             ),
           ),
-          if (_isLoading) const LinearProgressIndicator(minHeight: 2),
+          if (_isLoading || _isFetchingMoreData) const LinearProgressIndicator(minHeight: 2),
           Expanded(
             child: PageView(
               controller: _pageCtrl,
               physics: const NeverScrollableScrollPhysics(),
               children: [
+                _buildStep0Horizon(),
                 _buildStep1SelectMeals(),
                 _buildStep2SelectList(),
               ],
@@ -804,6 +1115,317 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
       ),
     );
   }
+
+  Widget _buildBottomButton() {
+    if (_step == 0) {
+      final plannedCount = _horizonDayKeysSorted.length;
+      final hasMeals = _selectedKeys.isNotEmpty;
+      return ElevatedButton(
+        onPressed: (!hasMeals || _isLoading) ? null : _goToStep1Review,
+        style: ElevatedButton.styleFrom(shape: const StadiumBorder()),
+        child: Text(
+          plannedCount == 0 ? 'No planned meals' : 'Review meals',
+        ),
+      );
+    }
+
+    if (_step == 1) {
+      return ElevatedButton(
+        onPressed: (_selectedKeys.isEmpty || _isLoading) ? null : _goToStep2List,
+        style: ElevatedButton.styleFrom(shape: const StadiumBorder()),
+        child: Text('Add ${_selectedKeys.length} recipes to shopping list'),
+      );
+    }
+
+    return const SizedBox.shrink();
+  }
+
+  Widget _buildStep0Horizon() {
+    final plannedDays = _horizonDayKeysSorted;
+    final preview = _horizonPreviewText();
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 90),
+      children: [
+        Text(
+          'Shop for the next…',
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            fontSize: 18,
+            color: Colors.black.withOpacity(0.86),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            _chip(
+              label: '3 days',
+              selected: _daysAhead == 3,
+              onTap: () => _applyHorizon(daysAhead: 3, jumpToReview: false),
+            ),
+            _chip(
+              label: '5 days',
+              selected: _daysAhead == 5,
+              onTap: () => _applyHorizon(daysAhead: 5, jumpToReview: false),
+            ),
+            _chip(
+              label: '7 days',
+              selected: _daysAhead == 7,
+              onTap: () => _applyHorizon(daysAhead: 7, jumpToReview: false),
+            ),
+            _chip(
+              label: 'Custom',
+              selected: !{3, 5, 7}.contains(_daysAhead),
+              onTap: () => _showCustomDaysPicker(),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.black.withOpacity(0.08)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.shopping_basket_outlined, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  preview,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black.withOpacity(0.75),
+                  ),
+                ),
+              ),
+              if (_isFetchingMoreData)
+                const SizedBox(
+                  width: 16, height: 16, 
+                  child: CircularProgressIndicator(strokeWidth: 2)
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Divider(height: 1, color: Colors.black.withOpacity(0.08)),
+        const SizedBox(height: 14),
+        Text(
+          'Planned days in this window',
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            color: Colors.black.withOpacity(0.78),
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (plannedDays.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              _isFetchingMoreData 
+                ? 'Checking plan...'
+                : 'No meals planned in the next $_daysAhead days.',
+              style: TextStyle(color: Colors.black.withOpacity(0.6)),
+            ),
+          )
+        else
+          ...plannedDays.map((dayKey) {
+            final dt = MealPlanKeys.parseDayKey(dayKey);
+            final title = dt == null ? dayKey : _prettyDayWithDate(dt);
+            final mealCount = (_keysByDay[dayKey] ?? const <String>[]).length;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.03),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.black.withOpacity(0.06)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                    Text(
+                      '$mealCount meal${mealCount == 1 ? '' : 's'}',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Colors.black.withOpacity(0.60),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
+      ],
+    );
+  }
+
+  String _horizonPreviewText() {
+    final start = _anchorDate;
+    final end = _anchorDate.add(Duration(days: _daysAhead - 1));
+
+    final rangeText = '${_prettyShortDay(start)} → ${_prettyShortDay(end)}';
+
+    final plannedDays = _horizonDayKeysSorted.length;
+    final meals = _selectedKeys.length;
+
+    if (plannedDays == 0) {
+      return 'Next $_daysAhead days ($rangeText) • No planned meals';
+    }
+
+    return 'Next $_daysAhead days ($rangeText) • $plannedDays planned day${plannedDays == 1 ? '' : 's'} • $meals meal${meals == 1 ? '' : 's'}';
+  }
+
+  Future<void> _showCustomDaysPicker() async {
+    final next = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) {
+        int v = _daysAhead.clamp(1, 14);
+        return SafeArea(
+          top: false,
+          child: Container(
+            decoration: const BoxDecoration(
+              color: Color(0xFFECF3F4),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Custom window',
+                          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(null),
+                        child: const Text('Cancel'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'How many days ahead do you want to shop for?',
+                    style: TextStyle(
+                      color: Colors.black.withOpacity(0.62),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  StatefulBuilder(
+                    builder: (ctx, setInner) {
+                      return Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.black.withOpacity(0.08)),
+                        ),
+                        child: Row(
+                          children: [
+                            IconButton(
+                              onPressed: v <= 1 ? null : () => setInner(() => v -= 1),
+                              icon: const Icon(Icons.remove_rounded),
+                            ),
+                            Expanded(
+                              child: Center(
+                                child: Text(
+                                  '$v day${v == 1 ? '' : 's'}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              onPressed: v >= 14 ? null : () => setInner(() => v += 1),
+                              icon: const Icon(Icons.add_rounded),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    height: 52,
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.of(context).pop(v),
+                      style: ElevatedButton.styleFrom(shape: const StadiumBorder()),
+                      child: const Text('Use this window'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (!mounted) return;
+    if (next == null) return;
+
+    _applyHorizon(daysAhead: next, jumpToReview: false);
+  }
+
+  Widget _chip({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: selected ? Colors.black.withOpacity(0.12) : Colors.white,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: Colors.black.withOpacity(0.10)),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            fontSize: 12,
+            color: Colors.black.withOpacity(0.80),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // ✅ UPDATED: Step 1 (Day Selector View)
+  // ---------------------------------------------------------------------------
 
   String _slotHeaderLabel(String slot) {
     final s = slot.toLowerCase();
@@ -823,139 +1445,80 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     return 99;
   }
 
-  /// ✅ Day-mode (single day) stays as-is.
-  /// ✅ Week-mode now uses the SAME day tabs pattern as MealPlanScreen.
   Widget _buildStep1SelectMeals() {
-    final isDayMode = widget.planData['type'] == 'day';
+    final dayKeys = _horizonDayKeysSorted;
 
-    if (isDayMode) {
-      // Existing behaviour for "day" (single day): one list.
-      final grouped = <String, List<String>>{};
-      for (final key in _slotToRecipeId.keys) {
-        final day = key.split('|').first;
-        grouped.putIfAbsent(day, () => []).add(key);
-      }
-      final days = grouped.keys.toList()..sort();
-
-      return ListView(
-        padding: const EdgeInsets.only(bottom: 90),
-        children: [
-          ...days.map((dayKey) {
-            final slotKeys = grouped[dayKey]!;
-            slotKeys.sort((a, b) {
-              final sa = a.split('|').last;
-              final sb = b.split('|').last;
-              final pa = _slotScore(sa);
-              final pb = _slotScore(sb);
-              if (pa != pb) return pa.compareTo(pb);
-              return sa.compareTo(sb);
-            });
-
-            final bySlot = <String, List<String>>{};
-            for (final k in slotKeys) {
-              final slot = k.split('|').last;
-              bySlot.putIfAbsent(slot, () => []).add(k);
-            }
-
-            final orderedSlots = bySlot.keys.toList()
-              ..sort((a, b) => _slotScore(a).compareTo(_slotScore(b)));
-
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final slot in orderedSlots) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-                    child: Text(_slotHeaderLabel(slot), style: _S.header(context)),
-                  ),
-                  for (final key in bySlot[slot]!) _mealCard(key),
-                ],
-                const SizedBox(height: 8),
-              ],
-            );
-          }).toList(),
-        ],
-      );
-    }
-
-    // ✅ Week-mode: Day tabs (like MealPlanScreen)
-    final dayKeys = _orderedWeekDayKeys();
     if (dayKeys.isEmpty) {
       return Padding(
         padding: const EdgeInsets.all(20),
         child: Text(
-          'No meals found in this plan.',
+          'No planned meals in the next $_daysAhead days.',
           style: TextStyle(color: Colors.black.withOpacity(0.6)),
         ),
       );
     }
 
-    final now = DateTime.now();
-    int initialIndex = 0;
-    final todayKey = MealPlanKeys.todayKey();
-    final idx = dayKeys.indexOf(todayKey);
-    if (idx >= 0) initialIndex = idx;
+    final currentDayKey = dayKeys[_reviewPageIndex];
 
-    return DefaultTabController(
-      length: dayKeys.length,
-      initialIndex: initialIndex.clamp(0, dayKeys.length - 1),
-      child: Column(
-        children: [
-          Material(
-            color: Theme.of(context).colorScheme.surface,
-            child: TabBar(
-              isScrollable: false,
-              tabs: [
-                for (final k in dayKeys)
-                  Tab(
-                    text: _weekdayLetter(MealPlanKeys.parseDayKey(k) ?? now),
-                  ),
-              ],
-            ),
+    return Column(
+      children: [
+        // 1. Navigation Row
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              IconButton(
+                onPressed: _reviewPageIndex > 0 
+                    ? () => setState(() => _reviewPageIndex--) 
+                    : null,
+                icon: const Icon(Icons.chevron_left_rounded, size: 28),
+              ),
+              // Center Date Title
+              Text(
+                _prettyDay(currentDayKey),
+                style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+              ),
+              IconButton(
+                onPressed: _reviewPageIndex < dayKeys.length - 1
+                    ? () => setState(() => _reviewPageIndex++) 
+                    : null,
+                icon: const Icon(Icons.chevron_right_rounded, size: 28),
+              ),
+            ],
           ),
-          Expanded(
-            child: TabBarView(
-              children: [
-                for (final dayKey in dayKeys) _buildDayTab(dayKey),
-              ],
-            ),
+        ),
+        
+        // 2. Meal List for Current Day
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 90),
+            children: [
+              ..._buildDayMeals(currentDayKey),
+              const SizedBox(height: 6),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
-  Widget _buildDayTab(String dayKey) {
-    // Pull the keys for THIS day only
-    final keysForDay =
-        _slotToRecipeId.keys.where((k) => k.startsWith('$dayKey|')).toList();
-
+  List<Widget> _buildDayMeals(String dayKey) {
+    final keysForDay = (_keysByDay[dayKey] ?? const <String>[]).toList();
     if (keysForDay.isEmpty) {
-      return ListView(
-        padding: const EdgeInsets.only(bottom: 90),
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              _prettyDay(dayKey),
-              style: TextStyle(
-                fontWeight: FontWeight.w900,
-                color: Colors.black.withOpacity(0.72),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      return [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+          child: Center(
             child: Text(
               'No meals planned for this day.',
               style: TextStyle(color: Colors.black.withOpacity(0.6)),
             ),
           ),
-        ],
-      );
+        ),
+      ];
     }
 
-    // Group by slot for this day
     final bySlot = <String, List<String>>{};
     for (final k in keysForDay) {
       final slot = k.split('|').last;
@@ -965,43 +1528,33 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     final orderedSlots = bySlot.keys.toList()
       ..sort((a, b) => _slotScore(a).compareTo(_slotScore(b)));
 
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 90),
-      children: [
+    final out = <Widget>[];
+    for (final slot in orderedSlots) {
+      out.add(
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
-          child: Text(
-            _prettyDay(dayKey),
-            style: TextStyle(
-              fontWeight: FontWeight.w900,
-              color: Colors.black.withOpacity(0.72),
-            ),
-          ),
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+          child: Text(_slotHeaderLabel(slot), style: _S.header(context)),
         ),
-        for (final slot in orderedSlots) ...[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-            child: Text(_slotHeaderLabel(slot), style: _S.header(context)),
-          ),
-          for (final key in bySlot[slot]!) _mealCard(key),
-        ],
-        const SizedBox(height: 8),
-      ],
-    );
+      );
+      for (final key in bySlot[slot]!) {
+        out.add(_mealCard(key));
+      }
+    }
+    return out;
   }
 
   Widget _mealCard(String key) {
+    if (!_isKeyInAllowedHorizon(key)) return const SizedBox.shrink();
+
     final rid = _slotToRecipeId[key];
     final title = (rid != null) ? (_titles[rid] ?? 'Recipe') : 'Recipe';
 
     final selected = _selectedKeys.contains(key);
     final isItem = (rid != null) ? (_isItemModeById[rid] == true) : false;
 
-    // Shared defaults
     final adults = (_adultsByKey[key] ?? _profileAdults).clamp(0, 20);
     final kids = (_kidsByKey[key] ?? _profileKids).clamp(0, 20);
 
-    // Item defaults
     final batch = (_batchByKey[key] ?? 1).clamp(1, 20);
     final itemLabel = (rid != null) ? (_itemLabelById[rid] ?? 'item') : 'item';
     final itemsMadeBase = (rid != null) ? (_itemsMadeById[rid] ?? 0) : 0;
@@ -1071,7 +1624,30 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title, style: _S.cardTitle(context), maxLines: 2),
+                      InkWell(
+                        onTap: (rid == null)
+                            ? null
+                            : () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => RecipeDetailScreen(id: rid),
+                                  ),
+                                );
+                              },
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                style: _S.cardTitle(context),
+                                maxLines: 2,
+                              ),
+                            ),
+                            // ✅ Removed separate icon
+                          ],
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       Text(subtitleLine, style: _S.cardSub(context)),
                       if (!isItem) ...[
@@ -1119,6 +1695,10 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Step 2: List picker
+  // ---------------------------------------------------------------------------
+
   Widget _buildStep2SelectList() {
     return ListView(
       padding: EdgeInsets.zero,
@@ -1151,7 +1731,7 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
                   controller: _listNameCtrl,
                   textInputAction: TextInputAction.done,
                   decoration: InputDecoration(
-                    hintText: 'e.g. Week 1 Shop',
+                    hintText: 'e.g. Week shop',
                     filled: true,
                     fillColor: Colors.white,
                     contentPadding:
@@ -1251,12 +1831,69 @@ class _MealPlanShoppingSheetState extends State<MealPlanShoppingSheet> {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Misc helpers
+  // ---------------------------------------------------------------------------
+
   String _prettyDay(String dayKey) {
-    if (dayKey == 'Today') return 'Today';
     final dt = MealPlanKeys.parseDayKey(dayKey);
     if (dt == null) return dayKey;
+    return _prettyDayWithDate(dt);
+  }
+
+  static String _prettyDayWithDate(DateTime dt) {
+    const w = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const m = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
+    ];
+    return '${w[dt.weekday - 1]} ${dt.day} ${m[dt.month - 1]}';
+  }
+
+  static DateTime _dateOnly(DateTime dt) => DateTime(dt.year, dt.month, dt.day);
+
+  static String _prettyShortDay(DateTime dt) {
     const w = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     return '${w[dt.weekday - 1]} ${dt.day}';
+  }
+
+  static Widget _pill({
+    required String label,
+    required VoidCallback? onTap,
+    required bool selected,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: selected ? Colors.black.withOpacity(0.12) : Colors.white,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: Colors.black.withOpacity(0.10)),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            fontSize: 12,
+            color: onTap == null
+                ? Colors.black.withOpacity(0.35)
+                : Colors.black.withOpacity(0.80),
+          ),
+        ),
+      ),
+    );
   }
 }
 

@@ -1024,7 +1024,7 @@ class _MealPlanScreenState extends State<MealPlanScreen>
     // Map slot to initial course if possible
     String courseFilter = 'All';
     if (slot.toLowerCase() == 'breakfast') courseFilter = 'Breakfast';
-    else if (slot.toLowerCase().contains('snack')) courseFilter = 'Snack';
+    else if (slot.toLowerCase().contains('snack')) courseFilter = 'Snacks';
     else courseFilter = 'Main Course'; // Lunch/Dinner
 
     // Call the new page

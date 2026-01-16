@@ -467,9 +467,21 @@ class _Norm {
     return s;
   }
 
+  /// Parses cooking-ish numeric strings (ints, decimals, 1/2, 1 1/2, unicode)
+  /// + ✅ supports "2 x" / "2x" scale notation used by the UI.
   static double? parseAmount(String raw) {
     var s = raw.trim();
     if (s.isEmpty) return null;
+
+    // Normalize whitespace
+    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+    // ✅ handle "2x" / "2 x"
+    // We accept only a leading number + optional x, and treat it as numeric.
+    final compact = s.replaceAll(' ', '');
+    final mx =
+        RegExp(r'^(\d+(?:\.\d+)?)x$', caseSensitive: false).firstMatch(compact);
+    if (mx != null) return double.tryParse(mx.group(1)!);
 
     s = s.replaceAll(r'\/', '/');
 

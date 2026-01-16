@@ -356,8 +356,8 @@ class ShoppingRepo {
         intoQty: (qty, normUnit) {
           entry.sumQtyMetric = (entry.sumQtyMetric ?? 0) + qty;
           entry.sumUnitMetric ??= normUnit;
-          // Track for this batch
           entry.batchContribMetric = (entry.batchContribMetric ?? 0) + qty;
+          entry.hasBatchMetric = true;
         },
       );
 
@@ -368,8 +368,8 @@ class ShoppingRepo {
         intoQty: (qty, normUnit) {
           entry.sumQtyUs = (entry.sumQtyUs ?? 0) + qty;
           entry.sumUnitUs ??= normUnit;
-          // Track for this batch
           entry.batchContribUs = (entry.batchContribUs ?? 0) + qty;
+          entry.hasBatchUs = true;
         },
       );
 
@@ -400,26 +400,48 @@ class ShoppingRepo {
         final ref = itemsCol.doc(entry.key);
         final snap = existing[entry.key];
 
-        // Prepare source object with contributions
-        final newSource = <String, dynamic>{
-          'recipeId': recipeId,
-          'recipeTitle': (recipeTitle ?? '').trim(),
-        };
+        // Base source object (we'll attach contrib ONLY if it merged)
+        Map<String, dynamic> makeSource({
+          required bool includeMetric,
+          required bool includeUs,
+          required String? metricUnit,
+          required String? usUnit,
+        }) {
+          final s = <String, dynamic>{
+            'recipeId': recipeId,
+            'recipeTitle': (recipeTitle ?? '').trim(),
+          };
 
-        if (entry.batchContribMetric != null && entry.batchContribMetric! > 0) {
-          newSource['contribMetric'] = entry.batchContribMetric;
-          newSource['contribUnitMetric'] = entry.sumUnitMetric;
-        }
-        if (entry.batchContribUs != null && entry.batchContribUs! > 0) {
-          newSource['contribUs'] = entry.batchContribUs;
-          newSource['contribUnitUs'] = entry.sumUnitUs;
+          if (includeMetric &&
+              entry.batchContribMetric != null &&
+              entry.batchContribMetric! > 0 &&
+              (metricUnit ?? '').trim().isNotEmpty) {
+            s['contribMetric'] = entry.batchContribMetric;
+            s['contribUnitMetric'] = metricUnit!.trim();
+          }
+
+          if (includeUs &&
+              entry.batchContribUs != null &&
+              entry.batchContribUs! > 0 &&
+              (usUnit ?? '').trim().isNotEmpty) {
+            s['contribUs'] = entry.batchContribUs;
+            s['contribUnitUs'] = usUnit!.trim();
+          }
+
+          return s;
         }
 
         if (snap == null || !snap.exists) {
           // --- NEW ITEM ---
           final initialSources = <Map<String, dynamic>>[];
           if (recipeId != null || (recipeTitle ?? '').isNotEmpty) {
-            initialSources.add(newSource);
+            // New item always "merges" because it's establishing sums
+            initialSources.add(makeSource(
+              includeMetric: entry.hasBatchMetric,
+              includeUs: entry.hasBatchUs,
+              metricUnit: entry.sumUnitMetric,
+              usUnit: entry.sumUnitUs,
+            ));
           }
 
           tx.set(
@@ -464,11 +486,45 @@ class ShoppingRepo {
           8,
         );
 
+        // Decide if metric/us sums can merge into existing totals
+        final exQtyMetric = _asDouble(data['sumQtyMetric']);
+        final exUnitMetric = (data['sumUnitMetric'] ?? '').toString().trim();
+        final addUnitMetric = (entry.sumUnitMetric ?? '').trim();
+
+        final canMergeMetric = entry.hasBatchMetric &&
+            entry.sumQtyMetric != null &&
+            entry.sumQtyMetric! > 0 &&
+            addUnitMetric.isNotEmpty &&
+            (exQtyMetric == null ||
+                exQtyMetric <= 0 ||
+                exUnitMetric.isEmpty ||
+                exUnitMetric == addUnitMetric);
+
+        final exQtyUs = _asDouble(data['sumQtyUs']);
+        final exUnitUs = (data['sumUnitUs'] ?? '').toString().trim();
+        final addUnitUs = (entry.sumUnitUs ?? '').trim();
+
+        final canMergeUs = entry.hasBatchUs &&
+            entry.sumQtyUs != null &&
+            entry.sumQtyUs! > 0 &&
+            addUnitUs.isNotEmpty &&
+            (exQtyUs == null ||
+                exQtyUs <= 0 ||
+                exUnitUs.isEmpty ||
+                exUnitUs == addUnitUs);
+
         // Merge sources
         final currentSources = _mapList(data['sources']);
         if (recipeId != null || (recipeTitle ?? '').isNotEmpty) {
-          currentSources.add(newSource);
+          // ✅ Only store contrib fields that actually merged into sums
+          currentSources.add(makeSource(
+            includeMetric: canMergeMetric,
+            includeUs: canMergeUs,
+            metricUnit: addUnitMetric,
+            usUnit: addUnitUs,
+          ));
         }
+
         // Keep last 20 sources max
         final mergedSources = currentSources.length > 20
             ? currentSources.sublist(currentSources.length - 20)
@@ -479,17 +535,17 @@ class ShoppingRepo {
 
         // Merge sums
         final nextMetric = _mergeSumSameUnit(
-          existingQty: _asDouble(data['sumQtyMetric']),
-          existingUnit: (data['sumUnitMetric'] ?? '').toString(),
-          addQty: entry.sumQtyMetric,
-          addUnit: entry.sumUnitMetric,
+          existingQty: exQtyMetric,
+          existingUnit: exUnitMetric,
+          addQty: canMergeMetric ? entry.sumQtyMetric : null,
+          addUnit: canMergeMetric ? addUnitMetric : null,
         );
 
         final nextUs = _mergeSumSameUnit(
-          existingQty: _asDouble(data['sumQtyUs']),
-          existingUnit: (data['sumUnitUs'] ?? '').toString(),
-          addQty: entry.sumQtyUs,
-          addUnit: entry.sumUnitUs,
+          existingQty: exQtyUs,
+          existingUnit: exUnitUs,
+          addQty: canMergeUs ? entry.sumQtyUs : null,
+          addUnit: canMergeUs ? addUnitUs : null,
         );
 
         tx.set(
@@ -554,39 +610,45 @@ class ShoppingRepo {
 
       touched = true;
 
-      // Calculate how much to subtract
-      double subMetric = 0;
-      double subUs = 0;
-
-      for (final s in sourcesToRemove) {
-        subMetric += _asDouble(s['contribMetric']) ?? 0;
-        subUs += _asDouble(s['contribUs']) ?? 0;
-      }
-
       // Remove from sources list
       sources.removeWhere((s) => _asInt(s['recipeId']) == recipeId);
 
-      // Check if item should be deleted
+      // If no sources left, delete item
       if (sources.isEmpty) {
         batch.delete(doc.reference);
         continue;
       }
 
-      // Otherwise, update quantity
+      // Otherwise subtract sums safely (unit-guard per-source)
       double? currentMetric = _asDouble(data['sumQtyMetric']);
+      final currentMetricUnit = (data['sumUnitMetric'] ?? '').toString().trim();
+
       double? currentUs = _asDouble(data['sumQtyUs']);
+      final currentUsUnit = (data['sumUnitUs'] ?? '').toString().trim();
 
-      if (currentMetric != null) {
-        currentMetric = (currentMetric - subMetric);
-        if (currentMetric <= 0) currentMetric = null;
+      for (final s in sourcesToRemove) {
+        final subM = _asDouble(s['contribMetric']) ?? 0;
+        final subMU = (s['contribUnitMetric'] ?? '').toString().trim();
+        if (currentMetric != null && currentMetric > 0 && subM > 0) {
+          if (_sameNormalizedUnit(currentMetricUnit, subMU)) {
+            currentMetric = currentMetric - subM;
+            if (currentMetric <= 0) currentMetric = null;
+          }
+        }
+
+        final subU = _asDouble(s['contribUs']) ?? 0;
+        final subUU = (s['contribUnitUs'] ?? '').toString().trim();
+        if (currentUs != null && currentUs > 0 && subU > 0) {
+          if (_sameNormalizedUnit(currentUsUnit, subUU)) {
+            currentUs = currentUs - subU;
+            if (currentUs <= 0) currentUs = null;
+          }
+        }
       }
 
-      if (currentUs != null) {
-        currentUs = (currentUs - subUs);
-        if (currentUs <= 0) currentUs = null;
-      }
-
-      final newUsedCount = (_asInt(data['usedCount']) ?? 1) - 1;
+      // ✅ usedCount should drop by number of removed contributions
+      final removedCount = sourcesToRemove.length;
+      final newUsedCount = (_asInt(data['usedCount']) ?? 1) - removedCount;
 
       batch.update(doc.reference, {
         'sources': sources,
@@ -653,6 +715,13 @@ class ShoppingRepo {
     if (isCooking || !summable) return;
 
     intoQty(amt, u);
+  }
+
+  bool _sameNormalizedUnit(String a, String b) {
+    final ua = ShoppingEngine.normalizeUnit(a);
+    final ub = ShoppingEngine.normalizeUnit(b);
+    if (ua.isEmpty || ub.isEmpty) return false;
+    return ua == ub;
   }
 
   static List<String> _dedupeTake(List<String> items, int max) {
@@ -725,6 +794,7 @@ class ShoppingRepo {
       return (qty: existingQty + addQty, unit: exU);
     }
 
+    // Unit mismatch: do not merge
     return (qty: existingQty, unit: exU);
   }
 }
@@ -742,6 +812,10 @@ class _Agg {
   // Track current batch contribution
   double? batchContribMetric;
   double? batchContribUs;
+
+  // Whether we had a summable batch contribution (before checking merge vs existing)
+  bool hasBatchMetric = false;
+  bool hasBatchUs = false;
 
   int? usedCount;
 
